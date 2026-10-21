@@ -43,6 +43,7 @@ static struct {
     uint8_t volume;
     bool speaker_on;
     bool pushes_on;
+    bool touch_volume_on;
     uint8_t mic_gain;
     uint8_t brightness;
     uint16_t sleep_s;
@@ -57,6 +58,7 @@ static struct {
 } s = {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
+    .touch_volume_on = true,
     .mic_gain = 30,
     .brightness = 100,
     .sleep_s = 120,
@@ -165,6 +167,9 @@ esp_err_t muse_settings_init(void)
     if (nvs_get_u8(s_nvs, "pushes", &b) == ESP_OK) {
         s.pushes_on = b;
     }
+    if (nvs_get_u8(s_nvs, "touch_vol", &b) == ESP_OK) {
+        s.touch_volume_on = b;
+    }
     load_u8("mic_gain", &s.mic_gain);
     load_u8("bright", &s.brightness);
     nvs_get_u16(s_nvs, "sleep_s", &s.sleep_s);
@@ -202,6 +207,7 @@ void muse_settings_set_listener(muse_setting_cb_t cb)
 int muse_settings_volume(void) { return s.volume; }
 bool muse_settings_speaker_on(void) { return s.speaker_on; }
 bool muse_settings_pushes_on(void) { return s.pushes_on; }
+bool muse_settings_touch_volume_on(void) { return s.touch_volume_on; }
 int muse_settings_mic_gain(void) { return s.mic_gain; }
 int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
@@ -275,6 +281,13 @@ void muse_settings_set_pushes_on(bool on)
     s.pushes_on = on;
     save_u8("pushes", on);
     notify(MUSE_SETTING_PUSHES);
+}
+
+void muse_settings_set_touch_volume_on(bool on)
+{
+    s.touch_volume_on = on;
+    save_u8("touch_vol", on);
+    notify(MUSE_SETTING_TOUCH_VOLUME);
 }
 
 void muse_settings_set_mic_gain(int db)

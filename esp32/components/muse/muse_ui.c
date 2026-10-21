@@ -1123,7 +1123,7 @@ static void volume_drag(float now)
         if (lv_indev_get_scroll_obj(s_indev) || lv_obj_get_scroll_x(s_tv) != 0 || dx >= s_vol_step_px
             || s_rub.turns >= 2) {
             s_drag = DRAG_OTHER;
-        } else if (dy >= s_vol_step_px && dy > 2 * dx) {
+        } else if (dy >= s_vol_step_px && dy > 2 * dx && muse_settings_touch_volume_on()) {
             s_drag = DRAG_VOLUME;
             s_drag_vol = muse_settings_volume();
             lv_indev_wait_release(s_indev);
