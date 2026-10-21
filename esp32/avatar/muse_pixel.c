@@ -886,18 +886,22 @@ static void draw_laptop(const muse_pose_t *p, float cx, float base, float t)
 /* Headphones, after the Muse app's working pose: a plain grey band hugging the
  * hood, and large soft over-ear cups in pale grey with a darker cushion oval.
  * The cups sit on the sides of the head at ear height, centred on the
- * head's edge (fx +/- a), so half of each cup sticks out past the head
- * outline the way worn headphones do, instead of hanging down beside
- * the face. */
+ * head's edge (cx +/- a, the left cup one pixel wider, see below), so
+ * half of each cup sticks out past the head outline the way worn
+ * headphones do, instead of hanging down beside the face. */
 static void draw_headphones(const avatar_t *j, float eye_y)
 {
     int cup_y = iround(eye_y + 2);
     for (int side = 0; side < 2; side++) {
         float sgn = side ? 1.0f : -1.0f;
-        /* Cups locked symmetric around the head's rounded centre. Rounding
-         * fx +/- a independently left the pair a half pixel off centre,
-         * jittering between a pixel right and a pixel left frame to frame. */
-        int cup_x = iround(j->cx) + (side ? iround(j->a) : -iround(j->a));
+        /* The assembly is one pixel wider on the left. The grid is 64 px
+         * wide, so the head's true centre sits on a half pixel and a
+         * symmetric cup pair always lands a half pixel right of it. The
+         * right cup stays put; the left cup sits one pixel further out,
+         * which puts the pair's midpoint on the true centre. The band
+         * arcs below are sized per side from cup_x, so the band widens
+         * with the left cup and still lands on it. */
+        int cup_x = iround(j->cx) + (side ? iround(j->a) : -iround(j->a) - 1);
 
         /* Band: two close arcs over the crown and down the hood. The arc
          * ellipse is sized so the arcs end on the top outer corner of the
