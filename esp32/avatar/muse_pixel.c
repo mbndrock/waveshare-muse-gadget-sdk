@@ -55,6 +55,9 @@ enum {
     C_STAR,      /* dizzy stars */
     C_STARD,
     C_TEAR,      /* tears of joy */
+    C_HP,        /* headphones: light grey shell */
+    C_HP_IN,     /* headphones: cushion */
+    C_HP_EDGE,   /* headphones: band and outline */
     C_COUNT,
 };
 
@@ -103,6 +106,9 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_STAR] = 0xffd84a,
     [C_STARD] = 0xe89a2c,
     [C_TEAR] = 0x9fdcff,
+    [C_HP] = 0xd8d4cc,
+    [C_HP_IN] = 0xa9a49a,
+    [C_HP_EDGE] = 0x76736d,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -877,48 +883,35 @@ static void draw_laptop(const muse_pose_t *p, float cx, float base, float t)
     }
 }
 
-/* Headphones: a band hugging the hood top, ear cups at the sides of the face panel. */
+/* Headphones, after the Muse app's working pose: a plain grey band hugging the
+ * hood, and large soft over-ear cups in pale grey with a darker cushion oval. */
 static void draw_headphones(const avatar_t *j, float eye_y)
 {
-    int cy = iround(eye_y + 3);
+    int cup_y = iround(eye_y + 3);
     for (int side = 0; side < 2; side++) {
         float sgn = side ? 1.0f : -1.0f;
-        int cx = iround(j->fx + sgn * (j->fa + 1));
+        int cup_x = iround(j->fx + sgn * (j->fa + 3));
 
-        /* Band: walk the ellipse from the crown down this side until it reaches the
-         * cup tops, with an accent row just inside near the crown; then a short
-         * yoke to the cup. */
-        int x = iround(j->cx), y = iround(j->cy - j->b - 1);
-        for (int k = 0; k <= 48; k++) {
-            float th = k * (1.5708f / 48);
-            int nx = iround(j->cx + sgn * (j->a + 1) * sinf(th));
-            int ny = iround(j->cy - (j->b + 1) * cosf(th));
-            if (ny >= cy - 3) {
-                break;
-            }
-            x = nx;
-            y = ny;
-            px(x, y, C_OUT);
-            if (th < 0.6f) {
-                px(iround(j->cx + sgn * j->a * sinf(th)), iround(j->cy - j->b * cosf(th)), C_ACC);
-            }
-        }
-        int n = abs(cx - x) > abs(cy - 3 - y) ? abs(cx - x) : abs(cy - 3 - y);
-        for (int s = 1; s <= n; s++) {
-            px(x + (cx - x) * s / n, y + (cy - 3 - y) * s / n, C_OUT);
+        /* Band: two close arcs over the crown and down the hood, ending where
+         * they meet the outer edge of the cup. No accent colour: the app's
+         * headphones are plain warm grey. */
+        for (int k = 0; k <= 96; k++) {
+            float th = k * (1.35f / 96);
+            px(iround(j->cx + sgn * (j->a + 1) * sinf(th)),
+               iround(j->cy - (j->b + 1) * cosf(th)), C_HP_EDGE);
+            px(iround(j->cx + sgn * j->a * sinf(th)),
+               iround(j->cy - j->b * cosf(th)), C_HP_EDGE);
         }
 
-        /* Cup: 5 x 7, corners rounded off, outlined, a lit cushion on its outer face. */
-        for (int dy = -3; dy <= 3; dy++) {
-            for (int dx = -2; dx <= 2; dx++) {
-                if (abs(dx) == 2 && abs(dy) == 3) {
-                    continue;
-                }
-                px(cx + dx, cy + dy, abs(dx) == 2 || abs(dy) == 3 ? C_OUT : C_BROW);
+        /* Cup: 7 x 11, rounded, pale shell with a recessed cushion oval. */
+        for (int dy = -5; dy <= 5; dy++) {
+            int half = abs(dy) == 5 ? 2 : 3;
+            for (int dx = -half; dx <= half; dx++) {
+                bool edge = abs(dx) == half || abs(dy) == 5;
+                bool cushion = abs(dx) <= 1 && abs(dy) <= 3;
+                uint8_t c = edge ? C_HP_EDGE : (cushion ? C_HP_IN : C_HP);
+                px(cup_x + dx, cup_y + dy, c);
             }
-        }
-        for (int dy = -1; dy <= 1; dy++) {
-            px(cx + (side ? 1 : -1), cy + dy, C_ACC);
         }
     }
 }
@@ -1575,6 +1568,7 @@ void muse_pixel_render(const muse_pose_t *p)
 
     /* ---- limbs ---- */
     float base = j.cy + j.b;
+    float laptop_base = base - 8.0f;   /* raised: shorter arms, lid reaches the chin */
     limb_t feet[2];
     float step = mode == MUSE_MODE_SPEAKING ? sinf(t * 5.0f) * 0.6f : 0.0f;
     feet[0] = (limb_t){ j.cx - 7.0f, base - 0.5f + (happy > 0 ? hop * 0.3f : step), -0.15f };
@@ -1605,7 +1599,7 @@ void muse_pixel_render(const muse_pose_t *p)
         float tap = sinf(t * 44.0f) * 0.6f;   /* ~7 Hz */
         for (int i = 0; i < 2; i++) {
             float sgn = i ? 1.0f : -1.0f;
-            float rx = j.cx + sgn * adx, tx = j.cx + sgn * 8.0f, ty = base - 3.0f;
+            float rx = j.cx + sgn * adx, tx = j.cx + sgn * 8.0f, ty = laptop_base - 3.0f;
             float dx = tx - rx, dy = ty - ay;
             arms[i] = (limb_t){ (rx + tx) * 0.5f, (ay + ty) * 0.5f + (i ? -tap : tap),
                                 atan2f(-dx, dy), 0.5f * sqrtf(dx * dx + dy * dy) };
@@ -1731,7 +1725,7 @@ void muse_pixel_render(const muse_pose_t *p)
         draw_waves(j.cx, j.fy + 2, j.a, level, t);
     }
     if (mode == MUSE_MODE_THINKING) {
-        draw_laptop(p, j.cx, base, t);
+        draw_laptop(p, j.cx, laptop_base, t);
     }
     if (happy > 0) {
         draw_hearts(j.cx, top + 1, t, happy);
