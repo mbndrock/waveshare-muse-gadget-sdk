@@ -112,8 +112,8 @@ static const char *TAG = "muse_chat_session";
 #define AUTO_RETRY_MIN_US (5 * 1000000LL)  /* connecting without a turn, after a failure */
 #define AUTO_RETRY_MAX_US (120 * 1000000LL)
 #define FINAL_TIMEOUT_US (15 * 1000000LL)  /* release -> final transcript */
-#define REPLY_TIMEOUT_US (60 * 1000000LL)  /* chat posted -> first assistant message */
-#define TURN_CAP_US (180 * 1000000LL)
+#define REPLY_TIMEOUT_US (180 * 1000000LL)  /* chat posted -> first assistant message */
+#define TURN_CAP_US (600 * 1000000LL)
 #define SETTLE_US (3 * 1000000LL)          /* quiet period that ends a turn */
 #define BUSY_HOLD_US (20 * 1000000LL)      /* how long a busy agent keeps it open */
 #define TEXT_REPLY_TIMEOUT_US (5 * 60 * 1000000LL)   /* typed turns: agents can work a while */
@@ -2066,8 +2066,8 @@ static void check_turn(void)
         return;
     }
     if (!s_turn.nmsgs) {
-        /* A typed turn waits as long as the agent says it's working. */
-        if (t - s_turn.chat_us > (text ? TEXT_REPLY_TIMEOUT_US : REPLY_TIMEOUT_US) && !(text && s_turn.agent_busy)) {
+        /* A turn waits as long as the agent says it's working. */
+        if (t - s_turn.chat_us > (text ? TEXT_REPLY_TIMEOUT_US : REPLY_TIMEOUT_US) && !s_turn.agent_busy) {
             turn_fail("NO REPLY FROM MUSE");
         }
         return;

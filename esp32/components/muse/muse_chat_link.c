@@ -53,7 +53,7 @@ static const char *TAG = "muse_chat_link";
 #define EV_TEXT 72
 #define SEND_WAIT_MS 200               /* the press queues the pre-roll all at once */
 #define SETTLE_US 3000000               /* quiet after a reply before the turn ends */
-#define REPLY_TIMEOUT_US 60000000
+#define REPLY_TIMEOUT_US 180000000
 #define READ_CHARS_PER_S 14             /* caption scroll, about speaking pace */
 
 
