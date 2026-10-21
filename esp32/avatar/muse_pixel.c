@@ -831,17 +831,53 @@ static void draw_waves(float cx, float cy, float body_rx, float level, float t)
     }
 }
 
-static void draw_thought_dots(float x, float y, float t)
+/* An open laptop in front of the lower body: keyboard deck on the base line, lid with scrolling code. */
+static void draw_laptop(const muse_pose_t *p, float cx, float base, float t)
 {
-    int active = (int)(fracf(t * 1.6f) * 3.0f);
-    for (int i = 0; i < 3; i++) {
-        int bx = iround(x + i * 4);
-        int by = iround(y - i * 3) - (i == active ? 1 : 0);
-        uint8_t c = i == active ? C_G0 : C_ACC;
-        px(bx, by, c);
-        px(bx + 1, by, c);
-        px(bx, by + 1, c);
-        px(bx + 1, by + 1, i == active ? C_G1 : C_G2);
+    (void)p;
+    int x = iround(cx), b = iround(base);
+
+    /* Deck: 29 px wide, rim-lit top edge, a row of keys, outlined. */
+    for (int i = -14; i <= 14; i++) {
+        bool end = i == -14 || i == 14;
+        px(x + i, b - 2, end ? C_OUT : C_RIM);
+        px(x + i, b - 1, end ? C_OUT : ((i & 1) && abs(i) < 12 ? C_SKIND : C_BROW));
+        if (!end) {
+            px(x + i, b, C_OUT);
+        }
+    }
+
+    /* Lid: 21 x 13, outlined, the screen in the deep glow. */
+    int l = x - 10, r = x + 10, top = b - 15, bot = b - 3;
+    for (int yy = top; yy <= bot; yy++) {
+        for (int xx = l; xx <= r; xx++) {
+            bool edge = xx == l || xx == r || yy == top || yy == bot;
+            if (edge && (xx == l || xx == r) && (yy == top || yy == bot)) {
+                continue;   /* rounded corners */
+            }
+            px(xx, yy, edge ? C_OUT : C_G3);
+        }
+    }
+
+    /* Code lines, 3 px apart, scrolling up; each line's indent and length come from its index. */
+    static const uint8_t CODE[3] = { C_G0, C_G1, C_WHITE };
+    float pos = t * 2.0f;
+    int n0 = (int)floorf(pos / 3.0f);
+    int sub = (int)(pos - n0 * 3.0f);
+    for (int k = 0; k < 5; k++) {
+        int g = n0 + k;
+        int ly = top + 2 + k * 3 - sub;
+        if (ly <= top || ly >= bot - 1) {
+            continue;
+        }
+        int32_t h = hash16(g, 7);
+        int indent = (h & 3) == 3 ? 4 : (h & 3) * 2;
+        int len = 4 + (h >> 4) % 9;
+        int x0 = l + 2 + indent, x1 = x0 + len;
+        x1 = x1 > r - 2 ? r - 2 : x1;
+        for (int xx = x0; xx <= x1; xx++) {
+            px(xx, ly, CODE[(unsigned)g % 3]);
+        }
     }
 }
 
@@ -1518,11 +1554,13 @@ void muse_pixel_render(const muse_pose_t *p)
         arms[0] = (limb_t){ j.cx - adx + 1.0f, j.fy + 5.0f, 0.55f };
         arms[1] = (limb_t){ j.cx + adx - 1.0f, j.fy + 5.0f, -0.55f };
         break;
-    case MUSE_MODE_THINKING:
-        /* One paw up to the chin. */
-        arms[0] = (limb_t){ j.cx - adx, ay, -0.35f };
-        arms[1] = (limb_t){ j.cx + 7.5f, j.fy + j.fb + 3.5f, -1.1f };
+    case MUSE_MODE_THINKING: {
+        /* Typing: both paws reach down onto the laptop deck, tapping in turn. */
+        float tap = sinf(t * 44.0f) * 0.6f;   /* ~7 Hz */
+        arms[0] = (limb_t){ j.cx - adx, base - 7.0f + tap, 0.45f };
+        arms[1] = (limb_t){ j.cx + adx, base - 7.0f - tap, -0.45f };
         break;
+    }
     case MUSE_MODE_OFF: {
         float w = sinf(t * 12.0f) * 0.35f * fade;
         arms[0] = (limb_t){ j.cx - adx, ay, -0.3f };
@@ -1639,7 +1677,7 @@ void muse_pixel_render(const muse_pose_t *p)
         draw_waves(j.cx, j.fy + 2, j.a, level, t);
     }
     if (mode == MUSE_MODE_THINKING) {
-        draw_thought_dots(j.cx + 14, top + 2, t);
+        draw_laptop(p, j.cx, base, t);
     }
     if (happy > 0) {
         draw_hearts(j.cx, top + 1, t, happy);
