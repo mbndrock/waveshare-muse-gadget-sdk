@@ -52,6 +52,9 @@ if(CONFIG_MUSE_ENABLED)
         list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
     endif()
     list(APPEND srcs "muse_chat_text.c")
+    if(CONFIG_MUSE_OBD_VTEC)
+        list(APPEND srcs "muse_obd.c" "muse_obd_elm.c")   # VTEC reaction from the car's OBD adapter
+    endif()
     if(CONFIG_MUSE_CJK_FONT)
         list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
     endif()
