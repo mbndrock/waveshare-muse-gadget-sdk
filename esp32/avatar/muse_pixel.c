@@ -884,23 +884,37 @@ static void draw_laptop(const muse_pose_t *p, float cx, float base, float t)
 }
 
 /* Headphones, after the Muse app's working pose: a plain grey band hugging the
- * hood, and large soft over-ear cups in pale grey with a darker cushion oval. */
+ * hood, and large soft over-ear cups in pale grey with a darker cushion oval.
+ * The cups sit on the sides of the head, centred just outside the face
+ * panel's edge (fx +/- (fa + 1)), overlapping the hood the way ears sit,
+ * instead of hanging outside the head outline beside the face. */
 static void draw_headphones(const avatar_t *j, float eye_y)
 {
     int cup_y = iround(eye_y + 3);
     for (int side = 0; side < 2; side++) {
         float sgn = side ? 1.0f : -1.0f;
-        int cup_x = iround(j->fx + sgn * (j->fa + 3));
+        int cup_x = iround(j->fx + sgn * (j->fa + 1));
 
-        /* Band: two close arcs over the crown and down the hood, ending where
-         * they meet the outer edge of the cup. No accent colour: the app's
+        /* Band: two close arcs over the crown and down the hood. The arc
+         * ellipse is sized so the arcs end on the top outer corner of the
+         * cup, now that the cups sit further in. No accent colour: the app's
          * headphones are plain warm grey. */
+        float ry = j->b + 1;
+        float cos_end = (j->cy - (float)(cup_y - 5)) / ry;
+        if (cos_end > 1.0f) {
+            cos_end = 1.0f;
+        }
+        if (cos_end < -1.0f) {
+            cos_end = -1.0f;
+        }
+        float th_max = acosf(cos_end);
+        float rx = (fabsf((float)cup_x - j->cx) + 2.0f) / sinf(th_max);
         for (int k = 0; k <= 96; k++) {
-            float th = k * (1.35f / 96);
-            px(iround(j->cx + sgn * (j->a + 1) * sinf(th)),
-               iround(j->cy - (j->b + 1) * cosf(th)), C_HP_EDGE);
-            px(iround(j->cx + sgn * j->a * sinf(th)),
-               iround(j->cy - j->b * cosf(th)), C_HP_EDGE);
+            float th = k * (th_max / 96);
+            px(iround(j->cx + sgn * rx * sinf(th)),
+               iround(j->cy - ry * cosf(th)), C_HP_EDGE);
+            px(iround(j->cx + sgn * (rx - 1) * sinf(th)),
+               iround(j->cy - (ry - 1) * cosf(th)), C_HP_EDGE);
         }
 
         /* Cup: 7 x 11, rounded, pale shell with a recessed cushion oval. */
