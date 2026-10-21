@@ -139,3 +139,12 @@ float muse_state_tickle(void);
  */
 void muse_state_start_vtec(void);
 float muse_state_vtec(void);
+
+/*
+ * Coolant warning: the car's coolant has been too hot for a while
+ * (muse_obd.c, MUSE_COOLANT_S). Shown only while idle, over VTEC if both are
+ * on. Starting it pokes and ends drowsing quietly. Built only with
+ * CONFIG_MUSE_OBD_VTEC.
+ */
+void muse_state_start_coolant(void);
+float muse_state_coolant(void);

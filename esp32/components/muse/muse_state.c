@@ -54,6 +54,7 @@ static int64_t s_tickle_us;
 static int64_t s_tickle_held_us;   /* the last touch of the tickling */
 #if CONFIG_MUSE_OBD_VTEC
 static int64_t s_vtec_us;
+static int64_t s_coolant_us;
 #endif
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -258,7 +259,7 @@ void muse_state_set_asleep(bool asleep)
     if (asleep) {
         s_drowse_us = s_dizzy_us = s_waking_us = s_tickle_us = 0;
 #if CONFIG_MUSE_OBD_VTEC
-        s_vtec_us = 0;
+        s_vtec_us = s_coolant_us = 0;
 #endif
     } else if (s_asleep) {
         s_waking_us = now;
@@ -462,5 +463,22 @@ void muse_state_start_vtec(void)
 float muse_state_vtec(void)
 {
     return idle_reaction(&s_vtec_us, MUSE_VTEC_S);
+}
+
+/* Leaves a VTEC reaction running: the renderer shows the warning over it. */
+void muse_state_start_coolant(void)
+{
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_lock);
+    end_drowse_locked(now, false);
+    s_dizzy_us = s_waking_us = s_tickle_us = 0;
+    s_coolant_us = now;
+    s_last_poke_us = now;
+    portEXIT_CRITICAL(&s_lock);
+}
+
+float muse_state_coolant(void)
+{
+    return idle_reaction(&s_coolant_us, MUSE_COOLANT_S);
 }
 #endif

@@ -2013,6 +2013,7 @@ static void frame_tick(lv_timer_t *timer)
         .tickle = muse_state_tickle(),
 #if CONFIG_MUSE_OBD_VTEC
         .vtec = muse_state_vtec(),
+        .coolant = muse_state_coolant(),
 #endif
     };
     if (!muse_board->epaper || mode != s_last_epaper_pose) {

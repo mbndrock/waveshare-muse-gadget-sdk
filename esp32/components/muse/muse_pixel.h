@@ -46,6 +46,8 @@ typedef struct {
     float tickle;    /* tickled on the screen: startle, then squirm and giggle while it lasts, then
                       * catch his breath (MUSE_TICKLE_S; held below MUSE_TICKLE_HOLD while it continues) */
     float vtec;      /* the car hit VTEC (muse_obd.c): excited face, buzzing, a "VTEC!" banner (MUSE_VTEC_S) */
+    float coolant;   /* the car's coolant is too hot (muse_obd.c): worried face, sweat, steam, a "HOT!"
+                      * banner (MUSE_COOLANT_S); outranks vtec */
 } muse_pose_t;
 
 #define MUSE_DIZZY_S 4.0f
@@ -54,6 +56,7 @@ typedef struct {
 #define MUSE_TICKLE_S 3.0f
 #define MUSE_TICKLE_HOLD 0.8f   /* the giggle loop runs from ~0.15 to here while tickling goes on */
 #define MUSE_VTEC_S 3.0f
+#define MUSE_COOLANT_S 4.0f
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */
 uint32_t muse_pixel_accent(muse_mode_t mode);
