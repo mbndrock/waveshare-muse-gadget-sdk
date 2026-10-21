@@ -60,7 +60,8 @@ typedef void (*text_done_cb_t)(const char *text);
 static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
-static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_voice, *s_sleep, *s_battery, *s_power, *s_text;
+static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_display, *s_voice, *s_sleep, *s_battery, *s_power,
+    *s_text;
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -73,8 +74,8 @@ typedef struct {
 } page_t;
 
 /* Home values. */
-static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_pushes, *s_home_ble, *s_home_sound, *s_home_voice, *s_home_sleep,
-    *s_home_battery, *s_about;
+static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_pushes, *s_home_ble, *s_home_sound, *s_home_display, *s_home_voice,
+    *s_home_sleep, *s_home_battery, *s_about;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -96,7 +97,10 @@ static int64_t s_link_reset_armed_us;
 static lv_obj_t *s_ble_sw, *s_ble_status;
 
 /* Sound page. */
-static lv_obj_t *s_spk_sw, *s_vol_val, *s_vol_sl, *s_gain_val, *s_gain_sl, *s_bright_val, *s_bright_sl, *s_mic_bar, *s_mic_val;
+static lv_obj_t *s_spk_sw, *s_vol_val, *s_vol_sl, *s_gain_val, *s_gain_sl, *s_mic_bar, *s_mic_val;
+
+/* Display page. */
+static lv_obj_t *s_bright_val, *s_bright_sl;
 
 /* Voice page. */
 static lv_obj_t *s_voice_checks[MUSE_VOICES_MAX];
@@ -370,7 +374,8 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_voice, &s_sleep, &s_battery, &s_power, &s_text };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_display, &s_voice, &s_sleep, &s_battery, &s_power,
+                                 &s_text };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -1016,17 +1021,6 @@ static void on_gain(lv_event_t *e)
     }
 }
 
-static void on_bright(lv_event_t *e)
-{
-    int v = lv_slider_get_value(s_bright_sl);
-    set_val(s_bright_val, "%d%%", v);
-    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
-        muse_settings_set_brightness(v);
-    } else {
-        muse_ui_preview_brightness(v);
-    }
-}
-
 static void build_sound_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -1051,11 +1045,8 @@ static void build_sound_page(lv_obj_t *tile)
     lv_obj_set_style_anim_duration(s_mic_bar, 80, 0);
     note(list, "Talk at arm's length: the bar should reach green (-30 to -15 dBFS) without going orange.");
 
-    s_bright_sl = slider(list, "Brightness", 10, 100, muse_settings_brightness(), &s_bright_val, on_bright);
-
     set_val(s_vol_val, "%d%%", muse_settings_volume());
     set_val(s_gain_val, "%d dB", muse_settings_mic_gain() / 3 * 3);
-    set_val(s_bright_val, "%d%%", muse_settings_brightness());
 }
 
 static void tick_sound(void)
@@ -1076,6 +1067,27 @@ static void tick_sound(void)
     uint32_t color = db > -12.0f ? COLOR_WARN : (db > -30.0f ? COLOR_OK : COLOR_ACCENT);
     lv_obj_set_style_bg_color(s_mic_bar, lv_color_hex(color), LV_PART_INDICATOR);
     set_val(s_mic_val, "%d dBFS", (int)db);
+}
+
+/* ---------- Display ---------- */
+
+static void on_bright(lv_event_t *e)
+{
+    int v = lv_slider_get_value(s_bright_sl);
+    set_val(s_bright_val, "%d%%", v);
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
+        muse_settings_set_brightness(v);
+    } else {
+        muse_ui_preview_brightness(v);
+    }
+}
+
+static void build_display_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_display = page(tile, "DISPLAY", true, &list);
+    s_bright_sl = slider(list, "Brightness", 10, 100, muse_settings_brightness(), &s_bright_val, on_bright);
+    set_val(s_bright_val, "%d%%", muse_settings_brightness());
 }
 
 /* ---------- Voice ---------- */
@@ -1241,6 +1253,7 @@ static const page_t WIFI = { &s_wifi, build_wifi_page };
 static const page_t HATCH = { &s_hatch, build_hatch_page };
 static const page_t BLE = { &s_ble, build_ble_page };
 static const page_t SOUND = { &s_sound, build_sound_page };
+static const page_t DISPLAY = { &s_display, build_display_page };
 static const page_t VOICE = { &s_voice, build_voice_page };
 static const page_t SLEEP = { &s_sleep, build_sleep_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
@@ -1262,6 +1275,7 @@ static void build_home(lv_obj_t *tile)
     s_home_pushes = switch_row_icon(list, LV_SYMBOL_BELL, "All messages", muse_settings_pushes_on(), on_pushes_sw);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
+    row(list, LV_SYMBOL_IMAGE, "Display", &s_home_display, on_nav, (void *)&DISPLAY);
     /* Only with spoken replies and something to choose between. */
 #if CONFIG_MUSE_HATCH
     if (CONFIG_MUSE_ELEVENLABS_API_KEY[0] && muse_settings_voice_count() > 1) {
@@ -1294,6 +1308,7 @@ static void tick_home(void)
     } else {
         set_text(s_home_sound, "Muted");
     }
+    set_val(s_home_display, "%d%%", muse_settings_brightness());
     if (s_home_voice) {
         set_text(s_home_voice, muse_settings_voice_name(muse_settings_voice()));
     }

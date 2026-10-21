@@ -36,7 +36,7 @@ bool muse_ui_dark(void);
 void muse_ui_show_face(void);
 /* Settings sub-pages turn off the tile swipe so they can use horizontal gestures. */
 void muse_ui_set_swipe_enabled(bool enabled);
-/* Temporarily applies a brightness while a slider is dragged. */
+/* Temporarily applies a brightness while a slider is dragged, from the next frame. */
 void muse_ui_preview_brightness(int pct);
 
 /*

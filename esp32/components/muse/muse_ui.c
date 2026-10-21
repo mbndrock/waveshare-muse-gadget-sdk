@@ -1951,10 +1951,13 @@ void muse_ui_set_swipe_enabled(bool enabled)
     s_next_settings_tick = 0;
 }
 
+/*
+ * The next frame applies it (update_sleep), not the slider's event: a panel
+ * write can wait for the band on the wire, and one per step stalled the drag.
+ */
 void muse_ui_preview_brightness(int pct)
 {
     s_preview_brightness = pct;
-    apply_brightness(pct);
 }
 
 bool muse_ui_image_size(int *w, int *h)
