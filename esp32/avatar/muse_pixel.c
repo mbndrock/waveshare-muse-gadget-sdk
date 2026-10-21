@@ -2,7 +2,7 @@
 //
 // Jollybot is Meta's character and is not covered by the Apache License.
 // The waveshare-muse-gadget-sdk fork adds complementary reactions to it
-// (dizzy, sleepy, waking, tickled: react_setup and what it drives). These additions
+// (dizzy, sleepy, waking, tickled, VTEC: react_setup and what it drives). These additions
 // are NOT covered by the Apache License either; they share the character's
 // status. The fork claims no rights to Jollybot or to these additions,
 // charges nothing for them, and will remove them at Meta's request
@@ -58,6 +58,8 @@ enum {
     C_HP,        /* headphones: light grey shell */
     C_HP_IN,     /* headphones: cushion */
     C_HP_EDGE,   /* headphones: band and outline */
+    C_VTEC,      /* the VTEC banner */
+    C_VTECD,
     C_COUNT,
 };
 
@@ -109,6 +111,8 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_HP] = 0xd8d4cc,
     [C_HP_IN] = 0xa9a49a,
     [C_HP_EDGE] = 0x76736d,
+    [C_VTEC] = 0xff3b30,
+    [C_VTECD] = 0x8c1414,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -958,7 +962,8 @@ static void draw_alert(int x, int y)
 }
 
 /* ---------------------------------------------------------------------------
- * Reactions: dizzy (shaken), sleepy (screen about to sleep), waking, tickled
+ * Reactions: dizzy (shaken), sleepy (screen about to sleep), waking, tickled,
+ * VTEC (the car's engine crossed into VTEC)
  * ------------------------------------------------------------------------- */
 
 static inline float smooth(float e0, float e1, float x)
@@ -1074,7 +1079,49 @@ static void draw_ha(int x, int y)
     stamp(HA, 5, x, y, C_WHITE, C_WHITE);
 }
 
-typedef enum { RE_NONE, RE_DIZZY, RE_SLEEPY, RE_WAKING, RE_TICKLE } react_kind_t;
+/* "VTEC!" in 5-row glyphs, 23 px wide, centred over the head. A drop shadow
+ * gives it depth; it flashes white as it lands, then holds in red. `a` fades
+ * it in and out through the dither (0..1). */
+static void draw_vtec_banner(int y, float a, bool flash)
+{
+    static const char *const V[] = { "#...#", "#...#", "#...#", ".#.#.", "..#.." };
+    static const char *const T[] = { "#####", "..#..", "..#..", "..#..", "..#.." };
+    static const char *const E[] = { "####", "#...", "###.", "#...", "####" };
+    static const char *const C[] = { ".###", "#...", "#...", "#...", ".###" };
+    static const char *const BANG[] = { "#", "#", "#", ".", "#" };
+    static const char *const *const GLYPHS[] = { V, T, E, C, BANG };
+    int x0 = W / 2 - 11;   /* 21..43: one pixel right of the true centre, like the head */
+    for (int pass = 0; pass < 2; pass++) {
+        int x = x0;
+        for (int g = 0; g < 5; g++) {
+            const char *const *rows = GLYPHS[g];
+            int w = (int)strlen(rows[0]);
+            for (int r = 0; r < 5; r++) {
+                for (int c = 0; c < w; c++) {
+                    if (rows[r][c] != '#' || bayer(x + c, y + r) >= a) {
+                        continue;
+                    }
+                    if (pass == 0) {
+                        px(x + c + 1, y + r + 1, C_VTECD);
+                    } else {
+                        px(x + c, y + r, flash ? C_WHITE : C_VTEC);
+                    }
+                }
+            }
+            x += w + 1;
+        }
+    }
+}
+
+/* A big D-shaped grin, 7 wide, opening a row wider on each rev. */
+static void draw_vtec_grin(int x, int y, bool wide)
+{
+    static const char *const G[] = { "#######", ".#ooo#.", "..###.." };
+    static const char *const GW[] = { "#######", "#ooooo#", ".#ooo#.", "..###.." };
+    stamp(wide ? GW : G, wide ? 4 : 3, x - 3, y, C_MOUTH, C_TONGUE);
+}
+
+typedef enum { RE_NONE, RE_DIZZY, RE_SLEEPY, RE_WAKING, RE_TICKLE, RE_VTEC } react_kind_t;
 
 /* Giggling runs on the clock at 3.2 Hz: each "ha" is a bounce, a squish and an open mouth (0..1). */
 #define GIGGLE_HZ 3.2f
@@ -1101,6 +1148,7 @@ typedef struct {
     float dim;          /* palette dimming */
     float gaze;         /* gaze multiplier */
     float blush;        /* cheek strength */
+    float shake;        /* whole-avatar x offset, px */
 } react_t;
 
 static void react_setup(const muse_pose_t *p, react_t *r)
@@ -1114,7 +1162,11 @@ static void react_setup(const muse_pose_t *p, react_t *r)
     if (p->mode != MUSE_MODE_IDLE) {
         return;
     }
-    if (p->dizzy > 0) {
+    if (p->vtec > 0) {
+        r->kind = RE_VTEC;
+        r->p = clampf(p->vtec, 0, 1);
+        r->ts = r->p * MUSE_VTEC_S;
+    } else if (p->dizzy > 0) {
         r->kind = RE_DIZZY;
         r->p = clampf(p->dizzy, 0, 1);
         r->ts = r->p * MUSE_DIZZY_S;
@@ -1224,6 +1276,26 @@ static void react_setup(const muse_pose_t *p, react_t *r)
         r->gaze = smooth(0.9f, 1.0f, d);
         r->glow = 1 + 0.3f * g;
         r->blush = 0.55f + 0.45f * g;
+        break;
+    }
+    case RE_VTEC: {
+        /* Pushed back into the seat, then arms up and buzzing all over like
+         * the engine, then settle. He stays low so the banner clears his head. */
+        float kick = window(d, 0.0f, 0.03f, 0.06f, 0.14f);
+        float on = smooth(0.04f, 0.12f, d) * (1 - smooth(0.82f, 0.94f, d));
+        float rev = 0.5f + 0.5f * sinf(ts * 14.0f);
+        /* The buzz: a pixel right and back every 40 ms, a frame each on the device. */
+        r->shake = on > 0.5f && d < 0.86f ? (float)((int)floorf(ts * 25.0f) & 1) : 0;
+        r->squash = 1 - 0.1f * kick - 0.05f * on;
+        r->bob = 0.8f * on * rev;
+        r->face_dy = 0.5f * kick;
+        r->arm_k = clampf(kick + on, 0, 1);
+        r->arm_dx = -0.5f;
+        r->arm_dy = -11.0f;
+        r->arm_ang = 2.6f + 0.25f * on * sinf(ts * 18.0f);
+        r->gaze = smooth(0.9f, 1.0f, d);
+        r->glow = 1 + 0.6f * on;
+        r->blush = 0.55f + 0.45f * on;
         break;
     }
     default:
@@ -1352,6 +1424,32 @@ static bool react_face(const react_t *r, const avatar_t *j, float eye_y, float e
             } else {
                 draw_mouth(iround(mx), my, MOUTH_SMILE, 0);
             }
+        } else {
+            draw_eye(j->fx + off - eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
+            draw_eye(j->fx + off + eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
+            draw_mouth(iround(mx), my, MOUTH_SMILE, 0);
+        }
+        return true;
+    }
+    case RE_VTEC: {
+        float on = smooth(0.04f, 0.12f, d) * (1 - smooth(0.82f, 0.94f, d));
+        if (d < 0.06f) {
+            /* The jolt: wide-eyed, mouth open. */
+            draw_eye(j->fx + off - eye_dx, eye_y, 1, EYES_WIDE, 0, 0);
+            draw_eye(j->fx + off + eye_dx, eye_y, 1, EYES_WIDE, 0, 0);
+            draw_mouth(iround(mx), my, MOUTH_O, 0);
+        } else if (d < 0.88f) {
+            /* Wide eyes, brows up, a big open grin that pulses with the revs. */
+            draw_eye(j->fx + off - eye_dx, eye_y, 1, EYES_WIDE, 0, 0);
+            draw_eye(j->fx + off + eye_dx, eye_y, 1, EYES_WIDE, 0, 0);
+            int by = ey - 4;
+            px(lx - 2, by + 1, C_BROW); px(lx - 1, by, C_BROW); px(lx, by, C_BROW);
+            px(rx - 1, by, C_BROW); px(rx, by, C_BROW); px(rx + 1, by + 1, C_BROW);
+            draw_vtec_grin(iround(mx), my, on * (0.5f + 0.5f * sinf(ts * 14.0f)) > 0.5f);
+        } else if (d < 0.96f) {
+            draw_eye(j->fx + off - eye_dx, eye_y, 1, EYES_HAPPY, 0, 0);
+            draw_eye(j->fx + off + eye_dx, eye_y, 1, EYES_HAPPY, 0, 0);
+            draw_mouth(iround(mx), my, MOUTH_GRIN, 0);
         } else {
             draw_eye(j->fx + off - eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
             draw_eye(j->fx + off + eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
@@ -1548,7 +1646,7 @@ void muse_pixel_render(const muse_pose_t *p)
     avatar_t j;
     j.a = 16.0f * (1 + breathe) * (2.0f - squash) + level * 0.8f;
     j.b = 23.0f * (1 - breathe) * squash;
-    j.cx = 32.0f + lean;
+    j.cx = 32.0f + lean + re.shake;
     j.cy = 56.5f - j.b + bob * 0.5f - hop;   /* feet stay near the ground */
     j.fa = j.a * 0.66f;
     j.fb = 7.4f * squash;
@@ -1760,6 +1858,12 @@ void muse_pixel_render(const muse_pose_t *p)
         draw_snore(&re, j.cx + re.sway, top);
     } else if (re.kind == RE_TICKLE) {
         draw_giggles(&re, j.cx + re.sway, top);
+    } else if (re.kind == RE_VTEC) {
+        /* Steady while the avatar buzzes, so it stays readable; drops a pixel as it lands. */
+        float a = smooth(0.03f, 0.1f, re.p) * (1 - smooth(0.8f, 0.92f, re.p));
+        if (a > 0) {
+            draw_vtec_banner(re.p < 0.1f ? 1 : 2, a, re.p > 0.06f && re.p < 0.16f);
+        }
     }
 
 }
