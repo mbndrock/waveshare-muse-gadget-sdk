@@ -45,6 +45,15 @@ CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
 # bundle. This verifies the chain up to the GTS root the bundle does have.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 
+# VTEC reaction (components/muse/muse_obd.c): a BLE central to the car's
+# LELink^2 OBD-II adapter, beside Link's peripheral. sdkconfig.muse turns the
+# central and observer roles off for every board; this board only turns them
+# back on, with a second connection for the adapter.
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2
+CONFIG_MUSE_OBD_VTEC=y
+
 # Watchdogs back on (sdkconfig.defaults turns them off): a stuck task or
 # interrupt panics with a backtrace on the console and reboots, instead of
 # leaving the board dead until RST.

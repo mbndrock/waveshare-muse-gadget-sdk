@@ -426,4 +426,17 @@ menu "Muse"
             about half a second at 2 Mb/s, enough for a keyframe and the
             frames behind it.
 
+    config MUSE_OBD_VTEC
+        bool "VTEC reaction from an OBD-II BLE adapter"
+        depends on MUSE_HATCH && BT_NIMBLE_ROLE_CENTRAL && BT_NIMBLE_ROLE_OBSERVER
+        default n
+        help
+            Connects as a BLE central to an ELM327 adapter (a LELink^2,
+            "LELink BLE OBDII", service FFE0) beside Link's own peripheral,
+            polls engine RPM (Mode 01 PID 0C) and, when it crosses 6000 rpm,
+            plays the avatar's VTEC reaction and says "VTEC just kicked in
+            yo!" (muse_hatch_say). Needs the NimBLE central and observer
+            roles and a second connection (BT_NIMBLE_MAX_CONNECTIONS=2); the
+            AMOLED-1.8's overlay turns them on with this.
+
 endmenu
