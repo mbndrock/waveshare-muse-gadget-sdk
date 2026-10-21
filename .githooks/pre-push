@@ -1,0 +1,14 @@
+#!/bin/sh
+# Stops a push whose new commits would publish the SDK token or ElevenLabs key
+# (esp32/tools/muse/check_secrets.py), including ones committed with --no-verify.
+remote="$1"
+check="$(git rev-parse --show-toplevel)/esp32/tools/muse/check_secrets.py"
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$local_sha" in *[!0]*) ;; *) continue ;; esac   # deleting a branch
+    case "$remote_sha" in
+        *[!0]*) range="$remote_sha..$local_sha" ;;
+        *) range="$local_sha --not --remotes=$remote" ;;   # a new branch: what the remote lacks
+    esac
+    python3 "$check" --commits "$range" || exit 1
+done
+exit 0
