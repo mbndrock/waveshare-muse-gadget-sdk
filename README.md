@@ -10,6 +10,8 @@
 
 This is a fork of `facebookincubator/muse-gadget-sdk` that adds three Waveshare boards to the ESP32 Device SDK, plus a few features the upstream firmware doesn't have yet: spoken replies, replies you didn't ask for (pushes), touch volume and battery level on boards without a power chip.
 
+> **This fork** is maintained by [Derek Ngo](https://github.com/mbndrock) and builds on [David Ruiz's fork](https://github.com/wupsbr/waveshare-muse-gadget-sdk) above. Its own additions, marked **This fork** in the table below: an **on-device ElevenLabs voice switcher** (Settings › Voice), **replies that start speaking sentence by sentence** instead of waiting for the full text, and **git hooks that block commits and pushes which would publish your SDK token or API keys**.
+
 | | Waveshare ESP32-S3-Touch-LCD-1.85C | Waveshare ESP32-S3-Touch-AMOLED-1.43C | Waveshare ESP32-S3-Touch-AMOLED-1.8 |
 |---|---|---|---|
 | Screen | 1.85" round LCD, 360×360, ST77916 (QSPI) | 1.43" round AMOLED, 466×466, SH8601 (QSPI) | 1.8" AMOLED, 368×448, SH8601 or CO5300 (QSPI) |
@@ -29,6 +31,9 @@ The short version is below; [`docs/CHANGES-FROM-UPSTREAM.md`](docs/CHANGES-FROM-
 | Feature | What it does | Where |
 |---|---|---|
 | 🗣️ **Spoken replies** | Every reply is read aloud through the speaker with [ElevenLabs](https://elevenlabs.io) streaming TTS, captions following the speech. Audio starts ~1 s after the text arrives. Without a key, replies stay text. | `components/muse/muse_chat_session.cpp` (`start_tts`, `tts_fetch`), `Kconfig` |
+| 🎙️ **Voice switcher** (**This fork**) | Pick the ElevenLabs voice on the device itself, in **Settings › Voice**. List up to 8 voices in `secrets/elevenlabs_voices` (`Name=voice_id` per line); tapping one previews it ("Hi, I'm …") and saves the choice in NVS, so it survives reboots and reflashes. The row appears when an ElevenLabs key and two or more voices are set; without the file the device keeps the single configured voice. | `components/muse/muse_voices.c`, `muse_settings_ui.c`, `tools/muse/secrets.py` |
+| ⚡ **Replies spoken sooner** (**This fork**) | A reply no longer waits to be complete before it is spoken. Once a sentence of 30+ bytes has arrived it goes to ElevenLabs, and the rest follows a piece at a time, each piece carrying what was already said as context. First audio lands about 1 s after Muse's first text. | `components/muse/muse_chat_session.cpp` (`tts_pump`, `muse_hatch_speech_cut`) |
+| 🛡️ **Secrets hooks** (**This fork**) | Optional `pre-commit` / `pre-push` git hooks scan outgoing changes for the real SDK token and ElevenLabs key (whole or in part) and for token-shaped strings, and block the commit or push before anything leaks. They report where, never what. Enable once per clone: `git config core.hooksPath .githooks`. | `.githooks/`, `tools/muse/check_secrets.py` |
 | 📬 **All messages** | Optional, **off by default** (Settings › All messages). When on, Muse messages that arrive with no question pending — Muse writing first, or replying to something you typed in the app in the same conversation — wake the screen and are shown and spoken, and the session stays connected so they keep arriving. Off saves battery. | `muse_chat_session.cpp` (`push_begin`), `muse_voice.c` (`play_push`) |
 | 🔊 **Touch volume** | Drag up or down on the avatar screen to change the volume; a cyan ring on the edge shows the level and fades after 2 s. Horizontal swipes still open settings. | `components/muse/muse_ui.c` (`volume_drag`) |
 | 🔋 **Battery** | Settings › Battery shows just the **percentage** and an estimate of the **time left** at the current drain. The 1.85C and 1.43C read it through the ADC (they have no power chip). | `boards/board_waveshare_s3_185c.c`, `boards/board_waveshare_s3_143c.c` |
@@ -95,7 +100,7 @@ git clone -b v6.0.1 --recursive https://github.com/espressif/esp-idf.git ~/esp/e
 **2. Add your secrets** (see [`secrets/README.md`](secrets/README.md)):
 
 ```sh
-git clone https://github.com/wupsbr/waveshare-muse-gadget-sdk && cd waveshare-muse-gadget-sdk
+git clone https://github.com/mbndrock/waveshare-muse-gadget-sdk && cd waveshare-muse-gadget-sdk
 cp secrets/muse_sdk_token.example secrets/muse_sdk_token            # paste your mgst_… token
 cp secrets/elevenlabs_api_key.example secrets/elevenlabs_api_key    # optional: spoken replies
 chmod 600 secrets/*
@@ -120,7 +125,7 @@ tools/muse/board.sh flash s185c
 This repo is set up for [Claude Code](https://claude.com/claude-code). [`CLAUDE.md`](CLAUDE.md) gives it the boards, the build and flash flow, how to read logs without resetting the board, the hardware traps and, above all, the rules that keep your token and keys out of chat, logs and git. The **`flash-muse-board`** skill (`.claude/skills/`) does the whole flash: it finds the board, backs it up, identifies the model, builds, flashes and checks the boot log.
 
 ```sh
-git clone https://github.com/wupsbr/waveshare-muse-gadget-sdk && cd waveshare-muse-gadget-sdk
+git clone https://github.com/mbndrock/waveshare-muse-gadget-sdk && cd waveshare-muse-gadget-sdk
 cp secrets/muse_sdk_token.example secrets/muse_sdk_token    # paste your token yourself, not in the chat
 claude
 ```
@@ -192,8 +197,14 @@ git fetch upstream && git merge upstream/main
 
 Building something with Muse gadgets, or got one of these boards talking? Let's keep in touch: [linkedin.com/in/wupsbr](https://www.linkedin.com/in/wupsbr/). Issues and pull requests are welcome.
 
+## Maintainer of this fork
+
+**Derek Ngo** — [github.com/mbndrock](https://github.com/mbndrock)
+
+Derek maintains this fork; its additions (the voice switcher, sooner speech and the secrets hooks) were built with Claude Code. Questions about this fork: open an issue in this repo. Questions about the Waveshare port itself belong with David's original fork above.
+
 ## License and credits
 
-Apache License 2.0, like upstream — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Built on [facebookincubator/muse-gadget-sdk](https://github.com/facebookincubator/muse-gadget-sdk) by Meta. Board details come from Waveshare's examples and schematics; panel and codec drivers from Espressif's component registry. The display-freeze fix is from upstream PR #34 by @toddsherman. Not affiliated with Meta, Waveshare or ElevenLabs.
+Apache License 2.0, like upstream — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Built on [facebookincubator/muse-gadget-sdk](https://github.com/facebookincubator/muse-gadget-sdk) by Meta. Board details come from Waveshare's examples and schematics; panel and codec drivers from Espressif's component registry. The display-freeze fix is from upstream PR #34 by @toddsherman. Not affiliated with Meta, Waveshare or ElevenLabs. This fork's own changes are the rows marked **This fork** in [What's new compared to upstream](#whats-new-compared-to-upstream).
 
 > Built by hackers, for hackers, just for fun. Flashing custom firmware can brick boards and void warranties. Proceed at your own risk!
