@@ -19,6 +19,14 @@ generated `sdkconfig` through `esp32/tools/muse/secrets.py`. Environment
 variables (`MUSE_SDK_TOKEN`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`) win
 over the files, which suits CI.
 
+A git hook refuses commits and pushes that contain these secrets, whole or in
+part, or files from here other than this README and the templates. Turn it on
+once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 Both secrets end up inside the firmware image. Treat a flashed board and its
 `build-*/` directory as carrying them: never publish either. If a key leaks,
 revoke it and build again.

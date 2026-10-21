@@ -26,6 +26,10 @@ contract and conventions: @esp32/AGENTS.md. Adding a board: @esp32/devices/AGENT
      upstream/main..HEAD` for the real values (whole and in pieces) and for
      `mgst_[A-Za-z0-9]{12,}` / `sk_[a-f0-9]{24,}`. The only expected hit is the
      fake `mgst_AAAA…` in `esp32/tests/link_pairing_handshake_harness.c`.
+   - `.githooks/` runs that scan on every commit and push
+     (`esp32/tools/muse/check_secrets.py`). Turn it on once per clone with
+     `git config core.hooksPath .githooks`; never bypass it with `--no-verify`
+     to get a secret through.
 2. **Back up before the first flash.** `python -m esptool -p PORT read-flash 0
    0x1000000 backup/<board>-<mac>-factory.bin` (0x800000 for 8 MB parts).
    `backup/` is not in this repo; keep dumps out of git (vendor firmware).

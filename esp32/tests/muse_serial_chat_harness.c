@@ -19,7 +19,10 @@
  *   console    stdin is a reply's text: prints the lines a typed turn sends for it
  *   unescape   stdin is console lines: prints each unescaped, as "<length>:<bytes>"
  *   caption C  stdin is a reply's text: prints it wrapped to C columns, as the
- *              screen pages it (test_muse_caption_wrap.py) */
+ *              screen pages it (test_muse_caption_wrap.py)
+ *   speech M S stdin is a reply's text, arriving S bytes at a time: prints the
+ *              pieces it's spoken in, the first at least M bytes, each ended
+ *              by \x1f (test_muse_speech_pieces.py) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,8 +96,20 @@ int main(int argc, char **argv)
         if (muse_hatch_caption_at(in, 0, page, sizeof(page))) {
             fputs(page, stdout);
         }
+    } else if (argc > 3 && !strcmp(argv[1], "speech")) {
+        size_t min = (size_t)atoi(argv[2]), step = (size_t)atoi(argv[3]), spoken = 0;
+        for (size_t have = step; have < len + step; have += step) {
+            bool done = have >= len;
+            size_t n = done ? len : have;
+            size_t cut = muse_hatch_speech_cut(in, spoken, n, done, spoken ? 1 : min);
+            if (cut) {
+                fwrite(in + spoken, 1, cut - spoken, stdout);
+                fputc('\x1f', stdout);
+                spoken = cut;
+            }
+        }
     } else {
-        fprintf(stderr, "usage: %s console|unescape|caption COLS < input\n", argv[0]);
+        fprintf(stderr, "usage: %s console|unescape|caption COLS|speech MIN STEP < input\n", argv[0]);
         return 2;
     }
     free(in);

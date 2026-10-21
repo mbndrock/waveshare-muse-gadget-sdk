@@ -139,6 +139,10 @@ size_t muse_hatch_turn_audio_wait(const int16_t *pcm, size_t frames, int wait_ms
 void muse_hatch_text_turn(char *text);
 void muse_hatch_text_cancel(void);
 
+/* Speaks `text` in the chosen voice when idle, like a push (ElevenLabs only;
+ * CONFIG_MUSE_HATCH only). Busy, it says nothing. */
+void muse_hatch_say(const char *text);
+
 /*
  * Prints one "@chat" line per call (more if `text` is long): the type, then the
  * printf-style `fields` (JSON members, or NULL), then `text` escaped (or none).

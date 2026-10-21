@@ -22,6 +22,8 @@
 
 #include "esp_err.h"
 
+#include "muse_voices.h"
+
 /*
  * User settings, persisted in NVS. Setters save immediately and then notify the
  * change listener (from the caller's task), which applies the setting to the
@@ -46,6 +48,7 @@ typedef enum {
     MUSE_SETTING_BLE,
     MUSE_SETTING_HATCH,
     MUSE_SETTING_PUSHES,
+    MUSE_SETTING_VOICE,
 } muse_setting_t;
 
 typedef void (*muse_setting_cb_t)(muse_setting_t what);
@@ -61,6 +64,11 @@ int muse_settings_brightness(void);     /* 10..100 */
 int muse_settings_sleep_s(void);        /* 0 = never */
 bool muse_settings_wifi_on(void);
 bool muse_settings_ble_on(void);
+/* The ElevenLabs voices to choose from (muse_voices.h); 0 without a voice ID. */
+int muse_settings_voice_count(void);
+const char *muse_settings_voice_name(int i);   /* NULL past the end */
+int muse_settings_voice(void);                 /* the chosen one's index */
+const char *muse_settings_voice_id(void);      /* the chosen one's ID, "" if none */
 
 void muse_settings_wifi(char ssid[MUSE_SSID_MAX + 1], char pass[MUSE_PASS_MAX + 1]);
 void muse_settings_hatch_host(char out[MUSE_HOST_MAX + 1]);
@@ -76,6 +84,7 @@ void muse_settings_set_brightness(int pct);
 void muse_settings_set_sleep_s(int secs);
 void muse_settings_set_wifi_on(bool on);
 void muse_settings_set_ble_on(bool on);
+void muse_settings_set_voice(int i);
 /* A network name is remembered first among the saved ones and joined now;
  * an empty ssid forgets every saved network. */
 void muse_settings_set_wifi(const char *ssid, const char *pass);

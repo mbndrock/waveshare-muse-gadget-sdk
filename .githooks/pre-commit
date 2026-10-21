@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stops a commit that would publish the SDK token or ElevenLabs key
+# (esp32/tools/muse/check_secrets.py). On once per clone:
+#   git config core.hooksPath .githooks
+exec python3 "$(git rev-parse --show-toplevel)/esp32/tools/muse/check_secrets.py" --staged

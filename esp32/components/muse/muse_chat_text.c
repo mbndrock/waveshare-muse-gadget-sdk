@@ -186,6 +186,50 @@ bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap)
 /* ---- Typed turns on the serial console ---- */
 
 /* JSON-escapes whole characters of *src into out, up to cap - 1 bytes; moves *src past them. */
+/* Bytes of the sentence end at text[i] (with what follows it), else 0. */
+static size_t sentence_end(const char *text, size_t i, size_t len)
+{
+    static const char *const CJK[] = { "\xe3\x80\x82", "\xef\xbc\x81", "\xef\xbc\x9f" };   /* 。！？ */
+    char c = text[i];
+    if (c == '\n') {
+        return 1;
+    }
+    /* A full stop needs the space after it, so "3.5" and "e.g" stay whole. */
+    if ((c == '.' || c == '!' || c == '?') && i + 1 < len && (text[i + 1] == ' ' || text[i + 1] == '\n')) {
+        return 1;
+    }
+    for (size_t k = 0; k < sizeof(CJK) / sizeof(CJK[0]); k++) {
+        if (i + 3 <= len && !memcmp(text + i, CJK[k], 3)) {
+            return 3;
+        }
+    }
+    return 0;
+}
+
+size_t muse_hatch_speech_cut(const char *text, size_t from, size_t len, bool done, size_t min)
+{
+    if (from >= len) {
+        return 0;
+    }
+    if (done) {
+        return len;
+    }
+    size_t cut = 0, space = 0;
+    for (size_t i = from; i < len; i++) {
+        size_t n = sentence_end(text, i, len);
+        if (n && i + n - from >= min) {
+            cut = i + n;
+        }
+        if (text[i] == ' ') {
+            space = i + 1;
+        }
+    }
+    if (!cut && len - from >= MUSE_HATCH_SPEECH_RUN && space > from) {
+        cut = space;
+    }
+    return cut;
+}
+
 static size_t escape_some(const char **src, char *out, size_t cap)
 {
     const unsigned char *p = (const unsigned char *)*src;

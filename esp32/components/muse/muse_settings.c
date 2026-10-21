@@ -31,6 +31,14 @@ static const char *TAG = "muse_settings";
 #define NS "muse"
 #define DEFAULT_HOST "hatch.metaaivm.com"
 
+#if CONFIG_MUSE_HATCH
+#define VOICES CONFIG_MUSE_ELEVENLABS_VOICES
+#define DEFAULT_VOICE CONFIG_MUSE_ELEVENLABS_VOICE_ID
+#else
+#define VOICES ""
+#define DEFAULT_VOICE ""
+#endif
+
 static struct {
     uint8_t volume;
     bool speaker_on;
@@ -45,6 +53,7 @@ static struct {
     char host[MUSE_HOST_MAX + 1];
     char vm[MUSE_VM_MAX + 1];
     char token[MUSE_TOKEN_MAX + 1];
+    int voice;
 } s = {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
@@ -54,6 +63,10 @@ static struct {
     .wifi_on = true,
     .host = DEFAULT_HOST,
 };
+
+/* Fixed once loaded, so other tasks read them unlocked. */
+static muse_voice_t s_voices[MUSE_VOICES_MAX];
+static int s_nvoices;
 
 static SemaphoreHandle_t s_lock;
 static nvs_handle_t s_nvs;
@@ -88,6 +101,36 @@ static void save_str(const char *key, const char *v)
 {
     nvs_set_str(s_nvs, key, v);
     nvs_commit(s_nvs);
+}
+
+static int find_voice(const char *id)
+{
+    for (int i = 0; i < s_nvoices; i++) {
+        if (!strcmp(s_voices[i].id, id)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* The list, else the one voice ID; the saved choice, else that ID, else the first. */
+static void load_voices(void)
+{
+    s_nvoices = muse_voices_parse(VOICES, s_voices, MUSE_VOICES_MAX);
+    if (!s_nvoices && DEFAULT_VOICE[0]) {
+        strlcpy(s_voices[0].name, "Default", sizeof(s_voices[0].name));
+        strlcpy(s_voices[0].id, DEFAULT_VOICE, sizeof(s_voices[0].id));
+        s_nvoices = 1;
+    }
+    char id[MUSE_VOICE_ID_MAX + 1] = "";
+    load_str("voice", id, sizeof(id));
+    s.voice = find_voice(id);
+    if (s.voice < 0) {
+        s.voice = find_voice(DEFAULT_VOICE);
+    }
+    if (s.voice < 0) {
+        s.voice = 0;
+    }
 }
 
 static void notify(muse_setting_t what)
@@ -136,11 +179,15 @@ esp_err_t muse_settings_init(void)
     load_str("host", s.host, sizeof(s.host));
     load_str("vm", s.vm, sizeof(s.vm));
     load_str("token", s.token, sizeof(s.token));
+    load_voices();
 
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
     s.brightness = clampi(s.brightness, 10, 100);
     ESP_LOGI(TAG, "all messages %s", s.pushes_on ? "on" : "off");
+    if (s_nvoices) {
+        ESP_LOGI(TAG, "voice %s (%d of %d)", s_voices[s.voice].name, s.voice + 1, s_nvoices);
+    }
     ESP_LOGI(TAG, "vol %d%s, mic %d dB, bright %d, sleep %ds, wifi %s (%s), ble %s, muse %s",
              s.volume, s.speaker_on ? "" : " (speaker off)", s.mic_gain, s.brightness, s.sleep_s, s.wifi_on ? "on" : "off",
              "network saved by Link", s.ble_on ? "on" : "off", s.token[0] ? "token set" : "no token");
@@ -160,6 +207,18 @@ int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
 bool muse_settings_wifi_on(void) { return s.wifi_on; }
 bool muse_settings_ble_on(void) { return s.ble_on; }
+int muse_settings_voice_count(void) { return s_nvoices; }
+int muse_settings_voice(void) { return s.voice; }
+
+const char *muse_settings_voice_name(int i)
+{
+    return i >= 0 && i < s_nvoices ? s_voices[i].name : NULL;
+}
+
+const char *muse_settings_voice_id(void)
+{
+    return s_nvoices ? s_voices[s.voice].id : "";
+}
 
 /* Home Link owns the saved networks (this is the first); the local copy is only a fallback. */
 void muse_settings_wifi(char ssid[MUSE_SSID_MAX + 1], char pass[MUSE_PASS_MAX + 1])
@@ -252,6 +311,17 @@ void muse_settings_set_ble_on(bool on)
     s.ble_on = on;
     save_u8("ble_on", on);
     notify(MUSE_SETTING_BLE);
+}
+
+void muse_settings_set_voice(int i)
+{
+    if (i < 0 || i >= s_nvoices) {
+        return;
+    }
+    s.voice = i;
+    save_str("voice", s_voices[i].id);
+    ESP_LOGI(TAG, "voice %s", s_voices[i].name);
+    notify(MUSE_SETTING_VOICE);
 }
 
 void muse_settings_set_wifi(const char *ssid, const char *pass)
