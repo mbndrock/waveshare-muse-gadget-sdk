@@ -885,20 +885,20 @@ static void draw_laptop(const muse_pose_t *p, float cx, float base, float t)
 
 /* Headphones, after the Muse app's working pose: a plain grey band hugging the
  * hood, and large soft over-ear cups in pale grey with a darker cushion oval.
- * The cups sit on the sides of the head, centred just outside the face
- * panel's edge (fx +/- (fa + 1)), overlapping the hood the way ears sit,
- * instead of hanging outside the head outline beside the face. */
+ * The cups sit on the sides of the head at ear height, centred on the
+ * head's edge (fx +/- a), so half of each cup sticks out past the head
+ * outline the way worn headphones do, instead of hanging down beside
+ * the face. */
 static void draw_headphones(const avatar_t *j, float eye_y)
 {
-    int cup_y = iround(eye_y + 3);
+    int cup_y = iround(eye_y + 2);
     for (int side = 0; side < 2; side++) {
         float sgn = side ? 1.0f : -1.0f;
-        int cup_x = iround(j->fx + sgn * (j->fa + 1));
+        int cup_x = iround(j->fx + sgn * j->a);
 
         /* Band: two close arcs over the crown and down the hood. The arc
          * ellipse is sized so the arcs end on the top outer corner of the
-         * cup, now that the cups sit further in. No accent colour: the app's
-         * headphones are plain warm grey. */
+         * cup. No accent colour: the app's headphones are plain warm grey. */
         float ry = j->b + 1;
         float cos_end = (j->cy - (float)(cup_y - 5)) / ry;
         if (cos_end > 1.0f) {
