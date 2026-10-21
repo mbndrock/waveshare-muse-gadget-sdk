@@ -2011,6 +2011,9 @@ static void frame_tick(lv_timer_t *timer)
         .sleepy = muse_state_sleepy(),
         .waking = muse_state_waking(),
         .tickle = muse_state_tickle(),
+#if CONFIG_MUSE_OBD_VTEC
+        .vtec = muse_state_vtec(),
+#endif
     };
     if (!muse_board->epaper || mode != s_last_epaper_pose) {
         muse_pixel_render(&pose);

@@ -131,3 +131,11 @@ float muse_state_waking(void);
 bool muse_state_start_tickle(void);
 bool muse_state_tickle_hold(void);
 float muse_state_tickle(void);
+
+/*
+ * VTEC: the car's engine crossed into VTEC (muse_obd.c, MUSE_VTEC_S). Shown
+ * only while idle. Starting it pokes and ends drowsing quietly. Built only
+ * with CONFIG_MUSE_OBD_VTEC.
+ */
+void muse_state_start_vtec(void);
+float muse_state_vtec(void);
