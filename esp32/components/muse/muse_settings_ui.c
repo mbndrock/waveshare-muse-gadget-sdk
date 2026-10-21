@@ -60,7 +60,7 @@ typedef void (*text_done_cb_t)(const char *text);
 static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
-static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
+static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_voice, *s_sleep, *s_battery, *s_power, *s_text;
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -73,7 +73,8 @@ typedef struct {
 } page_t;
 
 /* Home values. */
-static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_pushes, *s_home_ble, *s_home_sound, *s_home_sleep, *s_home_battery, *s_about;
+static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_pushes, *s_home_ble, *s_home_sound, *s_home_voice, *s_home_sleep,
+    *s_home_battery, *s_about;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -96,6 +97,9 @@ static lv_obj_t *s_ble_sw, *s_ble_status;
 
 /* Sound page. */
 static lv_obj_t *s_spk_sw, *s_vol_val, *s_vol_sl, *s_gain_val, *s_gain_sl, *s_bright_val, *s_bright_sl, *s_mic_bar, *s_mic_val;
+
+/* Voice page. */
+static lv_obj_t *s_voice_checks[MUSE_VOICES_MAX];
 
 /* Sleep page. */
 static const int SLEEP_CHOICES[] = { 0, 30, 60, 120, 300, 600 };
@@ -366,7 +370,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_voice, &s_sleep, &s_battery, &s_power, &s_text };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -1074,6 +1078,43 @@ static void tick_sound(void)
     set_val(s_mic_val, "%d dBFS", (int)db);
 }
 
+/* ---------- Voice ---------- */
+
+/*
+ * The ElevenLabs voices from secrets/elevenlabs_voices. Choosing one has it
+ * say hello, so you hear it at once; replies use it from the next one on.
+ */
+static void on_voice_choice(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    muse_settings_set_voice(i);
+#if CONFIG_MUSE_HATCH
+    char line[64];
+    snprintf(line, sizeof(line), "Hi, I'm %s.", muse_settings_voice_name(i));
+    muse_hatch_say(line);
+#endif
+}
+
+static void build_voice_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_voice = page(tile, "VOICE", true, &list);
+    note(list, "Muse speaks its replies in:");
+    for (int i = 0; i < muse_settings_voice_count(); i++) {
+        row(list, NULL, muse_settings_voice_name(i), &s_voice_checks[i], on_voice_choice, (void *)(intptr_t)i);
+        lv_obj_set_style_text_color(s_voice_checks[i], lv_color_hex(COLOR_ACCENT), 0);
+    }
+    note(list, "Tap one to hear it. Add voices in secrets/elevenlabs_voices and flash again.");
+}
+
+static void tick_voice(void)
+{
+    int cur = muse_settings_voice();
+    for (int i = 0; i < muse_settings_voice_count(); i++) {
+        set_text(s_voice_checks[i], i == cur ? LV_SYMBOL_OK : "");
+    }
+}
+
 /* ---------- Sleep ---------- */
 
 static void on_sleep_choice(lv_event_t *e)
@@ -1200,6 +1241,7 @@ static const page_t WIFI = { &s_wifi, build_wifi_page };
 static const page_t HATCH = { &s_hatch, build_hatch_page };
 static const page_t BLE = { &s_ble, build_ble_page };
 static const page_t SOUND = { &s_sound, build_sound_page };
+static const page_t VOICE = { &s_voice, build_voice_page };
 static const page_t SLEEP = { &s_sleep, build_sleep_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
@@ -1220,6 +1262,12 @@ static void build_home(lv_obj_t *tile)
     s_home_pushes = switch_row_icon(list, LV_SYMBOL_BELL, "All messages", muse_settings_pushes_on(), on_pushes_sw);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
+    /* Only with spoken replies and something to choose between. */
+#if CONFIG_MUSE_HATCH
+    if (CONFIG_MUSE_ELEVENLABS_API_KEY[0] && muse_settings_voice_count() > 1) {
+        row(list, LV_SYMBOL_AUDIO, "Voice", &s_home_voice, on_nav, (void *)&VOICE);
+    }
+#endif
     row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
@@ -1245,6 +1293,9 @@ static void tick_home(void)
         set_val(s_home_sound, "Vol %d%%", muse_settings_volume());
     } else {
         set_text(s_home_sound, "Muted");
+    }
+    if (s_home_voice) {
+        set_text(s_home_voice, muse_settings_voice_name(muse_settings_voice()));
     }
     set_text(s_home_sleep, sleep_name(muse_settings_sleep_s()));
     bool pushes = muse_settings_pushes_on();
@@ -1299,6 +1350,8 @@ void muse_settings_ui_tick(bool visible)
         tick_ble();
     } else if (s_current == s_sound) {
         tick_sound();
+    } else if (s_current == s_voice) {
+        tick_voice();
     } else if (s_current == s_sleep) {
         tick_sleep();
     } else if (s_current == s_battery) {

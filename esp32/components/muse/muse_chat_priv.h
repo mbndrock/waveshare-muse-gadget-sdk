@@ -85,6 +85,17 @@ size_t muse_hatch_base64(const uint8_t *in, size_t n, char *out);
 void muse_hatch_tail_words(const char *src, char *out, size_t cap);
 bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap);
 
+/*
+ * Speech text (muse_chat_text.c): where the next piece of a reply to speak
+ * ends, given its first `len` bytes so far and the `from` already spoken. It
+ * ends after the last sentence end that leaves at least `min` bytes, so the
+ * speech can start before the whole reply is in, or after the last space of
+ * a run of MUSE_HATCH_SPEECH_RUN bytes without one. 0: wait for more text.
+ * Once the reply is `done`, the rest of it.
+ */
+#define MUSE_HATCH_SPEECH_RUN 160
+size_t muse_hatch_speech_cut(const char *text, size_t from, size_t len, bool done, size_t min);
+
 #ifdef __cplusplus
 }
 #endif

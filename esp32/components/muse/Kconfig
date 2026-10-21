@@ -206,6 +206,17 @@ menu "Muse"
             Any voice in the account's library. The default is the premade
             "Sarah".
 
+    config MUSE_ELEVENLABS_VOICES
+        string "ElevenLabs voices to choose from"
+        depends on MUSE_HATCH
+        default ""
+        help
+            "Name=voice_id;Name=voice_id", up to 8. With two or more,
+            Settings > Voice lists them; the choice is saved on the device and
+            starts as MUSE_ELEVENLABS_VOICE_ID if that's one of them.
+            tools/muse/secrets.py fills it from secrets/elevenlabs_voices.
+            Empty: MUSE_ELEVENLABS_VOICE_ID is the only voice.
+
     config MUSE_ELEVENLABS_MODEL
         string "ElevenLabs model"
         depends on MUSE_HATCH
