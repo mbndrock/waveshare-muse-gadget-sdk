@@ -345,8 +345,9 @@ static float eyes_update(const muse_pose_t *p, float dt)
         tgy = 0.1f;
         break;
     case MUSE_MODE_THINKING:
-        tgx = 0.75f * sinf(p->mode_t * 1.3f) + 0.25f;
-        tgy = -0.85f;
+        // Eyes down on the laptop screen, scanning gently across it.
+        tgx = 0.3f * sinf(p->mode_t * 0.9f);
+        tgy = 0.85f;
         break;
     case MUSE_MODE_SPEAKING:
         tgx *= 0.3f;
