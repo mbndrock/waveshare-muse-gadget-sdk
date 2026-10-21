@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-/* The OBD VTEC reaction's ELM327 parser and trigger (muse_obd_elm.c), fed the
- * way the LELink^2 adapter's FFE1 notifications cut its replies. */
+/* The OBD reactions' ELM327 parser and triggers (muse_obd_elm.c: VTEC on RPM,
+ * the coolant warning on PID 05), fed the way the LELink^2 adapter's FFE1
+ * notifications cut its replies. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -194,6 +195,179 @@ static void test_trigger(void)
     CHECK(muse_vtec_update(&t, 6000, 0x00008000u));    /* ~36 s later */
 }
 
+static void test_coolant_frames(void)
+{
+    /* The poll loop's mix: three 010C, then a 0105, cut anywhere. Coolant is
+     * A - 40: 0x91 is 105 C, 0x3C a cold 20 C, 0x00 the bottom (-40), 0xFF the
+     * top (215). */
+    static const char stream[] =
+        "SEARCHING...\r41 05 3C \r\r>"      /* cold start: 20 C */
+        "41 0C 0B B8 \r\r>"
+        "\x00" "41 05 91\r\r>"              /* 105 C, after a NUL */
+        "410591\r\r>"                       /* ATS0 form */
+        "41 05 8c\r\r>"                     /* lower case: 0x8C = 100 C */
+        "41 05 00\r\r>"
+        "41 05 FF\r\r>";
+    static const int want[] = { 20, -1, 105, 105, 100, -40, 215 };
+    for (size_t chunk = 1; chunk <= 24; chunk++) {
+        muse_elm_rx_t rx;
+        muse_elm_rx_reset(&rx);
+        char out[8][MUSE_ELM_RESP_MAX];
+        int n = feed_chunks(&rx, stream, sizeof(stream) - 1, chunk, out, 8);
+        CHECK(n == 7);
+        for (int i = 0; i < n && i < 7; i++) {
+            int c = -99, rpm = -1;
+            if (want[i] == -1) {
+                /* The RPM reply isn't a coolant reading, and vice versa. */
+                CHECK(muse_elm_parse_coolant(out[i], &c) == MUSE_ELM_NONE && c == -99);
+                CHECK(muse_elm_parse_rpm(out[i], &rpm) == MUSE_ELM_RPM && rpm == 750);
+            } else {
+                CHECK(muse_elm_parse_coolant(out[i], &c) == MUSE_ELM_COOLANT);
+                CHECK(c == want[i]);
+                CHECK(muse_elm_parse_rpm(out[i], &rpm) == MUSE_ELM_NONE && rpm == -1);
+            }
+        }
+    }
+}
+
+static void test_coolant_parse_cases(void)
+{
+    int c = -99;
+    CHECK(muse_elm_parse_coolant("41 05 91\n", &c) == MUSE_ELM_COOLANT && c == 105);
+    CHECK(muse_elm_parse_coolant("41 05 3C\n", &c) == MUSE_ELM_COOLANT && c == 20);
+    CHECK(muse_elm_parse_coolant("4 1 0 5 9 1\n", &c) == MUSE_ELM_COOLANT && c == 105);   /* odd spacing */
+    c = -99;
+    CHECK(muse_elm_parse_coolant("NO DATA\n\n", &c) == MUSE_ELM_NO_DATA);
+    CHECK(muse_elm_parse_coolant("SEARCHING...\nNO DATA\n", &c) == MUSE_ELM_NO_DATA);
+    CHECK(muse_elm_parse_coolant("?\n", &c) == MUSE_ELM_ERROR);
+    CHECK(muse_elm_parse_coolant("SEARCHING...\nUNABLE TO CONNECT\n", &c) == MUSE_ELM_ERROR);
+    CHECK(muse_elm_parse_coolant("BUS INIT: ...ERROR\n", &c) == MUSE_ELM_ERROR);
+    CHECK(muse_elm_parse_coolant("STOPPED\n", &c) == MUSE_ELM_ERROR);
+    CHECK(muse_elm_parse_coolant("OK\n", &c) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_coolant("", &c) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_coolant("0105\n", &c) == MUSE_ELM_NONE);              /* an echo */
+    CHECK(muse_elm_parse_coolant("41 05\n", &c) == MUSE_ELM_NONE);             /* cut short */
+    CHECK(muse_elm_parse_coolant("41 05 9\n", &c) == MUSE_ELM_NONE);           /* half a byte */
+    CHECK(muse_elm_parse_coolant("41 0D 91\n", &c) == MUSE_ELM_NONE);          /* another PID */
+    CHECK(muse_elm_parse_coolant("41 0C 1A F8\n", &c) == MUSE_ELM_NONE);       /* RPM */
+    CHECK(muse_elm_parse_coolant("7E8 03 41 05 91\n", &c) == MUSE_ELM_NONE);   /* headers: not ours */
+    CHECK(muse_elm_parse_coolant("41 05 G1\n", &c) == MUSE_ELM_NONE);
+    CHECK(c == -99);
+    /* The echo, then the answer; two ECUs: the first wins; a frame beats NO DATA. */
+    CHECK(muse_elm_parse_coolant("0105\n41 05 7B\n", &c) == MUSE_ELM_COOLANT && c == 83);
+    CHECK(muse_elm_parse_coolant("41 05 91\n41 05 3C\n", &c) == MUSE_ELM_COOLANT && c == 105);
+    CHECK(muse_elm_parse_coolant("NO DATA\n41 05 92\n", &c) == MUSE_ELM_COOLANT && c == 106);
+    /* Trailing bytes from a clone are ignored, as for RPM. */
+    CHECK(muse_elm_parse_coolant("41 05 91 00 00\n", &c) == MUSE_ELM_COOLANT && c == 105);
+}
+
+static void test_coolant_trigger(void)
+{
+    muse_coolant_trigger_t t;
+    muse_coolant_init(&t);
+    uint32_t ms = 1000;
+    const int run = 2500;
+
+    /* Normal running, then it climbs: 105 C must hold for 5 s. */
+    CHECK(!muse_coolant_update(&t, 88, run, ms += 1000));
+    CHECK(!muse_coolant_update(&t, 104, run, ms += 1000));
+    CHECK(!muse_coolant_update(&t, 105, run, ms += 1000));
+    uint32_t hot_at = ms;
+    CHECK(!muse_coolant_update(&t, 107, run, ms = hot_at + 2000));
+    CHECK(!muse_coolant_update(&t, 106, run, ms = hot_at + MUSE_COOLANT_SUSTAIN_MS - 1));
+    CHECK(muse_coolant_update(&t, 105, run, ms = hot_at + MUSE_COOLANT_SUSTAIN_MS));   /* exactly 5 s */
+    uint32_t fired_at = ms;
+    /* Fires once: still hot, no repeat. */
+    CHECK(!muse_coolant_update(&t, 110, run, ms += 1000));
+    CHECK(!muse_coolant_update(&t, 112, run, ms += 10000));
+
+    /* After the cooldown, still not re-armed (never dropped to 100): quiet. */
+    CHECK(!muse_coolant_update(&t, 101, run, ms = fired_at + MUSE_COOLANT_COOLDOWN_MS + 1000));
+    CHECK(!muse_coolant_update(&t, 108, run, ms += 1000));
+    CHECK(!muse_coolant_update(&t, 108, run, ms += 10000));
+    /* Re-arms at <= 100 (101 didn't), then a new sustained 5 s fires. */
+    CHECK(!muse_coolant_update(&t, 100, run, ms += 1000));
+    CHECK(t.armed);
+    CHECK(!muse_coolant_update(&t, 106, run, ms += 1000));
+    hot_at = ms;
+    CHECK(!muse_coolant_update(&t, 106, run, ms = hot_at + 4000));
+    CHECK(muse_coolant_update(&t, 106, run, ms = hot_at + 5000));
+    fired_at = ms;
+
+    /* Re-armed inside the cooldown: no fire until it runs out... */
+    CHECK(!muse_coolant_update(&t, 95, run, ms += 1000));
+    CHECK(!muse_coolant_update(&t, 105, run, ms += 1000));
+    hot_at = ms;
+    CHECK(!muse_coolant_update(&t, 105, run, ms = hot_at + 6000));
+    CHECK(!muse_coolant_update(&t, 109, run, ms = fired_at + MUSE_COOLANT_COOLDOWN_MS - 1));
+    /* ...then, still hot all along, it does. */
+    CHECK(muse_coolant_update(&t, 109, run, ms = fired_at + MUSE_COOLANT_COOLDOWN_MS));
+    fired_at = ms;
+
+    /* Sustain resets on any reading below 105. */
+    muse_coolant_init(&t);
+    ms = 500000;
+    CHECK(!muse_coolant_update(&t, 106, run, ms));
+    CHECK(!muse_coolant_update(&t, 106, run, ms += 2000));
+    CHECK(!muse_coolant_update(&t, 104, run, ms += 1000));   /* dips: starts over */
+    CHECK(!muse_coolant_update(&t, 106, run, ms += 1000));
+    hot_at = ms;
+    CHECK(!muse_coolant_update(&t, 106, run, ms += 3000));   /* 7 s since the first: not enough */
+    CHECK(!muse_coolant_update(&t, 106, run, ms = hot_at + 4999));
+    CHECK(muse_coolant_update(&t, 106, run, ms = hot_at + 5000));
+
+    /* Engine off: a hot soak with the key on never builds sustain or fires. */
+    muse_coolant_init(&t);
+    ms = 900000;
+    for (int i = 0; i < 60; i++) {
+        CHECK(!muse_coolant_update(&t, 112, 0, ms += 1000));
+        CHECK(!muse_coolant_update(&t, 112, -1, ms += 1000));    /* RPM unknown (NO DATA) */
+        CHECK(!muse_coolant_update(&t, 112, MUSE_COOLANT_RUNNING_RPM - 1, ms += 1000));
+    }
+    /* The engine starts: sustain only from the first running reading. */
+    CHECK(!muse_coolant_update(&t, 112, MUSE_COOLANT_RUNNING_RPM, ms += 1000));
+    hot_at = ms;
+    CHECK(!muse_coolant_update(&t, 112, 750, ms = hot_at + 3000));
+    /* Stalls mid-sustain: starts over. */
+    CHECK(!muse_coolant_update(&t, 112, 0, ms = hot_at + 4000));
+    CHECK(!muse_coolant_update(&t, 112, 750, ms = hot_at + 6000));
+    CHECK(!muse_coolant_update(&t, 112, 750, ms = hot_at + 10999));
+    CHECK(muse_coolant_update(&t, 112, 750, ms = hot_at + 11000));
+
+    /* A dropped link restarts the sustain; arming and the cooldown hold. */
+    muse_coolant_init(&t);
+    ms = 2000000;
+    CHECK(!muse_coolant_update(&t, 106, run, ms));
+    CHECK(!muse_coolant_update(&t, 106, run, ms += 4000));
+    muse_coolant_reset(&t);
+    CHECK(!muse_coolant_update(&t, 106, run, ms += 1000));
+    CHECK(!muse_coolant_update(&t, 106, run, ms += 4999));
+    CHECK(muse_coolant_update(&t, 106, run, ms += 1));
+    muse_coolant_reset(&t);
+    CHECK(!t.armed);
+    CHECK(!muse_coolant_update(&t, 106, run, ms += 200000));
+    CHECK(!muse_coolant_update(&t, 106, run, ms += 6000));   /* not re-armed: quiet */
+
+    /* Readings out of the PID's range change nothing. */
+    muse_coolant_init(&t);
+    CHECK(!muse_coolant_update(&t, 106, run, 1000));
+    CHECK(!muse_coolant_update(&t, 216, run, 3000));
+    CHECK(!muse_coolant_update(&t, -41, run, 4000));
+    CHECK(t.hot);
+    CHECK(muse_coolant_update(&t, 106, run, 6000));
+
+    /* The millisecond clock wrapping doesn't break the sustain or the cooldown. */
+    muse_coolant_init(&t);
+    CHECK(!muse_coolant_update(&t, 106, run, 0xFFFFF000u));
+    CHECK(!muse_coolant_update(&t, 106, run, 0x00000100u));            /* ~4.3 s */
+    CHECK(muse_coolant_update(&t, 106, run, 0x00000400u));             /* ~5.1 s */
+    CHECK(!muse_coolant_update(&t, 90, run, 0x00001000u));
+    CHECK(!muse_coolant_update(&t, 106, run, 0x00002000u));
+    CHECK(!muse_coolant_update(&t, 106, run, 0x00010000u));            /* ~66 s after the fire */
+    CHECK(!muse_coolant_update(&t, 106, run, 0x00000400u + MUSE_COOLANT_COOLDOWN_MS - 1));
+    CHECK(muse_coolant_update(&t, 106, run, 0x00000400u + MUSE_COOLANT_COOLDOWN_MS));
+}
+
 int main(void)
 {
     test_fragmented_atz();
@@ -201,6 +375,9 @@ int main(void)
     test_parse_cases();
     test_overflow();
     test_trigger();
+    test_coolant_frames();
+    test_coolant_parse_cases();
+    test_coolant_trigger();
     if (s_fail) {
         fprintf(stderr, "%d checks failed\n", s_fail);
         return 1;

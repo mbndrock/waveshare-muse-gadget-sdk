@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The OBD VTEC reaction's ELM327 parser and RPM trigger (muse_obd_elm.c)."""
+"""The OBD reactions' ELM327 parser and triggers (muse_obd_elm.c): RPM and
+the VTEC trigger, coolant (PID 05) and the coolant warning."""
 from pathlib import Path
 import os
 import shlex

@@ -81,13 +81,15 @@ static bool line_starts(const char *line, size_t n, const char *word)
     return word[w] == '\0';
 }
 
-/* A line reading 41 0C A B: the hex digits, spaces left out, start "410C"
- * and go on for at least two more bytes. */
-static bool line_rpm(const char *line, size_t n, int *rpm)
+/* A line reading 41 <pid> and then `nbytes` data bytes: the hex digits, spaces
+ * left out, start "41" and the PID and go on for at least nbytes more bytes
+ * (into data[]); anything after them is ignored. */
+static bool line_pid(const char *line, size_t n, int pid, int nbytes, int *data)
 {
     int nib[8];
+    int want = 4 + 2 * nbytes;
     int k = 0;
-    for (size_t i = 0; i < n && k < 8; i++) {
+    for (size_t i = 0; i < n && k < want; i++) {
         if (line[i] == ' ') {
             continue;
         }
@@ -97,16 +99,18 @@ static bool line_rpm(const char *line, size_t n, int *rpm)
         }
         nib[k++] = v;
     }
-    if (k < 8 || nib[0] != 4 || nib[1] != 1 || nib[2] != 0 || nib[3] != 0xC) {
+    if (k < want || nib[0] != 4 || nib[1] != 1 || nib[2] != pid >> 4 || nib[3] != (pid & 0xF)) {
         return false;
     }
-    int a = nib[4] << 4 | nib[5];
-    int b = nib[6] << 4 | nib[7];
-    *rpm = (a * 256 + b) / 4;
+    for (int b = 0; b < nbytes; b++) {
+        data[b] = nib[4 + 2 * b] << 4 | nib[5 + 2 * b];
+    }
     return true;
 }
 
-muse_elm_result_t muse_elm_parse_rpm(const char *resp, int *rpm)
+/* The first line that answers `pid` with nbytes of data wins (`found`); else
+ * NO DATA, then an error, if any line says so. */
+static muse_elm_result_t parse_pid(const char *resp, int pid, int nbytes, int *data, muse_elm_result_t found)
 {
     static const char *const ERRORS[] = {
         "?", "UNABLETOCONNECT", "CANERROR", "BUSERROR", "BUSBUSY", "BUSINIT:...ERROR",
@@ -117,8 +121,8 @@ muse_elm_result_t muse_elm_parse_rpm(const char *resp, int *rpm)
     while (*p) {
         const char *end = strchr(p, '\n');
         size_t n = end ? (size_t)(end - p) : strlen(p);
-        if (line_rpm(p, n, rpm)) {
-            return MUSE_ELM_RPM;
+        if (line_pid(p, n, pid, nbytes, data)) {
+            return found;
         }
         if (line_starts(p, n, "NODATA")) {
             res = MUSE_ELM_NO_DATA;
@@ -134,6 +138,26 @@ muse_elm_result_t muse_elm_parse_rpm(const char *resp, int *rpm)
         if (*p == '\n') {
             p++;
         }
+    }
+    return res;
+}
+
+muse_elm_result_t muse_elm_parse_rpm(const char *resp, int *rpm)
+{
+    int ab[2];
+    muse_elm_result_t res = parse_pid(resp, 0x0C, 2, ab, MUSE_ELM_RPM);
+    if (res == MUSE_ELM_RPM) {
+        *rpm = (ab[0] * 256 + ab[1]) / 4;
+    }
+    return res;
+}
+
+muse_elm_result_t muse_elm_parse_coolant(const char *resp, int *coolant_c)
+{
+    int a;
+    muse_elm_result_t res = parse_pid(resp, 0x05, 1, &a, MUSE_ELM_COOLANT);
+    if (res == MUSE_ELM_COOLANT) {
+        *coolant_c = a - 40;
     }
     return res;
 }
@@ -164,6 +188,45 @@ bool muse_vtec_update(muse_vtec_trigger_t *t, int rpm, uint32_t now_ms)
     if (t->fired && now_ms - t->last_fire_ms < MUSE_VTEC_COOLDOWN_MS) {
         return false;   /* too soon: swallowed */
     }
+    t->fired = true;
+    t->last_fire_ms = now_ms;
+    return true;
+}
+
+void muse_coolant_init(muse_coolant_trigger_t *t)
+{
+    memset(t, 0, sizeof(*t));
+    t->armed = true;
+}
+
+void muse_coolant_reset(muse_coolant_trigger_t *t)
+{
+    t->hot = false;
+}
+
+bool muse_coolant_update(muse_coolant_trigger_t *t, int coolant_c, int rpm, uint32_t now_ms)
+{
+    if (coolant_c < -40 || coolant_c > 215) {
+        return false;   /* not a reading */
+    }
+    if (coolant_c <= MUSE_COOLANT_REARM_C) {
+        t->armed = true;
+    }
+    if (coolant_c < MUSE_COOLANT_FIRE_C || rpm < MUSE_COOLANT_RUNNING_RPM) {
+        t->hot = false;   /* cooler, or the engine is off: the sustain starts over */
+        return false;
+    }
+    if (!t->hot) {
+        t->hot = true;
+        t->hot_since_ms = now_ms;
+    }
+    if (!t->armed || now_ms - t->hot_since_ms < MUSE_COOLANT_SUSTAIN_MS) {
+        return false;
+    }
+    if (t->fired && now_ms - t->last_fire_ms < MUSE_COOLANT_COOLDOWN_MS) {
+        return false;   /* cooling down: fires when it runs out, if still hot */
+    }
+    t->armed = false;
     t->fired = true;
     t->last_fire_ms = now_ms;
     return true;
