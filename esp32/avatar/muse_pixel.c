@@ -894,7 +894,10 @@ static void draw_headphones(const avatar_t *j, float eye_y)
     int cup_y = iround(eye_y + 2);
     for (int side = 0; side < 2; side++) {
         float sgn = side ? 1.0f : -1.0f;
-        int cup_x = iround(j->fx + sgn * j->a) - 1;   /* 1 px left: centred on the head, not the face */
+        /* Cups locked symmetric around the head's rounded centre. Rounding
+         * fx +/- a independently left the pair a half pixel off centre,
+         * jittering between a pixel right and a pixel left frame to frame. */
+        int cup_x = iround(j->cx) + (side ? iround(j->a) : -iround(j->a));
 
         /* Band: two close arcs over the crown and down the hood. The arc
          * ellipse is sized so the arcs end on the top outer corner of the
