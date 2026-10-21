@@ -148,6 +148,10 @@ BOOT 5 s resets setup.
 - **Build branch indicator:** `muse_build_info.c`. CMake stamps the checked-out branch from `.git/HEAD` as `MUSE_GIT_BRANCH` (no `git` call; `detached` or `unknown` otherwise).
   - Settings home shows `Build: <branch>` (the exact branch, `muse_settings_ui.c` `s_build`) directly under the `Muse <ver> - <IP>` line; the button menu's Status page has it too (`Build`). The face has no branch badge.
   - `.git/HEAD` is a CMake configure dependency, so a branch switch in a reused `build-muse-<board>/` re-runs CMake and restamps instead of keeping the last branch.
+- **VTEC reaction (s18 only, `CONFIG_MUSE_OBD_VTEC`):** `muse_obd.c` is a NimBLE central to a LELink^2 ELM327 adapter (FFE0/FFE1), beside Link's peripheral; its GAP events go to its own callback, not Link's.
+  - The s18 overlay turns on `BT_NIMBLE_ROLE_CENTRAL`/`OBSERVER` and `MAX_CONNECTIONS=2`; every other board keeps them off.
+  - `muse_obd_elm.c` (plain C, `tests/test_muse_obd_elm.py`) parses the ELM byte stream and runs the trigger: armed at <= 5500 rpm, fires at >= 6000, 30 s apart.
+  - A fire calls `muse_state_start_vtec()` and `muse_hatch_say("VTEC just kicked in yo!")`. Jollybot draws it (`RE_VTEC`, `tests/test_muse_pixel_vtec.py`).
 - **Battery:** each board's `read_power`.
   - The 1.85C infers USB from voltage trends, because it has no VBUS or charge pin.
   - Errs toward `usb = true`: on battery the firmware dozes Wi-Fi and closes idle sessions.
