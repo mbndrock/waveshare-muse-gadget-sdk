@@ -512,6 +512,7 @@ static uint8_t fur(int32_t nx, int32_t ny, int x, int y, int ox, int oy)
 typedef struct {
     float x, y;
     float angle;    /* radians; positive tips the bottom outward to the right */
+    float len;      /* arm half-length; 0 = default */
 } limb_t;
 
 /* A limb ellipse, set up for Q12 hit tests. */
@@ -550,7 +551,7 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
     memset(s_mask, 0, sizeof(s_mask));
     limb_q_t arm_q[2], foot_q[2];
     for (int i = 0; i < 2; i++) {
-        limb_setup(&arms[i], 2.9f, 5.2f, &arm_q[i]);
+        limb_setup(&arms[i], 2.9f, arms[i].len > 0 ? arms[i].len : 5.2f, &arm_q[i]);
         limb_setup(&feet[i], 4.4f, 2.6f, &foot_q[i]);
     }
     /* Only rows/columns that can hold the avatar are shaded. */
@@ -832,10 +833,11 @@ static void draw_waves(float cx, float cy, float body_rx, float level, float t)
     }
 }
 
-/* An open laptop in front of the lower body: keyboard deck on the base line, lid with scrolling code. */
+/* An open laptop in front of the lower body: keyboard deck on the base line, the lid's back to the viewer. */
 static void draw_laptop(const muse_pose_t *p, float cx, float base, float t)
 {
     (void)p;
+    (void)t;
     int x = iround(cx), b = iround(base);
 
     /* Deck: 29 px wide, rim-lit top edge, a row of keys, outlined. */
@@ -848,7 +850,7 @@ static void draw_laptop(const muse_pose_t *p, float cx, float base, float t)
         }
     }
 
-    /* Lid: 21 x 13, outlined, the screen in the deep glow. */
+    /* Lid: 21 x 13, outlined, seen from behind: the screen faces the avatar. */
     int l = x - 10, r = x + 10, top = b - 15, bot = b - 3;
     for (int yy = top; yy <= bot; yy++) {
         for (int xx = l; xx <= r; xx++) {
@@ -856,28 +858,67 @@ static void draw_laptop(const muse_pose_t *p, float cx, float base, float t)
             if (edge && (xx == l || xx == r) && (yy == top || yy == bot)) {
                 continue;   /* rounded corners */
             }
-            px(xx, yy, edge ? C_OUT : C_G3);
+            px(xx, yy, edge ? C_OUT : C_SKIND);
         }
     }
 
-    /* Code lines, 3 px apart, scrolling up; each line's indent and length come from its index. */
-    static const uint8_t CODE[3] = { C_G0, C_G1, C_WHITE };
-    float pos = t * 2.0f;
-    int n0 = (int)floorf(pos / 3.0f);
-    int sub = (int)(pos - n0 * 3.0f);
-    for (int k = 0; k < 5; k++) {
-        int g = n0 + k;
-        int ly = top + 2 + k * 3 - sub;
-        if (ly <= top || ly >= bot - 1) {
-            continue;
+    /* Screen light leaking around the bezel, just inside the side edges. */
+    for (int yy = top + 1; yy < bot; yy++) {
+        px(l + 1, yy, C_G2);
+        px(r - 1, yy, C_G2);
+    }
+
+    /* A lit logo in the middle of the lid back. */
+    int ey = (top + bot) / 2;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            px(x + dx, ey + dy, dx && dy ? C_G1 : C_G0);
         }
-        int32_t h = hash16(g, 7);
-        int indent = (h & 3) == 3 ? 4 : (h & 3) * 2;
-        int len = 4 + (h >> 4) % 9;
-        int x0 = l + 2 + indent, x1 = x0 + len;
-        x1 = x1 > r - 2 ? r - 2 : x1;
-        for (int xx = x0; xx <= x1; xx++) {
-            px(xx, ly, CODE[(unsigned)g % 3]);
+    }
+}
+
+/* Headphones: a band hugging the hood top, ear cups at the sides of the face panel. */
+static void draw_headphones(const avatar_t *j, float eye_y)
+{
+    int cy = iround(eye_y + 3);
+    for (int side = 0; side < 2; side++) {
+        float sgn = side ? 1.0f : -1.0f;
+        int cx = iround(j->fx + sgn * (j->fa + 1));
+
+        /* Band: walk the ellipse from the crown down this side until it reaches the
+         * cup tops, with an accent row just inside near the crown; then a short
+         * yoke to the cup. */
+        int x = iround(j->cx), y = iround(j->cy - j->b - 1);
+        for (int k = 0; k <= 48; k++) {
+            float th = k * (1.5708f / 48);
+            int nx = iround(j->cx + sgn * (j->a + 1) * sinf(th));
+            int ny = iround(j->cy - (j->b + 1) * cosf(th));
+            if (ny >= cy - 3) {
+                break;
+            }
+            x = nx;
+            y = ny;
+            px(x, y, C_OUT);
+            if (th < 0.6f) {
+                px(iround(j->cx + sgn * j->a * sinf(th)), iround(j->cy - j->b * cosf(th)), C_ACC);
+            }
+        }
+        int n = abs(cx - x) > abs(cy - 3 - y) ? abs(cx - x) : abs(cy - 3 - y);
+        for (int s = 1; s <= n; s++) {
+            px(x + (cx - x) * s / n, y + (cy - 3 - y) * s / n, C_OUT);
+        }
+
+        /* Cup: 5 x 7, corners rounded off, outlined, a lit cushion on its outer face. */
+        for (int dy = -3; dy <= 3; dy++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                if (abs(dx) == 2 && abs(dy) == 3) {
+                    continue;
+                }
+                px(cx + dx, cy + dy, abs(dx) == 2 || abs(dy) == 3 ? C_OUT : C_BROW);
+            }
+        }
+        for (int dy = -1; dy <= 1; dy++) {
+            px(cx + (side ? 1 : -1), cy + dy, C_ACC);
         }
     }
 }
@@ -1423,6 +1464,9 @@ void muse_pixel_scale(uint16_t *dst, int stride_px, int x0, int x1, int y0, int 
     }
 }
 
+/* len is optional: positional { x, y, angle } initializers leave it 0 on purpose. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 void muse_pixel_render(const muse_pose_t *p)
 {
     static bool s_luts;
@@ -1556,10 +1600,16 @@ void muse_pixel_render(const muse_pose_t *p)
         arms[1] = (limb_t){ j.cx + adx - 1.0f, j.fy + 5.0f, -0.55f };
         break;
     case MUSE_MODE_THINKING: {
-        /* Typing: both paws reach down onto the laptop deck, tapping in turn. */
+        /* Typing: each arm spans from its shoulder root to a paw on the laptop deck,
+         * the ellipse centred halfway so it ends at both; the paws tap in turn. */
         float tap = sinf(t * 44.0f) * 0.6f;   /* ~7 Hz */
-        arms[0] = (limb_t){ j.cx - adx, base - 7.0f + tap, 0.45f };
-        arms[1] = (limb_t){ j.cx + adx, base - 7.0f - tap, -0.45f };
+        for (int i = 0; i < 2; i++) {
+            float sgn = i ? 1.0f : -1.0f;
+            float rx = j.cx + sgn * adx, tx = j.cx + sgn * 8.0f, ty = base - 3.0f;
+            float dx = tx - rx, dy = ty - ay;
+            arms[i] = (limb_t){ (rx + tx) * 0.5f, (ay + ty) * 0.5f + (i ? -tap : tap),
+                                atan2f(-dx, dy), 0.5f * sqrtf(dx * dx + dy * dy) };
+        }
         break;
     }
     case MUSE_MODE_OFF: {
@@ -1669,6 +1719,9 @@ void muse_pixel_render(const muse_pose_t *p)
         draw_blush(iround(j.fx + j.fa * 0.72f), iround(eye_y + 2), blush);
         draw_mouth(iround(j.fx), iround(eye_y + 3), mouth, mouth_open);
     }
+    if (mode == MUSE_MODE_THINKING) {
+        draw_headphones(&j, eye_y);
+    }
 
     /* ---- foreground ---- */
     draw_sparkles(p, j.cx, j.cy, true, spk_speed, spk_count);
@@ -1695,3 +1748,4 @@ void muse_pixel_render(const muse_pose_t *p)
     }
 
 }
+#pragma GCC diagnostic pop
