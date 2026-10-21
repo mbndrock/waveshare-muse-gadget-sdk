@@ -69,7 +69,10 @@ static const char *TAG = "muse_obd";
 #define BACKOFF_MAX_MS 60000
 #define RX_BYTES 512
 
+#define COOLANT_EVERY 4                /* every 4th request reads coolant (0105), the rest RPM */
+
 #define VTEC_LINE "VTEC just kicked in yo!"
+#define COOLANT_LINE "Coolant temperature is high!"
 
 typedef enum {
     EV_FOUND = 1,       /* addr: the adapter's advertisement */
@@ -102,6 +105,8 @@ static uint8_t s_props;
 static uint8_t s_own_addr;
 static muse_elm_rx_t s_rx;
 static muse_vtec_trigger_t s_trigger;
+static muse_coolant_trigger_t s_coolant;
+static int s_rpm = -1;                /* the latest RPM; -1 when unknown (engine off, link down) */
 
 /* ---- On the host task: post and wake ---- */
 
@@ -475,24 +480,54 @@ static void fire(int rpm)
     muse_hatch_say(VTEC_LINE);
 }
 
+static void fire_coolant(int coolant_c)
+{
+    ESP_LOGW(TAG, "coolant hot: %d C at %d rpm", coolant_c, s_rpm);
+    muse_state_start_coolant();
+    muse_hatch_say(COOLANT_LINE);
+}
+
+/* A coolant reply: feeds the warning. Anything else (NO DATA, an ECU without
+ * PID 05) is skipped without slowing the RPM polling. */
+static void got_coolant(void)
+{
+    int coolant_c = 0;
+    if (muse_elm_parse_coolant(s_rx.resp, &coolant_c) != MUSE_ELM_COOLANT) {
+        ESP_LOGD(TAG, "no coolant reading");
+        return;
+    }
+    ESP_LOGD(TAG, "coolant %d C", coolant_c);
+    if (muse_coolant_update(&s_coolant, coolant_c, s_rpm, now_ms())) {
+        fire_coolant(coolant_c);
+    }
+}
+
 /*
- * Asks for RPM back to back, each request after the last '>'. While frames
- * come, a reply that takes over POLL_MS drops the link. Until then (the first
- * request, or after NO DATA or an error) the ELM may be searching for the
- * car's protocol, which takes seconds, so it gets SEARCH_MS. Returns once the
- * link is lost; true if the adapter answered at all.
+ * Asks for RPM back to back, each request after the last '>', with every
+ * COOLANT_EVERY-th request reading coolant instead. While frames come, a reply
+ * that takes over POLL_MS drops the link. Until then (the first request, or
+ * after NO DATA or an error) the ELM may be searching for the car's protocol,
+ * which takes seconds, so it gets SEARCH_MS. Only RPM replies decide that, and
+ * the pause after a non-answer. Returns once the link is lost; true if the
+ * adapter answered at all.
  */
 static bool poll_rpm(void)
 {
     bool answered = false, locked = false;
-    for (;;) {
-        if (!elm_cmd("010C", locked ? POLL_MS : SEARCH_MS)) {
+    for (unsigned n = 0;; n++) {
+        bool coolant = n % COOLANT_EVERY == COOLANT_EVERY - 1;
+        if (!elm_cmd(coolant ? "0105" : "010C", locked ? POLL_MS : SEARCH_MS)) {
             return answered;
         }
         answered = true;
+        if (coolant) {
+            got_coolant();
+            continue;
+        }
         int rpm = 0;
         muse_elm_result_t res = muse_elm_parse_rpm(s_rx.resp, &rpm);
         locked = res == MUSE_ELM_RPM;
+        s_rpm = locked ? rpm : -1;
         if (locked) {
             ESP_LOGD(TAG, "%d rpm", rpm);
             if (muse_vtec_update(&s_trigger, rpm, now_ms())) {
@@ -514,12 +549,15 @@ static void drop(void)
         s_conn = BLE_HS_CONN_HANDLE_NONE;
     }
     muse_vtec_disarm(&s_trigger);
+    muse_coolant_reset(&s_coolant);
+    s_rpm = -1;
 }
 
 static void obd_task(void *arg)
 {
     (void)arg;
     muse_vtec_init(&s_trigger);
+    muse_coolant_init(&s_coolant);
     uint32_t backoff = BACKOFF_MIN_MS;
     for (;;) {
         /* Link brings the host up (at boot on PSRAM boards) and may restart it. */
@@ -530,7 +568,7 @@ static void obd_task(void *arg)
         bool polled = false;
         if (scan(&addr) && connect(&addr)) {
             if (subscribe() && elm_init()) {
-                ESP_LOGI(TAG, "polling RPM");
+                ESP_LOGI(TAG, "polling RPM and coolant");
                 polled = poll_rpm();
             }
             drop();
