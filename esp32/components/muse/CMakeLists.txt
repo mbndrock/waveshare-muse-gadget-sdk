@@ -25,6 +25,7 @@ if(CONFIG_MUSE_ENABLED)
     list(APPEND srcs
         "muse_app.c"
         "muse_board.c"
+        "muse_build_info.c"
         "muse_console.c"
         "muse_state.c"
         "muse_battery.c"
@@ -135,4 +136,30 @@ if(CONFIG_MUSE_ENABLED)
     target_compile_definitions(${lvgl_lib} PUBLIC
         "LV_ASSERT_HANDLER_INCLUDE=<stdlib.h>"
         "LV_ASSERT_HANDLER=abort()\;")
+
+    # Stamp the checked-out branch for muse_build_info.c. board.sh reuses
+    # build-muse-<board>/ across branch switches, so .git/HEAD is a configure
+    # dependency: a switch re-runs CMake and restamps instead of keeping the
+    # last branch's name. Read without git; a worktree's .git file, an
+    # unreadable HEAD or anything unexpected gives "unknown".
+    get_filename_component(muse_repo "${COMPONENT_DIR}/../../.." ABSOLUTE)
+    set(muse_git_head "${muse_repo}/.git/HEAD")
+    set(muse_branch "unknown")
+    if(EXISTS "${muse_git_head}" AND NOT IS_DIRECTORY "${muse_git_head}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${muse_git_head}")
+        set(muse_head_line "")
+        if(CMAKE_VERSION VERSION_LESS 3.29)
+            file(STRINGS "${muse_git_head}" muse_head_line LIMIT_COUNT 1)
+        elseif(IS_READABLE "${muse_git_head}")
+            file(STRINGS "${muse_git_head}" muse_head_line LIMIT_COUNT 1)
+        endif()
+        if(muse_head_line MATCHES "^ref: refs/heads/(.+)$")
+            set(muse_branch "${CMAKE_MATCH_1}")
+        elseif(muse_head_line MATCHES "^[0-9a-fA-F]+$")
+            set(muse_branch "detached")
+        endif()
+    endif()
+    string(REGEX REPLACE "[^A-Za-z0-9._/-]" "-" muse_branch "${muse_branch}")
+    string(SUBSTRING "${muse_branch}" 0 64 muse_branch)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE "MUSE_GIT_BRANCH=\"${muse_branch}\"")
 endif()
