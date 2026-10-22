@@ -150,6 +150,14 @@ void muse_obd_cards_build(lv_obj_t *const tiles[MUSE_OBD_CARDS])
     s_built = true;
 }
 
+void muse_obd_cards_drop(void)
+{
+    s_built = false;
+    memset(s_rows, 0, sizeof(s_rows));
+    memset(s_list, 0, sizeof(s_list));
+    memset(s_state, 0, sizeof(s_state));
+}
+
 static void set_text(lv_obj_t *l, const char *text)
 {
     if (strcmp(lv_label_get_text(l), text) != 0) {

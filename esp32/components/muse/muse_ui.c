@@ -124,15 +124,41 @@ bool muse_ui_face_active(void)
 }
 static lv_obj_t *s_settings;
 #if CONFIG_MUSE_OBD_VTEC
-/* The car data cards (muse_obd_cards.c), between the face and settings. */
+/* The car data cards (muse_obd_cards.c): tiles between the face and settings
+ * only while the OBD link is up (sync_cards), NULL otherwise. */
 #define CARD_TILES MUSE_OBD_CARDS
 static lv_obj_t *s_cards[MUSE_OBD_CARDS];
+static volatile bool s_cards_shown;   /* s_cards are tiles; read from any task */
+static volatile bool s_obd_linked;    /* muse_obd_linked(): the avatar wears a helmet */
 #else
 #define CARD_TILES 0
 #endif
-#define SETTINGS_COL (1 + CARD_TILES)   /* settings' tile: the last */
-#define TILES (SETTINGS_COL + 1)
+#define TILES (2 + CARD_TILES)   /* the most there can be: the face, the cards, settings */
 static lv_obj_t *s_dots[TILES];
+
+/* The tiles there are now: the face, the cards while they're in, settings. */
+static int tile_count(void)
+{
+#if CONFIG_MUSE_OBD_VTEC
+    return s_cards_shown ? TILES : 2;
+#else
+    return TILES;
+#endif
+}
+
+/* One dot per tile there is, 16 px apart and centred, so two tiles keep
+ * their -8 / +8. The rest are hidden (update_chrome() keeps them so). */
+static void place_dots(void)
+{
+    int n = tile_count();
+    for (int i = 0; i < TILES; i++) {
+        if (i < n) {
+            lv_obj_align(s_dots[i], LV_ALIGN_BOTTOM_MID, 16 * i - 8 * (n - 1), -14);
+        } else {
+            lv_obj_add_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
 #if CONFIG_MUSE_OBD_VTEC
@@ -944,12 +970,9 @@ static void build_screen(void)
          * shows as a different-coloured square around the character. */
         lv_obj_set_style_bg_color(s_face, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_face, LV_OPA_COVER, 0);
-#if CONFIG_MUSE_OBD_VTEC
-        for (int i = 0; i < MUSE_OBD_CARDS; i++) {
-            s_cards[i] = lv_tileview_add_tile(s_tv, 1 + i, 0, LV_DIR_HOR);
-        }
-#endif
-        s_settings = lv_tileview_add_tile(s_tv, SETTINGS_COL, 0, LV_DIR_LEFT);
+        /* Next to the face. With CONFIG_MUSE_OBD_VTEC the car data cards
+         * come in between while the OBD link is up. */
+        s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);
         lv_obj_add_event_cb(s_tv, tile_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
         face = s_face;
     }
@@ -1511,7 +1534,7 @@ static void build_overlays(void)
 {
     lv_obj_t *scr = lv_screen_active();
 
-    /* Page dots, one per tile, 16 px apart. */
+    /* Page dots, one per tile there can be (place_dots shows the ones there are). */
     for (int i = 0; i < TILES && s_tv; i++) {
         lv_obj_t *d = lv_obj_create(scr);
         lv_obj_remove_style_all(d);
@@ -1520,8 +1543,10 @@ static void build_overlays(void)
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(COLOR_DOT_OFF), 0);
         lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, 16 * i - 8 * (TILES - 1), -14);
         s_dots[i] = d;
+    }
+    if (s_tv) {
+        place_dots();
     }
 
     /* A downloaded image: over everything on the screen (and in snapshots),
@@ -1671,11 +1696,11 @@ static const char *idle_name(muse_wifi_state_t wifi)
 static int tile_index(lv_obj_t *tile)
 {
     if (tile == s_settings) {
-        return SETTINGS_COL;
+        return tile_count() - 1;
     }
 #if CONFIG_MUSE_OBD_VTEC
     for (int i = 0; i < MUSE_OBD_CARDS; i++) {
-        if (tile == s_cards[i]) {
+        if (tile && tile == s_cards[i]) {
             return 1 + i;
         }
     }
@@ -1684,7 +1709,8 @@ static int tile_index(lv_obj_t *tile)
 }
 
 #if LV_USE_SNAPSHOT || CONFIG_MUSE_OBD_VTEC
-/* The other way round, for the bench's tile jumps. */
+/* The bench's tile numbers: 0 the face, 1..3 the cards, the last (TILES - 1)
+ * settings, whether or not the cards are there. NULL for a card that isn't. */
 static lv_obj_t *tile_at(int index)
 {
 #if CONFIG_MUSE_OBD_VTEC
@@ -1692,7 +1718,51 @@ static lv_obj_t *tile_at(int index)
         return s_cards[index - 1];
     }
 #endif
-    return index == SETTINGS_COL ? s_settings : s_face;
+    return index == TILES - 1 ? s_settings : s_face;
+}
+#endif
+
+#if CONFIG_MUSE_OBD_VTEC
+/*
+ * The card tiles follow the OBD link (muse_obd_linked): put in between the
+ * face and settings when it comes up, taken out when it drops, so without
+ * the car the tileview is the face and settings, as without the option.
+ * Settings moves a column to make room. The tile on screen stays on screen,
+ * found by object, not column; a card that goes lands on the face. It waits
+ * while a finger is down or the tileview is sliding. LVGL task.
+ */
+static void sync_cards(bool linked)
+{
+    if (!s_tv || linked == s_cards_shown) {
+        return;
+    }
+    if ((s_indev && lv_indev_get_state(s_indev) == LV_INDEV_STATE_PRESSED) || lv_obj_is_scrolling(s_tv)) {
+        return;
+    }
+    lv_obj_t *active = lv_tileview_get_tile_active(s_tv);
+    bool on_card = false;
+    if (linked) {
+        for (int i = 0; i < MUSE_OBD_CARDS; i++) {
+            s_cards[i] = lv_tileview_add_tile(s_tv, 1 + i, 0, LV_DIR_HOR);
+        }
+        muse_obd_cards_build(s_cards);
+        muse_obd_cards_tick();   /* filled in before they can be seen */
+    } else {
+        muse_obd_cards_drop();
+        for (int i = 0; i < MUSE_OBD_CARDS; i++) {
+            on_card = on_card || active == s_cards[i];
+            lv_obj_delete(s_cards[i]);
+            s_cards[i] = NULL;
+        }
+    }
+    s_cards_shown = linked;
+    lv_obj_set_pos(s_settings, lv_pct(100 * (tile_count() - 1)), 0);
+    lv_obj_update_layout(s_tv);
+    lv_obj_t *show = active && !on_card ? active : s_face;
+    lv_tileview_set_tile(s_tv, show, LV_ANIM_OFF);
+    s_face_active = show == s_face;
+    place_dots();
+    s_shown_page = -1;   /* the dots' colours and the swipe, on this tick */
 }
 #endif
 
@@ -1703,9 +1773,17 @@ static void update_chrome(float now)
     }
     s_next_settings_tick = now + SETTINGS_TICK_S;
 
+#if CONFIG_MUSE_OBD_VTEC
+    /* Before the dots: they follow the tiles. */
+    muse_obd_status_t o;
+    muse_obd_status(&o);
+    s_obd_linked = muse_obd_linked(&o);
+    sync_cards(s_obd_linked);
+#endif
     if (s_tv) {
+        int tiles = tile_count();
         int page = tile_index(lv_tileview_get_tile_active(s_tv));
-        bool settings = page == SETTINGS_COL;
+        bool settings = page == tiles - 1;
         bool subpage = muse_settings_ui_in_subpage();
         bool swipe = !settings || !subpage;
         if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE)) {
@@ -1715,12 +1793,12 @@ static void update_chrome(float now)
         if (shown != s_shown_page) {
             for (int i = 0; i < TILES; i++) {
                 lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == page ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
-                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, settings && subpage);
+                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, i >= tiles || (settings && subpage));
             }
             s_shown_page = shown;
         }
         /* Any of settings on screen: past the tile before it. */
-        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > (SETTINGS_COL - 1) * lv_obj_get_width(s_tv));
+        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > (tiles - 2) * lv_obj_get_width(s_tv));
 #if CONFIG_MUSE_OBD_VTEC
         muse_obd_cards_tick();
 #endif
@@ -1745,8 +1823,6 @@ static void update_chrome(float now)
     }
 #if CONFIG_MUSE_OBD_VTEC
     /* Linked to the car's adapter: dim once subscribed, accent while polling. */
-    muse_obd_status_t o;
-    muse_obd_status(&o);
     int obd = o.polling ? 2 : o.subscribed ? 1 : 0;
     if (obd != s_shown_obd) {
         if (obd) {
@@ -1983,12 +2059,12 @@ static void update_status(muse_mode_t mode, float now)
 
 static volatile bool s_snapshot;
 #if LV_USE_SNAPSHOT || CONFIG_MUSE_OBD_VTEC
-static volatile int s_bench_page = -1;   /* a tile_index(), applied in the LVGL task */
+static volatile int s_bench_page = -1;   /* a tile_at() number, applied in the LVGL task */
 #endif
 #if LV_USE_SNAPSHOT
 void muse_ui_bench_page(bool settings)
 {
-    s_bench_page = settings ? SETTINGS_COL : 0;
+    s_bench_page = settings ? TILES - 1 : 0;
 }
 #endif
 #if CONFIG_MUSE_OBD_VTEC
@@ -1997,9 +2073,15 @@ int muse_ui_tile_count(void)
     return muse_board->touch ? TILES : 1;
 }
 
+bool muse_ui_cards_shown(void)
+{
+    return s_cards_shown;
+}
+
 bool muse_ui_bench_tile(int index)
 {
-    if (index < 0 || index >= muse_ui_tile_count()) {
+    bool card = index >= 1 && index <= MUSE_OBD_CARDS;
+    if (index < 0 || index >= muse_ui_tile_count() || (card && !s_cards_shown)) {
         return false;
     }
     s_bench_page = index;
@@ -2049,9 +2131,9 @@ static void frame_tick(lv_timer_t *timer)
 {
 #if LV_USE_SNAPSHOT || CONFIG_MUSE_OBD_VTEC
     if (s_bench_page >= 0) {
-        int index = s_bench_page;
+        lv_obj_t *tile = tile_at(s_bench_page);
         s_bench_page = -1;
-        if (s_tv) lv_tileview_set_tile(s_tv, tile_at(index), LV_ANIM_OFF);
+        if (s_tv && tile) lv_tileview_set_tile(s_tv, tile, LV_ANIM_OFF);   /* a card gone since: no-op */
     }
 #endif
     update_control_hints(muse_state_mode(NULL));
@@ -2115,6 +2197,7 @@ static void frame_tick(lv_timer_t *timer)
         .vtec = muse_state_vtec(),
         .coolant = muse_state_coolant(),
         .warmup = muse_state_warmup(),
+        .helmet = s_obd_linked,
 #endif
     };
     if (!muse_board->epaper || mode != s_last_epaper_pose) {
@@ -2170,11 +2253,6 @@ esp_err_t muse_ui_start(void)
     if (s_face) {
         build_volume(s_face);   /* over everything else on the face */
     }
-#if CONFIG_MUSE_OBD_VTEC
-    if (s_tv) {
-        muse_obd_cards_build(s_cards);
-    }
-#endif
     if (s_settings) {
         muse_settings_ui_build(s_settings);
     } else {

@@ -68,9 +68,13 @@ void muse_ui_bench_page(bool settings);
 void muse_ui_bench_demo(bool enabled);
 #endif
 #if CONFIG_MUSE_OBD_VTEC
-/* The touch tiles: the face, the car data cards, settings (1 without touch). */
+/* The bench's tile numbers: the face, the car data cards, settings (1
+ * without touch), counting the cards whether or not they are in. */
 int muse_ui_tile_count(void);
+/* The car data cards are tiles: the OBD link is up. From any task. */
+bool muse_ui_cards_shown(void);
 /* Bench, from any task: slide to tile `index` (0 the face, 1..3 the cards,
- * the last settings) on the next frame. False if there is no such tile. */
+ * the last settings) on the next frame. False if there is no such tile, a
+ * card included while the cards are out. */
 bool muse_ui_bench_tile(int index);
 #endif

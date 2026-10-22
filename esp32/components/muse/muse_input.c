@@ -938,11 +938,16 @@ static bool console_command(char *line, bool whole)
         return true;
     }
     if (!strncmp(line, "card ", 5)) {
-        /* "card <n>": 0 the face, 1..3 the car data cards, 4 settings. */
+        /* "card <n>": 0 the face, 1..3 the car data cards (only while the
+         * OBD link is up), 4 settings. */
         char *end;
         long n = strtol(line + 5, &end, 10);
         if (end == line + 5 || *end || !muse_ui_bench_tile((int)n)) {
-            printf("@card.error tiles are 0..%d\n", muse_ui_tile_count() - 1);
+            if (end != line + 5 && !*end && n >= 1 && n < muse_ui_tile_count() - 1 && !muse_ui_cards_shown()) {
+                printf("@card.error no cards: the OBD link is down\n");
+            } else {
+                printf("@card.error tiles are 0..%d\n", muse_ui_tile_count() - 1);
+            }
             fflush(stdout);
         }
         return true;
@@ -989,7 +994,8 @@ static bool console_command(char *line, bool whole)
  * (muse_obd_fire_vtec / _coolant / _warmup), "obd" prints the OBD
  * link's state and latest readings, as the obd.read Link command does
  * (muse_obd_status), and "card <n>" slides the touch screen to tile n (0 the
- * face, 1..3 the car data cards, the last one settings).
+ * face, 1..3 the car data cards while the OBD link is up, the last one
+ * settings).
  */
 static void serial_task(void *arg)
 {

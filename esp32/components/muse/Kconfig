@@ -440,8 +440,10 @@ menu "Muse"
             out: 105 C or more for 5 s with the engine running plays the
             coolant warning, and the first reading of 82 C or more after one
             of 70 C or less plays a warm-up thumbs-up. The reactions are
-            visual only. Three card tiles between the face and settings show
-            the readings.
+            visual only. While the adapter is linked, three card tiles
+            between the face and settings show the readings and the avatar
+            wears a racing helmet. Settings > OBD (NVS "obd_on", on by
+            default) turns all of it off, the connection included.
             Needs the NimBLE central and observer
             roles and a second connection (BT_NIMBLE_MAX_CONNECTIONS=2); the
             AMOLED-1.8's overlay turns them on with this.

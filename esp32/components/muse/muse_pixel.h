@@ -50,6 +50,8 @@ typedef struct {
                       * banner (MUSE_COOLANT_S); outranks vtec */
     float warmup;    /* the car's coolant reached operating temperature (muse_obd.c): a pleased thumbs-up
                       * (MUSE_WARMUP_S); below coolant and vtec */
+    bool helmet;     /* linked to the car's OBD adapter (muse_obd_linked): a racing helmet, visor
+                      * up, over the head, whatever the mode or reaction. An avatar may ignore it */
 } muse_pose_t;
 
 #define MUSE_DIZZY_S 4.0f

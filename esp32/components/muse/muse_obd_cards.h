@@ -20,7 +20,8 @@
 
 /*
  * The car data cards (CONFIG_MUSE_OBD_VTEC): three passive tiles between the
- * face and settings that show what the car's ECU answers, from
+ * face and settings, there only while the OBD link is up (muse_ui.c puts the
+ * tiles in and takes them out), that show what the car's ECU answers, from
  * muse_obd_status(). "Temps": coolant, intake air, ambient. "Engine": RPM,
  * timing advance, load, MAP. "Drive": speed (km/h and mph), throttle, short-
  * and long-term fuel trim.
@@ -36,5 +37,10 @@
  * display lock held). */
 void muse_obd_cards_build(lv_obj_t *const tiles[MUSE_OBD_CARDS]);
 
-/* Refreshes them from the snapshot; touches only what changed. LVGL task. */
+/* Forgets the cards, before their tiles are deleted; a later build starts
+ * afresh. LVGL task. */
+void muse_obd_cards_drop(void);
+
+/* Refreshes them from the snapshot; touches only what changed, and nothing
+ * without cards. LVGL task. */
 void muse_obd_cards_tick(void);
