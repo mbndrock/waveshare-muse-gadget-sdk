@@ -12,6 +12,8 @@ This is a fork of `facebookincubator/muse-gadget-sdk` that adds three Waveshare 
 
 > **This fork** is maintained by [Derek Ngo](https://github.com/mbndrock) and builds on [David Ruiz's fork](https://github.com/wupsbr/waveshare-muse-gadget-sdk) above. Its own additions, marked **This fork** in the table below: an **on-device ElevenLabs voice switcher** (Settings › Voice), **replies that start speaking sentence by sentence** instead of waiting for the full text, and **git hooks that block commits and pushes which would publish your SDK token or API keys**.
 
+> **This branch (`obd-vtec-reaction`)** is the S2000 branch. On top of everything below, it gives the AMOLED-1.8 a car mode: it links over BLE to a LELink^2 OBD-II adapter, reacts to VTEC and to hot coolant, and answers questions about RPM and coolant temperature through a new `obd.read` command. See [In the car](#in-the-car-the-obd-reactions-and-readout). It lives only on this branch and is not merged to `main`.
+
 | | Waveshare ESP32-S3-Touch-LCD-1.85C | Waveshare ESP32-S3-Touch-AMOLED-1.43C | Waveshare ESP32-S3-Touch-AMOLED-1.8 |
 |---|---|---|---|
 | Screen | 1.85" round LCD, 360×360, ST77916 (QSPI) | 1.43" round AMOLED, 466×466, SH8601 (QSPI) | 1.8" AMOLED, 368×448, SH8601 or CO5300 (QSPI) |
@@ -45,7 +47,8 @@ The short version is below; [`docs/CHANGES-FROM-UPSTREAM.md`](docs/CHANGES-FROM-
 | 🐕 **Watchdogs** | Turned back on for these boards: a stuck task panics with a backtrace and reboots instead of leaving the board dead until RST. | `devices/sdkconfig.muse-waveshare-s3-*` |
 | 😵 **Avatar reactions** | Shake Muse and it gets dizzy (boards with a QMI8658 accelerometer, found by probing). Before the screen goes dark Muse drowses for 4 s with a quiet snore, and it wakes up when the screen comes back on. Jollybot draws all three (see [New avatar reactions](#new-avatar-reactions)). | `components/muse/muse_imu.c`, `muse_input.c` (`check_sleep`, `check_shake`), `muse_voice.c` (`play_snore`) |
 | 🤭 **Tickle** | Rub Muse's face quickly back and forth, or tap it four times fast, and Muse giggles for as long as you keep going, then catches its breath. Taps, the volume drag and the swipe to settings work as before. Jollybot draws it (see [New avatar reactions](#new-avatar-reactions)). | `components/muse/muse_ui.c` (`touch_read`, `tickle_poll`), `muse_state.c` |
-| 🏎️ **VTEC reaction and coolant warning** (AMOLED-1.8 only) | In the car, the board connects over BLE to a LELink² ELM327 OBD-II adapter beside its own phone link and polls engine RPM. Crossing 6000 rpm (armed below 5500, at most once every 30 s) makes Muse buzz with a **VTEC!** banner and say "VTEC just kicked in yo!" in its ElevenLabs voice. Every 4th request reads coolant temperature instead: 105 °C or more for 5 s with the engine running makes Muse fret, sweating and steaming under a **HOT!** banner, and say "Coolant temperature is high!" (once, then not again until it's back down to 100 °C, at most once every 2 minutes; it outranks VTEC). Off on every other board (`CONFIG_MUSE_OBD_VTEC`). | `components/muse/muse_obd.c`, `muse_obd_elm.c`, `devices/sdkconfig.muse-waveshare-s3-18` |
+| 🏎️ **VTEC reaction and coolant warning** (AMOLED-1.8 only, this branch) | In the car, the board connects over BLE to a LELink² ELM327 OBD-II adapter beside its own phone link and polls engine RPM. Crossing 6000 rpm (armed below 5500, at most once every 30 s) makes Muse buzz with a **VTEC!** banner and say "VTEC just kicked in yo!" in its ElevenLabs voice. Every 4th request reads coolant temperature instead: 105 °C or more for 5 s with the engine running makes Muse fret, sweating and steaming under a **HOT!** banner, and say "Coolant temperature is high!" (once, then not again until it's back down to 100 °C, at most once every 2 minutes; it outranks VTEC). Off on every other board (`CONFIG_MUSE_OBD_VTEC`). | `components/muse/muse_obd.c`, `muse_obd_elm.c`, `devices/sdkconfig.muse-waveshare-s3-18` |
+| 🔎 **OBD readout** (AMOLED-1.8 only, this branch) | Muse can be asked what the car is doing. The `obd.read` Link command reports the adapter's link state and the latest RPM and coolant temperature, each with its age in milliseconds, or null when there is no current reading. The same snapshot prints on the USB serial console as `>obd`. | `components/muse/muse_obd.c` (`muse_obd_status`), `main/app.c`, `main/noise_control.cpp` |
 | 🔐 **Secrets outside git** | The SDK token and API keys live in `secrets/` (gitignored) and are injected into each build's generated `sdkconfig`. | `secrets/`, `tools/muse/secrets.py` |
 
 ```mermaid
@@ -62,6 +65,43 @@ flowchart LR
     App["Muse app (phone)"] -. "BLE: pairing and settings only" .-> Board
     App -- "same conversation" --> VM
 ```
+
+## In the car: the OBD reactions and readout
+
+This branch turns the AMOLED-1.8 into a very small, very opinionated co-driver for a Honda S2000.
+
+**What you need.** A LELink^2 Bluetooth LE ELM327 adapter plugged into the car's OBD-II port (driver's side, under the dash). The ESP32-S3 is BLE-only, so the cheap Bluetooth Classic ELM327 clones can never work with it; the adapter has to speak BLE. The LELink^2 advertises as "LELink BLE OBDII", with service FFE0 and a single characteristic, FFE1, for both writes and notifications.
+
+**How it connects.** There is nothing to pair and nothing to configure on the board. When the adapter is in range and awake, the firmware finds it by name or service UUID, connects as a BLE central beside its own phone link, subscribes to FFE1, runs the usual ELM init (`ATZ`, `ATE0`, `ATL0`, `ATH0`, `ATS0`, `ATSP0`) and then polls Mode 01: RPM (`010C`) back to back, with coolant temperature (`0105`) every 4th request. If the link drops (ignition off, out of range), it reconnects on its own, with a backoff that grows from 2 s to 60 s. The S2000 talks K-line, so expect a few readings a second, not a firehose.
+
+**The reactions.** Crossing 6000 rpm after being armed below 5500 plays the VTEC reaction and the line "VTEC just kicked in yo!". Coolant at 105 °C or more for 5 s with the engine running plays the coolant warning and "Coolant temperature is high!". The exact arming, cooldown and priority rules are in the feature table above. The animations are fully local and work with no network at all; the spoken lines are fetched from ElevenLabs, so on the road the board needs internet, usually the phone's hotspot.
+
+**Asking Muse what the car is doing.** The `obd.read` Link command returns the adapter state and the latest readings:
+
+```json
+{"state": "polling", "adapter_found": true, "connected": true, "subscribed": true,
+ "polling": true, "rpm": 850, "rpm_age_ms": 120, "coolant_c": 91, "coolant_age_ms": 450}
+```
+
+A reading is null when there is none right now: engine off (the ECU answers NO DATA), adapter asleep, or link down, and a dropped link clears both readings instead of reporting stale ones. With the engine off but the adapter awake, the state stays "polling" and RPM is null, which is the honest answer. Coolant ages run larger than RPM ages, because coolant is only asked for every 4th request.
+
+**On the bench.** The USB serial console takes three extra commands in this build: `>vtec` and `>coolant` force the two reactions with no car attached, and `>obd` prints the same snapshot as `obd.read`, as one `@obd {...}` line.
+
+**Gotchas.**
+
+- The adapter accepts one BLE connection at a time. If a phone OBD app is connected to it, the board cannot get in; close the app first.
+- Both sides have to be awake: the adapter sleeps with the car off, and the board only polls while it is powered.
+- Everything here is read-only. The firmware sends nothing to the car beyond ELM setup commands and PID requests; it cannot clear codes or change ECU settings.
+
+**Building it.** Only the s18 overlay turns the feature on (`CONFIG_MUSE_OBD_VTEC=y` in `devices/sdkconfig.muse-waveshare-s3-18`, together with the NimBLE central and observer roles and a second BLE connection). Build and flash as usual:
+
+```sh
+cd esp32
+tools/muse/board.sh build s18
+tools/muse/board.sh flash s18
+```
+
+Every other board builds exactly as before, with the code compiled out.
 
 ## New avatar reactions
 
