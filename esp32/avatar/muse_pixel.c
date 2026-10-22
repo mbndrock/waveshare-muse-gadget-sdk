@@ -2,7 +2,7 @@
 //
 // Jollybot is Meta's character and is not covered by the Apache License.
 // The waveshare-muse-gadget-sdk fork adds complementary reactions to it
-// (dizzy, sleepy, waking, tickled, VTEC: react_setup and what it drives). These additions
+// (dizzy, sleepy, waking, tickled, VTEC, coolant: react_setup and what it drives). These additions
 // are NOT covered by the Apache License either; they share the character's
 // status. The fork claims no rights to Jollybot or to these additions,
 // charges nothing for them, and will remove them at Meta's request
@@ -60,6 +60,10 @@ enum {
     C_HP_EDGE,   /* headphones: band and outline */
     C_VTEC,      /* the VTEC banner */
     C_VTECD,
+    C_HOT,       /* the coolant warning's HOT! banner */
+    C_HOTD,
+    C_STEAM,     /* steam off an overheating head */
+    C_STEAMD,
     C_COUNT,
 };
 
@@ -113,6 +117,10 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_HP_EDGE] = 0x76736d,
     [C_VTEC] = 0xff3b30,
     [C_VTECD] = 0x8c1414,
+    [C_HOT] = 0xff5a1f,
+    [C_HOTD] = 0x7a2008,
+    [C_STEAM] = 0xe4eaee,
+    [C_STEAMD] = 0x8e98a2,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -963,7 +971,7 @@ static void draw_alert(int x, int y)
 
 /* ---------------------------------------------------------------------------
  * Reactions: dizzy (shaken), sleepy (screen about to sleep), waking, tickled,
- * VTEC (the car's engine crossed into VTEC)
+ * VTEC (the car's engine crossed into VTEC), coolant (the car's running hot)
  * ------------------------------------------------------------------------- */
 
 static inline float smooth(float e0, float e1, float x)
@@ -1079,38 +1087,61 @@ static void draw_ha(int x, int y)
     stamp(HA, 5, x, y, C_WHITE, C_WHITE);
 }
 
-/* "VTEC!" in 5-row glyphs, 23 px wide, centred over the head. A drop shadow
- * gives it depth; it flashes white as it lands, then holds in red. `a` fades
- * it in and out through the dither (0..1). */
-static void draw_vtec_banner(int y, float a, bool flash)
+/* 5-row banner glyphs. */
+static const char *const G_V[] = { "#...#", "#...#", "#...#", ".#.#.", "..#.." };
+static const char *const G_T[] = { "#####", "..#..", "..#..", "..#..", "..#.." };
+static const char *const G_E[] = { "####", "#...", "###.", "#...", "####" };
+static const char *const G_C[] = { ".###", "#...", "#...", "#...", ".###" };
+static const char *const G_H[] = { "#...#", "#...#", "#####", "#...#", "#...#" };
+static const char *const G_O[] = { ".###.", "#...#", "#...#", "#...#", ".###." };
+static const char *const G_BANG[] = { "#", "#", "#", ".", "#" };
+
+/* A word in banner glyphs, a pixel apart, centred over the head (one pixel
+ * right of the true centre, like the head) with its top row at y. A drop
+ * shadow in `shade` gives it depth; it is white while `flash`, else `fill`.
+ * `a` fades it in and out through the dither (0..1). */
+static void draw_banner(const char *const *const *glyphs, int n, int y, float a, bool flash, uint8_t fill,
+                        uint8_t shade)
 {
-    static const char *const V[] = { "#...#", "#...#", "#...#", ".#.#.", "..#.." };
-    static const char *const T[] = { "#####", "..#..", "..#..", "..#..", "..#.." };
-    static const char *const E[] = { "####", "#...", "###.", "#...", "####" };
-    static const char *const C[] = { ".###", "#...", "#...", "#...", ".###" };
-    static const char *const BANG[] = { "#", "#", "#", ".", "#" };
-    static const char *const *const GLYPHS[] = { V, T, E, C, BANG };
-    int x0 = W / 2 - 11;   /* 21..43: one pixel right of the true centre, like the head */
+    int w = -1;
+    for (int g = 0; g < n; g++) {
+        w += (int)strlen(glyphs[g][0]) + 1;
+    }
+    int x0 = W / 2 - w / 2;
     for (int pass = 0; pass < 2; pass++) {
         int x = x0;
-        for (int g = 0; g < 5; g++) {
-            const char *const *rows = GLYPHS[g];
-            int w = (int)strlen(rows[0]);
+        for (int g = 0; g < n; g++) {
+            const char *const *rows = glyphs[g];
+            int gw = (int)strlen(rows[0]);
             for (int r = 0; r < 5; r++) {
-                for (int c = 0; c < w; c++) {
+                for (int c = 0; c < gw; c++) {
                     if (rows[r][c] != '#' || bayer(x + c, y + r) >= a) {
                         continue;
                     }
                     if (pass == 0) {
-                        px(x + c + 1, y + r + 1, C_VTECD);
+                        px(x + c + 1, y + r + 1, shade);
                     } else {
-                        px(x + c, y + r, flash ? C_WHITE : C_VTEC);
+                        px(x + c, y + r, flash ? C_WHITE : fill);
                     }
                 }
             }
-            x += w + 1;
+            x += gw + 1;
         }
     }
+}
+
+/* "VTEC!", 23 px wide (21..43): it flashes white as it lands, then holds in red. */
+static void draw_vtec_banner(int y, float a, bool flash)
+{
+    static const char *const *const VTEC[] = { G_V, G_T, G_E, G_C, G_BANG };
+    draw_banner(VTEC, 5, y, a, flash, C_VTEC, C_VTECD);
+}
+
+/* "HOT!", 19 px wide (23..41), in orange-red. */
+static void draw_hot_banner(int y, float a, bool flash)
+{
+    static const char *const *const HOT[] = { G_H, G_O, G_T, G_BANG };
+    draw_banner(HOT, 4, y, a, flash, C_HOT, C_HOTD);
 }
 
 /* A big D-shaped grin, 7 wide, opening a row wider on each rev. */
@@ -1121,7 +1152,50 @@ static void draw_vtec_grin(int x, int y, bool wide)
     stamp(wide ? GW : G, wide ? 4 : 3, x - 3, y, C_MOUTH, C_TONGUE);
 }
 
-typedef enum { RE_NONE, RE_DIZZY, RE_SLEEPY, RE_WAKING, RE_TICKLE, RE_VTEC } react_kind_t;
+/* An uneasy, wobbly mouth, 6 wide: the squiggle flips back and forth. */
+static void draw_wobble_mouth(int x, int y, bool flip)
+{
+    static const char *const A[] = { ".##..#", "#..##." };
+    static const char *const B[] = { "#..##.", ".##..#" };
+    stamp(flip ? B : A, 2, x - 3, y, C_MOUTH, C_MOUTH);
+}
+
+/* A sweat drop, pointed at the top, with a glint. `a` fades it (0..1). */
+static void draw_sweat(int x, int y, float a)
+{
+    static const char *const DROP[] = { ".#.", ".#.", "#o#", "###", ".#." };
+    for (int r = 0; r < 5; r++) {
+        for (int c = 0; c < 3; c++) {
+            char ch = DROP[r][c];
+            if (ch != '.' && bayer(x + c, y + r) < a) {
+                px(x - 1 + c, y + r, ch == 'o' ? C_WHITE : C_TEAR);
+            }
+        }
+    }
+}
+
+/* The banner's box, its shadow and a pixel around it: steam keeps out of it. */
+static inline bool in_banner_box(int x, int y)
+{
+    return y <= 8 && x >= W / 2 - 12 && x <= W / 2 + 12;
+}
+
+/* A wisp of steam rising from (x, y): a squiggle that curls as it goes, two
+ * pixels thick at the bottom, bright at the top. `a` fades it (0..1). */
+static void draw_wisp(float x, int y, float phase, float a)
+{
+    for (int k = 0; k < 6; k++) {
+        int wx = iround(x + 1.1f * sinf(phase + (float)k * 0.9f));
+        for (int t = 0; t < (k >= 3 ? 2 : 1); t++) {
+            int sx = wx + t, sy = y + k;
+            if (bayer(sx, sy) < a && !in_banner_box(sx, sy)) {
+                px(sx, sy, k < 3 ? C_STEAM : C_STEAMD);
+            }
+        }
+    }
+}
+
+typedef enum { RE_NONE, RE_DIZZY, RE_SLEEPY, RE_WAKING, RE_TICKLE, RE_VTEC, RE_COOLANT } react_kind_t;
 
 /* Giggling runs on the clock at 3.2 Hz: each "ha" is a bounce, a squish and an open mouth (0..1). */
 #define GIGGLE_HZ 3.2f
@@ -1162,7 +1236,12 @@ static void react_setup(const muse_pose_t *p, react_t *r)
     if (p->mode != MUSE_MODE_IDLE) {
         return;
     }
-    if (p->vtec > 0) {
+    /* The coolant warning outranks the rest, VTEC included: safety beats fun. */
+    if (p->coolant > 0) {
+        r->kind = RE_COOLANT;
+        r->p = clampf(p->coolant, 0, 1);
+        r->ts = r->p * MUSE_COOLANT_S;
+    } else if (p->vtec > 0) {
         r->kind = RE_VTEC;
         r->p = clampf(p->vtec, 0, 1);
         r->ts = r->p * MUSE_VTEC_S;
@@ -1296,6 +1375,25 @@ static void react_setup(const muse_pose_t *p, react_t *r)
         r->gaze = smooth(0.9f, 1.0f, d);
         r->glow = 1 + 0.6f * on;
         r->blush = 0.55f + 0.45f * on;
+        break;
+    }
+    case RE_COOLANT: {
+        /* A flinch ("uh-oh"), then hunched and fretting, hands to his cheeks,
+         * fidgeting from side to side, flushed with the heat. Hunched, he
+         * stays low so the banner and the steam clear his head. */
+        float start = window(d, 0.0f, 0.02f, 0.05f, 0.1f);
+        float fret = smooth(0.04f, 0.14f, d) * (1 - smooth(0.84f, 0.96f, d));
+        float fidget = sinf(ts * 4.2f);
+        r->sway = fret * 0.9f * fidget;
+        r->squash = 1 - 0.06f * start - 0.1f * fret;
+        r->face_dy = 0.3f * start;
+        r->arm_k = clampf(start + fret, 0, 1);
+        r->arm_dx = 2.0f;
+        r->arm_dy = -5.0f;
+        r->arm_ang = 2.5f + 0.08f * fidget;
+        r->gaze = smooth(0.9f, 1.0f, d);
+        r->glow = 1 - 0.25f * fret;
+        r->blush = 0.55f + 0.45f * fret;
         break;
     }
     default:
@@ -1457,8 +1555,70 @@ static bool react_face(const react_t *r, const avatar_t *j, float eye_y, float e
         }
         return true;
     }
+    case RE_COOLANT:
+        if (d < 0.06f) {
+            /* Uh-oh: wide-eyed, mouth open. */
+            draw_eye(j->fx + off - eye_dx, eye_y, 1, EYES_WIDE, 0, 0);
+            draw_eye(j->fx + off + eye_dx, eye_y, 1, EYES_WIDE, 0, 0);
+            draw_mouth(iround(mx), my, MOUTH_O, 0);
+        } else if (d < 0.88f) {
+            /* Worried: brows up in the middle, eyes darting side to side, an
+             * uneasy wobbly mouth. */
+            float dart = (int)floorf(ts * 1.6f) & 1 ? 1.0f : -1.0f;
+            draw_eye(j->fx + off - eye_dx, eye_y, open, EYES_NORMAL, dart, -0.4f);
+            draw_eye(j->fx + off + eye_dx, eye_y, open, EYES_NORMAL, dart, -0.4f);
+            int by = ey - 4;
+            px(lx - 2, by + 1, C_BROW); px(lx - 1, by + 1, C_BROW); px(lx, by, C_BROW); px(lx + 1, by, C_BROW);
+            px(rx - 2, by, C_BROW); px(rx - 1, by, C_BROW); px(rx, by + 1, C_BROW); px(rx + 1, by + 1, C_BROW);
+            draw_wobble_mouth(iround(mx), my, (int)floorf(ts * 4.0f) & 1);
+        } else if (d < 0.96f) {
+            /* Still uneasy as it fades. */
+            draw_eye(j->fx + off - eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
+            draw_eye(j->fx + off + eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
+            draw_mouth(iround(mx), my, MOUTH_FLAT, 0);
+        } else {
+            draw_eye(j->fx + off - eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
+            draw_eye(j->fx + off + eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
+            draw_mouth(iround(mx), my, MOUTH_SMILE, 0);
+        }
+        return true;
     default:
         return false;
+    }
+}
+
+/* Running hot: sweat drops running down either side of the head and steam
+ * curling up off it, beside the banner and below it, never into it. */
+static void draw_overheat(const react_t *r, const avatar_t *j, float hx, float top)
+{
+    float a = smooth(0.04f, 0.14f, r->p) * (1 - smooth(0.8f, 0.92f, r->p));
+    if (a <= 0) {
+        return;
+    }
+    float ts = r->ts;
+    /* A drop at each temple sliding down the side of the head, just outside
+     * it, and fading; the sides take turns. */
+    for (int i = 0; i < 2; i++) {
+        float ph = fracf(ts * 1.1f + 0.5f * (float)i);
+        float da = a * smooth(0.0f, 0.12f, ph) * (1 - smooth(0.7f, 1.0f, ph));
+        float sgn = i ? 1.0f : -1.0f;
+        float down = j->b * 0.22f + ph * 4.0f;
+        float k = (j->b - down) / j->b;
+        float half = j->a * sqrtf(fmaxf(0.0f, 1 - k * k));
+        draw_sweat(iround(hx + sgn * (half + 2.0f)), iround(top + down - 2), da);
+    }
+    /* Wisps off the head: one each side rising past the banner as it drifts
+     * out, and a short one each side of the crown that dies below it. */
+    for (int k = 0; k < 4; k++) {
+        float ph = fracf(ts * 0.8f + (float)k * 0.29f);
+        float wa = a * smooth(0.0f, 0.1f, ph) * (1 - smooth(0.75f, 1.0f, ph));
+        float sgn = k & 1 ? 1.0f : -1.0f;
+        float curl = ts * 5.0f + (float)k * 1.7f;
+        if (k < 2) {
+            draw_wisp(hx + sgn * (10.0f + ph * 7.0f), iround(fmaxf(top - 6 - ph * 10.0f, 1.0f)), curl, wa);
+        } else {
+            draw_wisp(hx + sgn * 4.5f, iround(top - 6 - ph * 2.0f), curl, wa * (1 - smooth(0.4f, 0.7f, ph)));
+        }
     }
 }
 
@@ -1863,6 +2023,13 @@ void muse_pixel_render(const muse_pose_t *p)
         float a = smooth(0.03f, 0.1f, re.p) * (1 - smooth(0.8f, 0.92f, re.p));
         if (a > 0) {
             draw_vtec_banner(re.p < 0.1f ? 1 : 2, a, re.p > 0.06f && re.p < 0.16f);
+        }
+    } else if (re.kind == RE_COOLANT) {
+        draw_overheat(&re, &j, j.cx + re.sway, top);
+        /* Over the steam; drops a pixel as it lands, like VTEC's. */
+        float a = smooth(0.03f, 0.1f, re.p) * (1 - smooth(0.84f, 0.94f, re.p));
+        if (a > 0) {
+            draw_hot_banner(re.p < 0.1f ? 1 : 2, a, re.p > 0.06f && re.p < 0.16f);
         }
     }
 
