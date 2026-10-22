@@ -198,3 +198,57 @@ Results). Do NOT push.
   `muse_settings_ui.c` and `muse_menu.c` need LVGL/IDF headers and were not
   compiled; their diffs were reviewed line by line. The real-board
   acceptance steps above are still to do on Derek's Mac.
+
+## Amendment: indicator belongs in Settings, not on the face
+
+Derek's verdict (2026-10-21 20:37 PDT): the face badge is dumb. Remove it
+and put the branch label in the Settings page instead, directly under the
+version line.
+
+### Changes
+
+1. Remove the face badge from `esp32/components/muse/muse_ui.c`:
+   - Delete `s_branch_lbl`, its creation in `build_screen()`, and the
+     branch label's `hides[2]` entry; restore `answer_layout_t.hides` to
+     `[4]` and the `add_hides` count to 2. The face goes back to having no
+     branch chrome at all.
+   - Remove the `muse_build_info.h` include from `muse_ui.c` if nothing
+     else uses it there.
+2. Remove `muse_build_badge()` from `muse_build_info.h` and
+   `muse_build_info.c`: only the exact branch is shown now, so the badge
+   API is dead code. Keep `muse_build_branch()`, the CMake stamping and
+   the configure dependency exactly as they are.
+3. In `esp32/components/muse/muse_settings_ui.c`:
+   - Add a second footer note, `s_build`, immediately after the existing
+     `s_about` note in `build_home()`.
+   - In `tick_home()`, set `s_about` back to the version/IP line
+     (`"Muse %s - %s"`) and set `s_build` to `"Build: %s"` with the exact
+     branch from `muse_build_branch()`. This puts the branch directly
+     under the version number on the Settings home page.
+   - Keep the 128-byte buffer; both lines are set from it.
+4. Keep the button menu's Status page `Build %s` line and its 192-byte
+   buffer unchanged.
+5. Update the tests:
+   - The harness and `test_muse_build_info.py` now cover the branch only
+     (main / obd-vtec-reaction / feature/new-thing / no macro -> unknown);
+     remove the badge mapping cases and the badge contract checks.
+   - Contract checks: the face badge code and `muse_build_badge` are gone
+     (no `s_branch_lbl`, no badge call in `muse_ui.c`); CMake still stamps
+     `MUSE_GIT_BRANCH`; Settings creates `s_build` after `s_about` and
+     shows the exact branch; the menu still shows it.
+6. Update docs: the `CLAUDE.md` bullet now describes the Settings home
+   `Build:` label under the version/IP line (plus the button menu Status
+   line), with no face badge. Append the amendment's outcome to this
+   file's Results.
+
+### Acceptance on the real board
+
+- Settings home shows the version/IP line and directly beneath it
+  `Build: main` on a main build and `Build: obd-vtec-reaction` on an OBD
+  build.
+- The face shows no branch badge in any mode or layout, including after a
+  read reply comes and goes.
+
+## Amendment results (Claude Code fills this in)
+
+- Pending.
