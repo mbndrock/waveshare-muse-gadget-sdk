@@ -768,8 +768,8 @@ static bool poll_rpm(void)
         if (pid < 0) {
             continue;   /* every secondary is unsupported: RPM only */
         }
-        char cmd[8];
-        snprintf(cmd, sizeof(cmd), "01%02X", pid);
+        char cmd[12];
+        snprintf(cmd, sizeof(cmd), "01%02X", (unsigned)(pid & 0xFF));
         if (!elm_cmd(cmd, locked ? POLL_MS : SEARCH_MS)) {
             return answered;
         }
