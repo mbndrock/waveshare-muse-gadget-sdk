@@ -31,7 +31,6 @@
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
 
-#include "muse_chat.h"
 #include "muse_link.h"
 #include "muse_obd_elm.h"
 #include "muse_state.h"
@@ -70,9 +69,6 @@ static const char *TAG = "muse_obd";
 #define RX_BYTES 512
 
 #define COOLANT_EVERY 4                /* every 4th request reads coolant (0105), the rest RPM */
-
-#define VTEC_LINE "VTEC just kicked in yo!"
-#define COOLANT_LINE "Coolant temperature is high!"
 
 typedef enum {
     EV_FOUND = 1,       /* addr: the adapter's advertisement */
@@ -550,13 +546,11 @@ static bool elm_init(void)
 void muse_obd_fire_vtec(void)
 {
     muse_state_start_vtec();
-    muse_hatch_say(VTEC_LINE);
 }
 
 void muse_obd_fire_coolant(void)
 {
     muse_state_start_coolant();
-    muse_hatch_say(COOLANT_LINE);
 }
 
 static void fire(int rpm)

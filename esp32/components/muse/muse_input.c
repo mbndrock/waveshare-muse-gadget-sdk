@@ -948,7 +948,7 @@ static bool console_command(char *line, bool whole)
  * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
  * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and with CONFIG_MUSE_OBD_VTEC "vtec" / "coolant"
- * play the car reactions and say their lines without a car or adapter
+ * play the car reactions without a car or adapter
  * (muse_obd_fire_vtec / muse_obd_fire_coolant) and "obd" prints the OBD
  * link's state and latest RPM / coolant, as the obd.read Link command does
  * (muse_obd_status).

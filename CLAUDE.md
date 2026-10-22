@@ -151,9 +151,9 @@ BOOT 5 s resets setup.
 - **VTEC reaction and coolant warning (s18 only, `CONFIG_MUSE_OBD_VTEC`):** `muse_obd.c` is a NimBLE central to a LELink^2 ELM327 adapter (FFE0/FFE1), beside Link's peripheral; its GAP events go to its own callback, not Link's.
   - The s18 overlay turns on `BT_NIMBLE_ROLE_CENTRAL`/`OBSERVER` and `MAX_CONNECTIONS=2`; every other board keeps them off.
   - `muse_obd_elm.c` (plain C, `tests/test_muse_obd_elm.py`) parses the ELM byte stream and runs both triggers. VTEC: armed at <= 5500 rpm, fires at >= 6000, 30 s apart.
-  - A fire calls `muse_state_start_vtec()` and `muse_hatch_say("VTEC just kicked in yo!")`. Jollybot draws it (`RE_VTEC`, `tests/test_muse_pixel_vtec.py`).
+  - A fire calls `muse_state_start_vtec()` only: the car reactions are visual, with no spoken line (speech would swap the reaction for the speaking pose). Jollybot draws it (`RE_VTEC`, `tests/test_muse_pixel_vtec.py`).
   - Coolant: every 4th poll is `0105` (A - 40 °C). Fires at >= 105 °C held 5 s with the latest RPM >= 400 (engine off or a dip below 105 restarts the 5 s); then waits for <= 100 °C and 120 s. Constants beside the VTEC ones in `muse_obd_elm.h`.
-  - A coolant fire calls `muse_state_start_coolant()` and `muse_hatch_say("Coolant temperature is high!")`. Jollybot draws it (`RE_COOLANT`, outranks `RE_VTEC`; `tests/test_muse_pixel_coolant.py`).
+  - A coolant fire calls `muse_state_start_coolant()` (no speech). Jollybot draws it (`RE_COOLANT`, outranks `RE_VTEC`; `tests/test_muse_pixel_coolant.py`).
   - Both fires go through `muse_obd_fire_vtec()` / `muse_obd_fire_coolant()` (`muse_obd.h`), which leave the triggers alone and need no adapter. On the bench, `>vtec` and `>coolant` on the USB serial console force them (`muse_input.c` `console_command`, only with `CONFIG_MUSE_OBD_VTEC`).
   - Readout: the `obd.read` Link command (`app.c` `obd_read_command`) and `>obd` on the console (`@obd {...}`) report the adapter state (`off`/`waiting`/`scanning`/`connecting`/`discovering`/`initializing`/`polling`/`backoff`) and the latest RPM/coolant with their ages, null when there is no current reading. Both read `muse_obd_status()`, a spinlocked snapshot that never blocks; a dropped link clears the readings. `tests/test_link_obd.py` checks the gating.
 - **Battery:** each board's `read_power`.
