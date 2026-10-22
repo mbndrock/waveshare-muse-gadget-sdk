@@ -95,9 +95,16 @@ static bool IRAM_ATTR on_chunk_sent(esp_lcd_panel_io_handle_t io, esp_lcd_panel_
     xSemaphoreGiveFromISR(s_chunk_free, &woken);
     bool yield = false;
     if (chunk_done()) {
+        s_band_end = esp_timer_get_time();
         s_band_busy = false;
         xSemaphoreGiveFromISR(s_band_done, &woken);
         yield = esp_lv_adapter_display_notify_color_trans_done_from_isr(s_disp);
+    }
+    /* esp_lcd's SPI IO ignores this callback's return value, so the send
+     * task, woken here, would wait for the next tick (up to 1 ms a piece,
+     * 58 pieces a frame): ask for the switch at the interrupt's exit. */
+    if (yield || woken == pdTRUE) {
+        portYIELD_FROM_ISR();
     }
     return yield || woken == pdTRUE;
 }
@@ -332,8 +339,9 @@ lv_display_t *muse_lcd_bands_register(esp_lv_adapter_display_config_t cfg, int l
     s_call_done = xSemaphoreCreateBinary();
     s_chunk_free = xSemaphoreCreateCounting(2, 2);
     s_band_done = xSemaphoreCreateBinary();
-    s_chunk[0] = heap_caps_malloc(chunk_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    s_chunk[1] = heap_caps_malloc(chunk_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    /* 16-byte aligned: video fills them with the S3's SIMD stores (muse_lcd_bands_frame). */
+    s_chunk[0] = heap_caps_aligned_alloc(16, chunk_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    s_chunk[1] = heap_caps_aligned_alloc(16, chunk_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!s_bands || !s_call_lock || !s_call_done || !s_chunk_free || !s_band_done || !s_chunk[0] || !s_chunk[1] ||
         xTaskCreatePinnedToCore(send_bands, "lcd_send", 2560, NULL, MUSE_UI_PRIORITY + 1, NULL, MUSE_UI_CORE) != pdPASS) {
         return NULL;
