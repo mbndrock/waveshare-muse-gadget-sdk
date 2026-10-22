@@ -22,7 +22,9 @@
  *              screen pages it (test_muse_caption_wrap.py)
  *   speech M S stdin is a reply's text, arriving S bytes at a time: prints the
  *              pieces it's spoken in, the first at least M bytes, each ended
- *              by \x1f (test_muse_speech_pieces.py) */
+ *              by \x1f (test_muse_speech_pieces.py)
+ *   ascii      stdin is a reply's text: prints it with the ASCII stand-ins the
+ *              caption shows (muse_text.c, test_muse_caption_wrap.py) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +32,7 @@
 #include "muse_chat.h"
 #include "muse_chat_priv.h"
 #include "muse_state.h"
+#include "muse_text.h"
 
 /* Captions page to the screen; the console lines tested here don't. */
 static int s_cols = 16, s_lines = 2;
@@ -108,8 +111,13 @@ int main(int argc, char **argv)
                 spoken = cut;
             }
         }
+    } else if (argc > 1 && !strcmp(argv[1], "ascii")) {
+        static char shown[1 << 16];
+        strlcpy(shown, in, sizeof(shown));
+        muse_text_to_ascii(shown, sizeof(shown));
+        fputs(shown, stdout);
     } else {
-        fprintf(stderr, "usage: %s console|unescape|caption COLS|speech MIN STEP < input\n", argv[0]);
+        fprintf(stderr, "usage: %s console|unescape|caption COLS|speech MIN STEP|ascii < input\n", argv[0]);
         return 2;
     }
     free(in);

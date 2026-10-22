@@ -182,11 +182,29 @@ esp32/                                   Meta's ESP32 Device SDK, plus:
   tools/muse/secrets.py                  secrets → build sdkconfig
 secrets/                                 your token and keys (gitignored)
 CLAUDE.md, .claude/skills/               guidance and a flash skill for Claude Code
-linux/  skills/                          upstream, unchanged
+linux/  skills/  protocols/              upstream, unchanged
+android/  ios/                           upstream: Muse Gadgets Test (video from a phone)
+web-flasher/                             upstream: the web flasher
 README.meta.md                           upstream README
 ```
 
 Each board is also documented the upstream way in [`esp32/devices/README.md`](esp32/devices/README.md) and [`esp32/AGENTS.md`](esp32/AGENTS.md).
+
+## From upstream
+
+Everything Meta ships comes along; the last merge took upstream `main` at `e6fe517` (2026-10-21). Highlights since the previous sync:
+
+- **Video from a phone over Wi-Fi:** [Muse Gadgets Test](android/musegadgetstest) ([iPhone](ios/musegadgetstest)) streams the phone's camera, or a clip, to a gadget's screen; H.264 or VP8 is decoded on the board. [`protocols/VIDEO.md`](protocols/VIDEO.md) explains how.
+- **`display.draw_file`:** an image from the VM over the Noise session.
+- **BLE commands:** Muse can drive the Link's Bluetooth LE.
+- **SDK token over serial and from the [web flasher](web-flasher)**, and the Settings rework (the VM in the VM ID row, the real device token state).
+- **Voice turns** stay open while Muse works, a capped turn with no reply fails cleanly, and an oversized reply says "reply too long". This fork keeps its longer timeouts on top (see [Longer voice turns](#whats-new-compared-to-upstream)).
+- **Drawing in step with the panel's tearing-effect signal** (Waveshare 1.75/1.75C, ESP-Mosaico).
+- **New boards:** Waveshare ESP32-S3-Touch-LCD-1.28, ESP32-S3-Touch-AMOLED-2.16, ESP32-C6 AMOLED 2.06 watch and ESP32-S3-1.54inch-ePaper V2, Espressif ESP-Mosaico (ESP32-S31), OSTB EchoEar-2ST, FoloToy AI Passport, a Vietnamese 1.83" ESP32-S3 board, reTerminal Sticky Muse and Link e-paper profiles. Upstream also added its own 1.85C board; this fork keeps its own 1.85C file.
+- **Battery-input power profiling:** the [porting recipe](esp32/docs/power/README.md) and [power_sweep.py](esp32/tools/power/power_sweep.py); fixture safety and explicit hardware authorization come first, as the [PPK2 rules](esp32/docs/power/ppk2.md) describe.
+- **Linux Device SDK:** LinkSession chat subscription, speech streaming, voice notes, spoken-reply requests and MuseTurn.
+
+Meta's own README, current as of that merge, is [`README.meta.md`](README.meta.md).
 
 ## Staying in sync with upstream
 
@@ -216,5 +234,7 @@ Derek maintains this fork; its additions (the voice switcher, sooner speech and 
 ## License and credits
 
 Apache License 2.0, like upstream — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Built on [facebookincubator/muse-gadget-sdk](https://github.com/facebookincubator/muse-gadget-sdk) by Meta. Board details come from Waveshare's examples and schematics; panel and codec drivers from Espressif's component registry. The display-freeze fix is from upstream PR #34 by @toddsherman. Not affiliated with Meta, Waveshare or ElevenLabs. This fork's own changes are the rows marked **This fork** in [What's new compared to upstream](#whats-new-compared-to-upstream).
+
+Third-party code keeps its upstream license, as listed in [`README.meta.md`](README.meta.md#license): minimp3 (CC0-1.0), the ESP-VoCat panel sequence in `ostb_echoear_display_init.h` (MIT), Adafruit's `pixel_font.c` (BSD-2-Clause), the SSD1677 refresh sequence in `epd_ssd1677.c` (MIT), AOSP's H.264 decoder in `components/tinyh264` (Apache-2.0) and libvpx's VP8 decoder in `components/libvpx_vp8` (BSD-3-Clause, with Google's patent grant). Muse Gadgets Test can use x264 (GPL-2.0) on the phone; this repository carries none of its code, but an app you build with it is under the GPL.
 
 > Built by hackers, for hackers, just for fun. Flashing custom firmware can brick boards and void warranties. Proceed at your own risk!

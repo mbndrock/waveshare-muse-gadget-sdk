@@ -50,16 +50,23 @@ before adding a feature to one.
 | Espressif ESP32-S3-DevKitC-1 v1.1 (N8R8) | `esp32s3` | `devices/sdkconfig.espressif-s3-devkitc-1` | `tools/board.sh espressif-s3-devkitc-1` |
 | ideaspark ESP32 + 1.9" ST7789 | `esp32` | `devices/sdkconfig.ideaspark` | `tools/board.sh ideaspark` |
 | Waveshare ESP32-C6-LCD-1.47 | `esp32c6` | `devices/sdkconfig.waveshare-c6-lcd-147` | `tools/board.sh waveshare-c6-lcd-147` |
+| Waveshare ESP32-S3-1.54inch-ePaper V2 | `esp32s3` | `devices/sdkconfig.waveshare-s3-epaper-154` | `tools/board.sh waveshare-s3-epaper-154` |
 | Seeed SenseCAP Indicator | `esp32s3` | `devices/sdkconfig.sensecap-indicator` | `tools/board.sh sensecap-indicator` |
 | Seeed reTerminal E1001 | `esp32s3` | `devices/sdkconfig.reterminal-e1001` | `tools/board.sh reterminal-e1001` |
 | Seeed reTerminal E1002 | `esp32s3` | `devices/sdkconfig.reterminal-e1002` | `tools/board.sh reterminal-e1002` |
+| Seeed reTerminal Sticky (experimental) | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.reterminal-sticky` | `tools/board.sh reterminal-sticky` |
+| Seeed reTerminal Sticky Link status (experimental) | `esp32s3` | `devices/sdkconfig.reterminal-sticky-link` | `tools/board.sh reterminal-sticky-link` |
 | Home Assistant Voice Preview Edition | `esp32s3` | `devices/sdkconfig.home-assistant-voice` | `tools/board.sh home-assistant-voice` |
 | Seeed reSpeaker Lite with XIAO ESP32-S3 (experimental) | `esp32s3` | `devices/sdkconfig.seeed-respeaker-lite` | `tools/board.sh seeed-respeaker-lite` |
 | Waveshare ESP32-S3-Touch-AMOLED-1.75C | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-175c` | manual (below) |
 | Waveshare ESP32-S3-Touch-AMOLED-1.75 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-175` | manual (below) |
+| Waveshare ESP32-S3-Touch-AMOLED-2.16 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-216` | `tools/muse/board.sh build s3-216` |
+| Espressif ESP-Mosaico (experimental; ESP-IDF master, see `devices/README.md`) | `esp32s31` | `devices/sdkconfig.muse;devices/sdkconfig.muse-esp-mosaico;devices/sdkconfig.muse-esp-mosaico-iris` | `tools/muse/board.sh build mosaico` |
+| OSTB EchoEar-2ST (experimental) | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-ostb-echoear-2st` | `tools/muse/board.sh build echoear` |
 | Espressif ESP32-S3-BOX-3 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-espressif-box-3` | `tools/muse/board.sh build box3` |
 | AIPI Lite | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-aipi` | manual |
 | Waveshare ESP32-C6-Touch-AMOLED-1.8 | `esp32c6` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-c6-18` | manual |
+| Waveshare ESP32-C6-Touch-AMOLED-2.06 | `esp32c6` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-c6-206` | `tools/muse/board.sh build c6-206` |
 | Seeed SenseCAP Watcher | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-sensecap-watcher` | manual |
 | M5Stack Cardputer ADV (experimental) | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-cardputer-adv` | `tools/muse/board.sh build cardputer-adv` |
 | M5Stack StickS3 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-sticks3` | manual |
@@ -69,10 +76,13 @@ before adding a feature to one.
 | Waveshare ESP32-S3-Touch-AMOLED-1.43C (experimental) | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-143c` | `tools/muse/board.sh build s143c` |
 | Waveshare ESP32-S3-Touch-AMOLED-1.8 (experimental) | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-18` | `tools/muse/board.sh build s18` |
 | Freenove FNK0104B | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-fnk0104b` | `tools/muse/board.sh build fnk0104b` |
+| VN ESP32-S3 1.83-inch NV3023 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-vn-s3-183` | `tools/muse/board.sh build vn183` |
 | Guition JC3248W535 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-guition-jc3248w535` | `tools/muse/board.sh build jc3248w535` |
 | Waveshare ESP32-S3-Touch-LCD-7 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-lcd7` | `tools/muse/board.sh build lcd7` |
+| Waveshare ESP32-S3-Touch-LCD-1.28 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-lcd128` | `tools/muse/board.sh build lcd128` |
 | M5Stack StickC Plus2 | `esp32` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-stickc-plus2` | manual |
 | M5Stack Core2 (v1.0) | `esp32` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-core2` | `tools/muse/board.sh build core2` |
+| FoloToy AI Passport (experimental) | `esp32c3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-ai-passport` | `tools/muse/board.sh build ai-passport` |
 
 The default profile expects the C5 DevKitC-1: an addressable status LED on
 GPIO27, the BOOT button on GPIO28 (active low), 8 MB flash and quad PSRAM.
@@ -83,11 +93,23 @@ like most WS2812s: turn the option off in `idf.py menuconfig`, or in
 
 ## Build
 
-Every build needs the user's SDK token (`mgst_…`, from gadgets.muse.ai >
+Every application build needs the user's SDK token (`mgst_…`, from gadgets.muse.ai >
 Account > SDK tokens). Ask for it, then set `CONFIG_GADGET_SDK_TOKEN="mgst_…"`
 in that build directory's `sdkconfig` (or with `idf.py menuconfig`) before
 building. Without it the build warns, and the gadget will stop pairing once
 Muse requires tokens. Never commit the token or print it in full.
+
+The opt-in `CONFIG_MUSE_POWER_TEST` image is an isolated board-load
+characterization harness, not a pairing application, and needs no SDK token or
+network credentials. Power measurement starts at `docs/power/README.md`. Read
+`docs/power/ppk2.md` before any PPK2 use (authorization and fixture gates,
+continuous source ownership, USB unplug/replug), and
+`docs/power/sensecap-watcher.md` for the Watcher's build and procedure. Never
+enable source output with unknown wiring, a connected battery, or
+USB-charger backfeed into PPK2. Other boards reuse the shared
+`muse_power_test_run()` core through `boards/muse_power_test_board.h` hooks
+and board-owned matrices, driven by `tools/power/power_sweep.py`; do not fork
+or rename the core for the next board.
 
 ### DevKitC-1 (default)
 
@@ -109,6 +131,9 @@ tools/board.sh ideaspark flash-monitor /dev/cu.usbserial-110
 Without a port it uses the only matching serial port, and fails if it finds
 none or more than one. If `idf.py` is not on `PATH`, it sources `export.sh`
 from `$IDF_PATH`, `~/esp/esp-idf-v6.0.1`, `~/esp/esp-idf-v6` or `~/esp/esp-idf`.
+The Sticky's Muse and Link status profiles build in `build-reterminal-sticky/`
+and `build-reterminal-sticky-link/`. Set the SDK token in the chosen build
+directory through `idf.py -B <dir> menuconfig`.
 
 ### Home Assistant Voice Preview Edition
 
@@ -129,7 +154,7 @@ voice note that Muse answers in the app, and the dial sets the speaker volume
 
 ### Boards with the full UI, by hand
 
-`tools/muse/board.sh build|flash <s3|s3n|aipi|box3|c6|watcher|sticks3|plus2|cardputer-adv|stopwatch|cores3|core2|jc3248w535|lcd7|s185c|s143c|s18> [SERIAL|PORT]`
+`tools/muse/board.sh build|flash <s3|s3n|s3-216|185c|s185c|s143c|s18|mosaico|aipi|box3|c6|c6-206|watcher|sticks3|plus2|cardputer-adv|stopwatch|cores3|core2|fnk0104b|jc3248w535|lcd7|lcd128|vn183|ai-passport|echoear> [SERIAL|PORT]`
 builds one board in `build-muse-<profile>/`, logs to
 `/tmp/muse_build_<board>.log`, and clears `managed_components/` before and
 after so it doesn't clash with other boards. When flashing, it finds the
@@ -162,12 +187,26 @@ arguments, except on the SenseCAP Watcher: `idf.py flash` runs plain esptool,
 which fails on its USB bridge (see "Flash it"). Build the Watcher with
 `idf.py`, flash it with `tools/muse/board.sh flash watcher`, then
 `idf.py … -p PORT monitor` as usual; reading from the bridge works. Muse builds use `partitions_muse.csv` and need 16 MB of flash or
-more, except the StickS3, StickC Plus2 and Cardputer ADV, which have 8 MB and use
+more, except the StickS3, StickC Plus2, Cardputer ADV and AI Passport, which have 8 MB and use
 `partitions_muse_8mb.csv`.
 
 All boards share `managed_components/` and `dependencies.lock` in this
 directory. If the component manager fails after you switch between a board
 with the full UI and one without (lvgl is the usual offender), delete both and build again.
+
+### OSTB EchoEar-2ST (experimental)
+
+`tools/muse/board.sh build echoear` uses the measured ESP32-S3 rev 0.2 unit
+with 16 MB DIO flash and 8 MB octal PSRAM at 80 MHz. Native USB Serial/JTAG
+(`303a:1001`) is shared by several boards, so it does not identify the model
+on its own. [EchoEar setup](devices/ostb-echoear-2st.md) records its pin map
+and limits. The bottom button controls physical power; GPIO0 is not a talk
+button. Talking and pairing confirmation use the touch screen. There's no
+software power-off, so Settings has no Power off option.
+
+The final port was tested on hardware: pairing, touch, recording and
+playback, sleep and wake, and reconnect. See its setup guide for what wasn't
+checked.
 
 ### A new board
 
@@ -213,7 +252,7 @@ flash size and status backend.
    | Espressif `303a:1001`, "USB JTAG/serial debug unit" | the chip's own USB: C5, C6, S3 and the S3 boards with the full UI. Its serial number is the MAC |
    | CH340 (`1a86:7523`) | ideaspark, SenseCAP Indicator, reTerminal E1001 and E1002 |
    | CH9102 | M5Stack StickC Plus2 |
-   | CH343 (`1a86:55d3`), "USB Single Serial" | Waveshare ESP32-S3-Touch-LCD-7 |
+   | CH343 (`1a86:55d3`), "USB Single Serial" | Waveshare ESP32-S3-Touch-LCD-7 or ESP32-S3-Touch-LCD-1.28: `chip-id` tells them apart (8 MB of PSRAM on the 7-inch, 2 MB on the 1.28-inch) |
    | CH342, two `usbmodem` ports | SenseCAP Watcher: the S3 console is the one ending in `3`, the other is the Himax camera |
 
 3. **Ask the chip.** When you can write to the port (this resets the board):
@@ -232,13 +271,14 @@ flash size and status backend.
 
    | Hint | Board |
    |---|---|
-   | `yellow` | M5Stack StopWatch |
+   | `top-right` (`yellow` on older firmware) | M5Stack StopWatch |
    | `power` | M5Stack CoreS3 |
    | `front` | M5Stack StickS3, or StickC Plus2 — tell them apart by the port: the StickS3 is native USB, the Plus2 is a CH9102 `usbserial` |
    | `top` | Waveshare ESP32-S3-Touch-AMOLED-1.75C |
+   | `key` | Waveshare ESP32-S3-Touch-AMOLED-2.16 |
    | `bottom right` | AIPI Lite |
    | `wheel` | Seeed SenseCAP Watcher |
-   | `boot` | Waveshare ESP32-C6-Touch-AMOLED-1.8, the ESP32-S3-Touch-AMOLED-1.75, the Guition JC3248W535, the ESP32-S3-Touch-LCD-1.85C, the ESP32-S3-Touch-AMOLED-1.43C or the ESP32-S3-Touch-AMOLED-1.8 — tell the C6 by its target (`esp32c6`), and the S3 boards by the `muse: board:` line a reset logs |
+   | `boot` | Waveshare ESP32-C6-Touch-AMOLED-1.8, the ESP32-S3-Touch-AMOLED-1.75, the Guition JC3248W535, the VN ESP32-S3 1.83-inch NV3023, the ESP32-S3-Touch-LCD-1.85C, the ESP32-S3-Touch-AMOLED-1.43C or the ESP32-S3-Touch-AMOLED-1.8 — tell the C6 by its target (`esp32c6`), and the S3 boards by the `muse: board:` line a reset logs |
 
 Ask the user only when these come up empty or contradict each other, and say
 what you found and what's ambiguous rather than asking from scratch.
@@ -348,7 +388,7 @@ message on. The exit status says what kind of failure it was:
 
 - **2**: no board, or it can't do this. If it says the board doesn't answer,
   rerun with `--board s3` or `--board aipi` (from the board's name, or ask) to
-  flash firmware that can. On the C6 or Watcher, follow the manual steps in
+  flash firmware that can. On the C6 boards or Watcher, follow the manual steps in
   `tools/muse/AVATAR_RECIPE.md`.
 - **3**: the board isn't on Wi-Fi, or it isn't paired in the Muse app and has
   no device token, so their Muse isn't connected. Tell them, and point them to
@@ -364,9 +404,15 @@ The default avatar is in `avatar/`: its renderer (`muse_pixel.c`) and
 its animation (`jollybot.gif`, and `happy_anim.c/.h` made from it by
 `tools/gen_happy_anim.py`).
 
-Third-party code keeps its upstream license and header: `minimp3.h` (CC0) and
-`main/pixel_font.c` (BSD-2-Clause, Adafruit). Don't restyle them or replace
-their headers with the Apache one; `components/minimp3/README.md` says how to
+Third-party code keeps its upstream license and header: `minimp3.h` (CC0),
+`main/pixel_font.c` (BSD-2-Clause, Adafruit),
+`components/muse/boards/ostb_echoear_display_init.h` (MIT, 78/xiaozhi-esp32),
+`main/epd_ssd1677.c` (MIT, Seeed-reTerminal-E10xx-Firmware),
+`components/tinyh264/src` (Apache-2.0, the Android Open Source Project) and
+`components/libvpx_vp8/src` (BSD-3-Clause and `PATENTS`, the WebM Project).
+Each third-party file is listed under License in `README.md` and the root
+`README.md`; add a new one to both.
+Don't restyle them or replace their headers with the Apache one; `components/minimp3/README.md` says how to
 update minimp3.
 
 The Apache License doesn't cover the Jollybot avatar in `avatar/`. Its files
@@ -379,7 +425,7 @@ The status LED (or the edge bars or avatar on display boards) shows the state:
 | Colour | Meaning |
 |---|---|
 | orange, breathing | BLE advertising, waiting for setup |
-| blue, breathing | pairing needs a physical button press |
+| blue, breathing | pairing needs an explicit device press (screen on EchoEar-2ST) |
 | blue | Wi-Fi or VM session coming up |
 | green | connected (tunnel up, or control session up when the tunnel is off) |
 | yellow, blinking | VM switching or connection lost |
@@ -392,11 +438,15 @@ Button (BOOT on the dev boards):
   setup isn't complete
 - **hold for 5 s**: reset setup (unpair and forget Wi-Fi)
 
+EchoEar-2ST confirms pending pairing with an explicit screen press; hold the
+on-screen microphone to record and release it to send once paired. It has no
+physical talk/setup button, so the GPIO button reset gesture does not apply.
+
 The device advertises as `MuseGadget-XXXXXX` (`MuseGadget-Disp-XXXXXX` on the
 ideaspark, SenseCAP Indicator and reTerminal E1001 and E1002 overlays, `MuseGadget-ha-voice-XXXXXX` on the
 Voice PE, `MuseGadget-respeaker-XXXXXX` on the reSpeaker Lite). It uses
 **community pairing v5**, so the phone app must support v5
-and list community devices. Community pairing needs the button press but has no
+and list community devices. Community pairing needs the explicit device press but has no
 manufacturer attestation, and it doesn't stop an active man-in-the-middle.
 
 Until it's paired, a board with the full UI shows that name on its screen, dim under the
@@ -405,14 +455,76 @@ for the whole name shows the `XXXXXX` tail on its own, and a square 128 px
 screen (AIPI Lite) leaves it out, the same as it leaves out the state. Once it's
 paired (or has a token set by hand), the name goes, and the mic icon and the
 touch boards' speaker button appear. They're hidden until then, since a press
-can't reach Muse and there are no replies to mute.
+can't reach Muse and there are no replies to mute. The StopWatch is an exception:
+its dedicated microphone, speaker/mute and power rim icons stay visible before
+pairing as well, identifying its three physical controls.
 
 To skip BLE Wi-Fi provisioning while you iterate, set
 `CONFIG_HOMEHUB_WIFI_SSID` and `CONFIG_HOMEHUB_WIFI_PASSWORD` in `menuconfig`.
 The device still needs to be paired once for its token.
 
+## Video from a phone
+
+`MUSE_VIDEO=1 tools/muse/board.sh build|flash <board>` (overlay
+`devices/sdkconfig.muse-video`) adds video streaming (`CONFIG_MUSE_VIDEO`,
+`CONFIG_MUSE_VIDEO_WIFI`): Muse Gadgets Test (`../android/musegadgetstest` for
+Android, `../ios/musegadgetstest` for iPhone) on a phone on the same Wi-Fi streams
+its camera, or a clip, as H.264 or VP8
+(`CONFIG_MUSE_VIDEO_VP8`, on by default), and the board decodes it and
+draws it full screen. `../protocols/VIDEO.md` has
+the design, the Wi-Fi protocol and the numbers.
+
+- **Boards:** those whose panel driver has `draw_frame` and that have PSRAM:
+  the Waveshare S3 1.75C (tested) and 1.75, the StopWatch and the
+  ESP-Mosaico. Another QSPI AMOLED driven by `boards/muse_lcd_bands.c` gets
+  it with `.draw_frame = muse_lcd_bands_frame` and its panel gap
+  (`muse_lcd_bands_set_gap`); `muse_lcd_bands_set_te` if the TE line is wired.
+- **Pieces:** `components/tinyh264` and `components/libvpx_vp8` (the
+  decoders, behind `muse_vdec.c`),
+  `components/muse_vstream` (the receive ring and frame format any transport
+  shares), `components/muse/muse_video.c` (decode and show tasks, pacing,
+  bands, the view), `muse_yuv*.c/.S` (colour conversion and scaling),
+  `muse_video_wifi.c` (TCP on port 7766, mDNS `_musevideo._tcp`) and
+  `muse_video_wire.c` (its messages). A new transport fills a
+  `muse_video_transport_t` and calls `muse_video_begin()`.
+- **Using it:** Phone camera in Settings (touch boards) or the menu opens the
+  view and asks the phone for a stream; any button closes it. The console's
+  `>video` / `>video=0` do the same. The board takes a stream only while the
+  view is open: the port is unauthenticated (`../protocols/VIDEO.md`, Trust).
+  `CONFIG_MUSE_VIDEO_WIFI_START_ANYTIME` lifts that for automated benches;
+  never ship it. Stats every 2 s on `muse_video`: decode time,
+  received-to-shown, kb/s, shown/dropped/skipped, each core's load.
+- **Radio:** while a stream is on, Wi-Fi stays out of modem sleep and BLE
+  stops advertising (`muse_wifi_keep_awake`, `muse_link_ble_quiet`): with BLE
+  advertising, the radio's scheduler gives BLE half of every beacon period
+  and the stream's packets wait out that half (50 ms round trips instead of
+  15, and the phone's bitrate falls to its floor).
+- **Memory:** the ring (128 KB) and the decoders' memory are in PSRAM, and
+  the decode tasks' stacks in main SRAM (`MALLOC_CAP_DMA`): the S31 also
+  hands out LP RAM as heap once main SRAM runs low, several times slower, so
+  keep anything per-frame out of plain internal `malloc`. The decode and show
+  tasks take about 20 KB of internal RAM once the first stream starts.
+  `CONFIG_MUSE_VIDEO_DECODER_IRAM` (off) puts the decoders' hot code in IRAM:
+  44 KB (and 33 KB for VP8; `CONFIG_MUSE_VP8_IRAM` picks less or more) that a
+  Wi-Fi + BLE + UI build on the S3 can't spare (LVGL's task then fails to
+  start).
+- **Test** with `tests/test_muse_video.py` (the ring and the Wi-Fi messages,
+  and the wiring under the options), `tests/test_video_untrusted.py`
+  (hostile sizes, the port's guards), `tests/test_tinyh264_pie.py` and
+  `tests/test_libvpx_vp8.py`; on a board, with Muse Gadgets Test (Android:
+  `adb logcat -s MuseCam`; iPhone: Xcode's console).
+- **Untrusted input:** everything from the network is. Keep the checks in
+  `../protocols/VIDEO.md`'s Trust section when changing the transport, the
+  decoders' glue (`muse_vdec.c`) or the drawing (`fill()` in `muse_video.c`).
+
 ## Configuration gotchas
 
+- `sdkconfig.defaults.esp32c5` is loaded after `sdkconfig.defaults` for C5
+  builds only (ESP-IDF's target-specific defaults): it moves lwIP and Wi-Fi
+  heap buffers to PSRAM, raises the TCP windows to 64 KiB and deepens the
+  receive path to match (64 dynamic RX buffers, 12 queued out-of-order
+  segments). Other chips keep 16 KiB windows in internal RAM;
+  `cmake/validate_config.cmake` enforces both.
 - Each build's generated `sdkconfig` lives in its build directory
   (`build/sdkconfig`, `build-<board>/sdkconfig`). Once it exists, it overrides
   later edits to `sdkconfig.defaults` or the overlays. After changing those,
@@ -421,9 +533,38 @@ The device still needs to be paired once for its token.
   TCP buffer sizes or cJSON nesting limit.
 - Edit per-build settings with `idf.py -B <dir> menuconfig` (under "ESP32
   Device SDK"). Don't commit a generated `sdkconfig`: it's gitignored for a reason.
+- Sticky's LVGL task stack must be in internal RAM: touch settings callbacks
+  write NVS synchronously, and flash writes disable the cache. A PSRAM UI task
+  stack asserts in `esp_task_stack_is_sane_cache_disabled()` when changing a
+  setting. The RGB565 framebuffer can remain in PSRAM.
 - OTA is off by default (`CONFIG_HOMEHUB_OTA_ENABLED=n`, version `999.0.0`),
   except on boards with the full UI. Set a version with `-DPROJECT_VER=1.0.0` or
   `version.txt`.
+- BLE is shut down and its memory released once setup completes, except on
+  boards with the full UI. `CONFIG_HOMEHUB_BLE_PERSISTENT` keeps NimBLE up
+  beside Wi-Fi with a basic GATT service (`main/ble_basic.c`) advertised
+  slowly; it costs roughly 40 KB of internal RAM for as long as the device
+  runs (`tools/coexist/sdkconfig.ble-mem` wins most of it back on the C5).
+  On the C5, `CONFIG_HOMEHUB_BLE_COEX` (`main/ble_coex.c`) keeps BLE
+  advertising and connections from reserving half the radio's airtime once
+  setup is complete, which doubles Wi-Fi throughput with BLE up. It relies
+  on ESP-IDF's private coexistence status bits, so it builds on IDF v6.0.x
+  only until the bits are rechecked on another version.
+  `tools/coexist/` holds the overlays used to size it, and the data-path
+  bench (`CONFIG_HOMEHUB_PIPELINE_BENCH`) with its results.
+- With BLE persistent, `CONFIG_HOMEHUB_BLE_COMMANDS` (default on) lets Muse
+  drive the Link's BLE: `ble.state`, `ble.power`, `ble.advertise`,
+  `ble.scan`, `ble.connect`, `ble.disconnect`, `ble.discover`, `ble.read`,
+  `ble.write` and `ble.subscribe` (`main/ble_commands.c` over the central in
+  `main/ble_client.c`). They run one at a time on their own task. `ble.power`
+  off stops the stack without releasing the controller's memory, so it can
+  come back; the default build, which releases BLE after setup, can't.
+  `tests/test_ble_commands.py` runs them against a fake client.
+- On the C5 with PSRAM, `CONFIG_HOMEHUB_FAST_GCM` (default on there) wraps
+  ESP-IDF's one-shot AES-GCM with `main/fast_gcm.c` for TLS and Noise. It
+  takes about 19 KB of internal RAM (8-bit GHASH tables and the PSRAM staging
+  buffer; see its Kconfig help). Turn it off to compare against IDF's;
+  `tests/test_ghash32.py` checks the tables and its failure handling.
 - Don't move offsets in `partitions.csv`. `prod_data` and `prod_bak` are fixed
   manufacturing locations, and the table offset of `0x10000` leaves room for a
   larger Secure Boot bootloader. Check the `check_sizes` line in the build
@@ -474,6 +615,15 @@ handled in `noise_control.cpp` itself; everything else goes through
 6. **Add a host test** in `tests/`. `test_link_sensecap_sensors.py` checks
    that `sensors.read` is advertised and dispatched under the same option, and
    runs its parser against a harness.
+
+Report environmental sensors (temperature, humidity, CO2, tVOC, light and so
+on) through `sensors.read`, on every board that has them, so Muse has one
+command to call wherever it runs. Don't add them to `device.health`, which is
+for the link itself (battery, power, network), or give them a board-specific
+command. Return each reading as `{value, unit, age_s}`, as
+`sensecap_sensors.c` does, and report a sensor with no recent reading as null.
+Read slow or I2C sensors in a background task and have `sensors.read` return
+the latest value.
 
 Muse sees the command once the board reconnects with the new firmware. Keep
 the management commands that `on_ws_command()` also handles (`device.list_vms`,

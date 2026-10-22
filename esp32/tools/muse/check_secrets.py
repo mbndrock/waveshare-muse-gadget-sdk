@@ -24,13 +24,15 @@
   - the real SDK token and ElevenLabs key from secrets/ (or the environment,
     as tools/muse/secrets.py reads them), whole or any 12-byte piece of them;
   - anything shaped like an SDK token (mgst_...) or an ElevenLabs key (sk_...),
-    except the fake token in the pairing handshake test;
+    except the fake token in the pairing handshake test and upstream's own
+    made-up test tokens (UPSTREAM_FAKES);
   - files that hold secrets: secrets/ other than its README and templates,
     and build-*/ (each build's sdkconfig carries them).
 
 Found values are never printed, only where they are. Exit status 1 stops git.
 """
 
+import hashlib
 import os
 import re
 import subprocess
@@ -46,6 +48,16 @@ SECRETS = (
 PIECE = 12
 SHAPES = re.compile(r"mgst_[A-Za-z0-9]{12,}|sk_[a-f0-9]{24,}")
 FAKE = ("esp32/tests/link_pairing_handshake_harness.c", re.compile(r"mgst_A+\b"))
+# Made-up tokens in upstream's tests, by file: the SHA-256 of each exact value,
+# so this file holds nothing token-shaped. Any other token in them still counts.
+UPSTREAM_FAKES = {
+    "esp32/tests/link_identity_harness.c": {"11a790b00d395395a8f1d05d460ce5fed17c10816b3e02df5180dd8f996043cc"},
+    "linux/tests/test_pair.py": {"582cddc6be3ee45420d084f1c56be858d83e50f616efdeda95bdd9021b18665d"},
+    "linux/tests/test_service.py": {
+        "8c21c6f50d835c2355763f65002be1d9f7f44a2865f6c50f45ecc4aac8f65f60",
+        "a516de27e61566e7396410e5e30673e941757f194638f1166b15bd558695aeed",
+    },
+}
 SECRET_PATH = re.compile(r"(^|/)secrets/(?!README\.md$)(?!.*\.example$)[^/]+$|(^|/)build-[^/]*/")
 
 
@@ -90,6 +102,8 @@ def findings(diff, paths):
                 out.append(f"{path}:{line}: contains your {name} (or part of it)")
         for m in SHAPES.finditer(text):
             if path == FAKE[0] and FAKE[1].fullmatch(m.group(0)):
+                continue
+            if hashlib.sha256(m.group(0).encode()).hexdigest() in UPSTREAM_FAKES.get(path, ()):
                 continue
             out.append(f"{path}:{line}: looks like {'an SDK token' if m.group(0).startswith('mgst_') else 'an API key'}")
     return out

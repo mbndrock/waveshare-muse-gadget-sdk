@@ -31,6 +31,10 @@ from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# The standard library's secrets, imported before tools/muse joins the path:
+# tools/muse/secrets.py would otherwise stand in for it for every test in the
+# run, and tools/power uses it.
+import secrets  # noqa: E402,F401
 sys.path.insert(0, str(ROOT / "tools" / "muse"))
 
 import avatar  # noqa: E402

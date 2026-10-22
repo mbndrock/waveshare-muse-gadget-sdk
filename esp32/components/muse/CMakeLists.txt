@@ -68,12 +68,22 @@ if(CONFIG_MUSE_ENABLED)
     if(CONFIG_MUSE_BOARD_WAVESHARE_S3_175C OR CONFIG_MUSE_BOARD_WAVESHARE_S3_175)
         # One driver: the 1.75 differs only in pins (its BSP's) and its PWR key.
         list(APPEND srcs "boards/board_waveshare_s3_175c.c" "boards/muse_lcd_bands.c")
+    elseif(CONFIG_MUSE_BOARD_OSTB_ECHOEAR_2ST)
+        list(APPEND srcs "boards/board_ostb_echoear_2st.c")
+    elseif(CONFIG_MUSE_BOARD_RETERMINAL_STICKY)
+        list(APPEND srcs "boards/board_reterminal_sticky.c" "../../main/epd_ssd1677.c")
+    elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_216)
+        list(APPEND srcs "boards/board_waveshare_s3_216.c" "boards/muse_lcd_bands.c")
+    elseif(CONFIG_MUSE_BOARD_ESP_MOSAICO)
+        list(APPEND srcs "boards/board_esp_mosaico.c" "boards/muse_lcd_bands.c")
     elseif(CONFIG_MUSE_BOARD_AIPI)
         list(APPEND srcs "boards/board_aipi.c")
     elseif(CONFIG_MUSE_BOARD_ESPRESSIF_BOX_3)
         list(APPEND srcs "boards/board_espressif_box_3.c" "boards/box_3_microphone.c")
     elseif(CONFIG_MUSE_BOARD_WAVESHARE_C6_18)
         list(APPEND srcs "boards/board_waveshare_c6_18.c")
+    elseif(CONFIG_MUSE_BOARD_WAVESHARE_C6_206)
+        list(APPEND srcs "boards/board_waveshare_c6_206.c")
     elseif(CONFIG_MUSE_BOARD_SENSECAP_WATCHER)
         list(APPEND srcs "boards/board_sensecap_watcher.c" "boards/muse_lcd_bands.c")
         if(CONFIG_MUSE_WATCHER_CAMERA)
@@ -103,6 +113,29 @@ if(CONFIG_MUSE_ENABLED)
         list(APPEND srcs "boards/board_guition_jc3248w535.c")
     elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_LCD7)
         list(APPEND srcs "boards/board_waveshare_s3_lcd7.c")
+    elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_LCD128)
+        list(APPEND srcs "boards/board_waveshare_s3_lcd128.c")
+    elseif(CONFIG_MUSE_BOARD_VN_S3_183)
+        list(APPEND srcs "boards/board_vn_s3_183.c")
+    elseif(CONFIG_MUSE_BOARD_AI_PASSPORT)
+        list(APPEND srcs "boards/board_ai_passport.c")
+    endif()
+    if(CONFIG_MUSE_VIDEO)
+        # Phone camera: decode and draw (muse_video), and the transports that feed it.
+        list(APPEND srcs "muse_video.c" "muse_vdec.c" "muse_yuv.c")
+        if(CONFIG_IDF_TARGET_ESP32S3)
+            list(APPEND srcs "muse_yuv_pie.S")   # the S3's SIMD colour conversion
+        elseif(CONFIG_IDF_TARGET_ESP32S31)
+            list(APPEND srcs "muse_yuv_pie_s31.S")   # the same on the S31's SIMD (checked at first use)
+        endif()
+        if(CONFIG_MUSE_VIDEO_WIFI)
+            list(APPEND srcs "muse_video_wifi.c" "muse_video_wire.c")
+        endif()
+    endif()
+    # Shared core, independent of board selection. Keep it after the BSP so
+    # Watcher's independently retained recovery markers keep their link order.
+    if(CONFIG_MUSE_POWER_TEST)
+        list(APPEND srcs "muse_power_test.c")
     endif()
 elseif(CONFIG_HOMEHUB_VOICE)
     # The Voice PE board uses just the Hatch voice session; the project's main/
@@ -112,17 +145,21 @@ elseif(CONFIG_HOMEHUB_VOICE)
 endif()
 
 set(muse_priv_requires
-    esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash
+    esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash esp_pm esp_event esp_netif
     bt esp-tls mbedtls esp_app_format esp_http_client
-    noise_core minimp3
+    noise_core minimp3 muse_vstream tinyh264 libvpx_vp8
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
-    esp_driver_pcnt)
+    esp_driver_pcnt efuse
+    # The Sticky's microSD (CONFIG_MUSE_STICKY_SD). Requirements are resolved
+    # before Kconfig values exist, so these can't depend on it; only the code does.
+    fatfs esp_driver_sdspi sdmmc)
 list(APPEND muse_priv_requires camera)
 
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "."
     EMBED_FILES ${embed}
+    LDFRAGMENTS "linker.lf"   # CONFIG_MUSE_STATIC_BUFFERS_IN_PSRAM
     WHOLE_ARCHIVE   # muse_lv_mem.c provides symbols only LVGL references
     REQUIRES esp_driver_gpio esp_driver_i2c
     PRIV_REQUIRES ${muse_priv_requires}

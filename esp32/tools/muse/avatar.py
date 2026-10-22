@@ -61,8 +61,11 @@ BOARDS = {
     "Espressif ESP32-S3-BOX-3": "box3",
     "Waveshare ESP32-S3-Touch-AMOLED-1.75C": "s3",
     "Waveshare ESP32-S3-Touch-AMOLED-1.75": "s3n",
+    "Waveshare ESP32-S3-Touch-AMOLED-2.16": "s3-216",
     "AIPI Lite": "aipi",
+    "OSTB EchoEar-2ST": "echoear",
     "Waveshare ESP32-C6-Touch-AMOLED-1.8": "c6",
+    "Waveshare ESP32-C6-Touch-AMOLED-2.06": "c6-206",
     "Seeed SenseCAP Watcher": "watcher",
     "M5Stack StickS3": "sticks3",
     "M5Stack Cardputer ADV": "cardputer-adv",
@@ -76,8 +79,11 @@ BOARDS = {
     "Freenove FNK0104B": "fnk0104b",
     "Guition JC3248W535": "jc3248w535",
     "Waveshare ESP32-S3-Touch-LCD-7": "lcd7",
+    "Waveshare ESP32-S3-Touch-LCD-1.28": "lcd128",
+    "VN ESP32-S3 1.83-inch NV3023": "vn183",
+    "FoloToy AI Passport": "ai-passport",
 }
-CHAT_BOARDS = ("s3", "s3n", "aipi", "box3", "sticks3", "watcher", "stopwatch", "cores3", "core2", "fnk0104b", "jc3248w535", "lcd7", "s185c", "s143c", "s18")
+CHAT_BOARDS = ("s3", "s3n", "s3-216", "185c", "aipi", "box3", "sticks3", "watcher", "stopwatch", "cores3", "core2", "fnk0104b", "jc3248w535", "lcd7", "lcd128", "vn183", "echoear", "s185c", "s143c", "s18")
 
 
 class Stop(Exception):
