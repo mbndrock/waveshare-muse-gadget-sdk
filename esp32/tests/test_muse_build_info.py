@@ -85,6 +85,28 @@ class MuseBuildInfoTest(unittest.TestCase):
         # After registration, inside the Muse-only block.
         self.assertLess(src.index("idf_component_register("), src.index("MUSE_GIT_BRANCH="))
 
+    def test_face_badge(self):
+        src = (MUSE / "muse_ui.c").read_text()
+        self.has('#include "muse_build_info.h"', src)
+        self.has("static lv_obj_t *s_branch_lbl;", src)
+        self.has("lv_label_set_text(s_branch_lbl, muse_build_badge());", src)
+        self.has("s_answers[ANSWER_READ].hides[2] = s_branch_lbl;", src)
+        self.has("add_hides(&s_answers[ANSWER_READ], 3);", src)
+        # Three labels plus add_hides' two hint icons.
+        self.has("lv_obj_t *hides[5];", src)
+        self.has("add_hides(&s_answers[ANSWER_HEARD], 0);", src)
+        self.assertIsNone(re.search(r"s_answers\[ANSWER_HEARD\]\.hides\[\d\] = s_branch_lbl", src))
+
+    def test_exact_branch_in_settings_and_menu(self):
+        settings = (MUSE / "muse_settings_ui.c").read_text()
+        self.has('#include "muse_build_info.h"', settings)
+        self.matches(settings, r'"Muse %s - %s - %s", esp_app_get_description\(\)->version,\s*muse_build_branch\(\)')
+        menu = (MUSE / "muse_menu.c").read_text()
+        self.has('#include "muse_build_info.h"', menu)
+        self.matches(menu, r"Power %s\\nBuild %s\\nVer   %s")
+        self.matches(menu, r"batt,\s*muse_build_branch\(\),")
+        self.matches(menu, r"static void refresh\(void\)\n\{\n    char buf\[192\];")
+
 
 if __name__ == "__main__":
     unittest.main()

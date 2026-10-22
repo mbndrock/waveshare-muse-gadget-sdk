@@ -28,6 +28,7 @@
 #include "muse_battery.h"
 #include "muse_ble.h"
 #include "muse_board.h"
+#include "muse_build_info.h"
 #include "muse_chat.h"
 #include "muse_input.h"
 #include "muse_link.h"
@@ -251,10 +252,10 @@ static void status_text(char *buf, size_t n)
         snprintf(batt, sizeof(batt), "%d%%%s", p.battery_pct, p.charging ? " +" : "");
     }
     const char *phone = b.state == MUSE_BLE_OFF ? "Off" : (b.state == MUSE_BLE_CONNECTED ? "Connected" : b.name);
-    snprintf(buf, n, "Wi-Fi %s\nIP    %s\nLink  %s\nMuse  %s\nPhone %s\nPower %s\nVer   %s",
+    snprintf(buf, n, "Wi-Fi %s\nIP    %s\nLink  %s\nMuse  %s\nPhone %s\nPower %s\nBuild %s\nVer   %s",
              w.state == MUSE_WIFI_CONNECTED ? w.ssid : (w.state == MUSE_WIFI_OFF ? "off" : "offline"),
              w.state == MUSE_WIFI_CONNECTED ? w.ip : "-", muse_link_state_name(muse_link_state()),
-             muse_hatch_state_name(h.state), phone, batt,
+             muse_hatch_state_name(h.state), phone, batt, muse_build_branch(),
              esp_app_get_description()->version);
     muse_text_to_ascii(buf, n);   /* network and phone names can have curly quotes */
 }
@@ -301,7 +302,7 @@ static void battery_text(char *buf, size_t n)
 
 static void refresh(void)
 {
-    char buf[160];
+    char buf[192];
     if (s_view == VIEW_LIST) {
         for (int i = 0; i < ITEM_COUNT; i++) {
             value_text(i, buf, sizeof(buf));

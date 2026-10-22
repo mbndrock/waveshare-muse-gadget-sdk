@@ -28,6 +28,7 @@
 #include "muse_battery.h"
 #include "muse_ble.h"
 #include "muse_board.h"
+#include "muse_build_info.h"
 #include "muse_chat.h"
 #include "muse_input.h"
 #include "muse_keypad.h"
@@ -1325,7 +1326,7 @@ static void tick_home(void)
     }
 
     muse_power_t p = muse_state_power();
-    char buf[96];
+    char buf[128];
     if (p.battery_pct < 0) {
         strlcpy(buf, "USB", sizeof(buf));
     } else {
@@ -1333,8 +1334,8 @@ static void tick_home(void)
     }
     set_text(s_home_battery, buf);
 
-    snprintf(buf, sizeof(buf), "Muse %s  -  %s", esp_app_get_description()->version,
-             w.state == MUSE_WIFI_CONNECTED ? w.ip : "offline");
+    snprintf(buf, sizeof(buf), "Muse %s - %s - %s", esp_app_get_description()->version,
+             muse_build_branch(), w.state == MUSE_WIFI_CONNECTED ? w.ip : "offline");
     set_text(s_about, buf);
 }
 

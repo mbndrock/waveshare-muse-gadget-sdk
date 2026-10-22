@@ -163,4 +163,38 @@ Results). Do NOT push.
 
 ## Results (Claude Code fills this in)
 
-- Pending.
+- Commits on `main` (not pushed): build info API + CMake stamping + host
+  test/harness; then the face badge, Settings footer, menu Status line,
+  `CLAUDE.md` bullet and these Results.
+- `muse_build_info.{h,c}` as specified; `muse_build_info.c` added to the
+  `CONFIG_MUSE_ENABLED` source list. The CMake block sits after
+  `idf_component_register(...)` inside the existing `CONFIG_MUSE_ENABLED`
+  block, registers `<repo>/.git/HEAD` as a configure dependency, reads it
+  with `file(STRINGS)` (no `git`), and defines `MUSE_GIT_BRANCH` PRIVATE on
+  `${COMPONENT_LIB}` from a normal (non-cache) variable.
+- Deviations / additions, both small:
+  - `answer_layout_t.hides` grew from 4 to 5. With three fixed labels,
+    `add_hides()` can append both hint icons (mic and aux), which would
+    have written `hides[4]` out of bounds. `show_answer()` loops over
+    `sizeof(hides)`, so nothing else changes. The test checks it.
+  - On CMake 3.29+ (what IDF v6 ships) `IS_READABLE` guards the read, so
+    an unreadable HEAD gives `unknown` instead of a configure error; older
+    CMake reads it unguarded.
+  - The Settings footer uses the spec's single-space `" - "` separator; the
+    old footer had `"  -  "`.
+- CMake block exercised by hand with `cmake -P` (host CMake 3.28) on fake
+  repos: `main`, `obd-vtec-reaction`, `feat/x y$z` -> `feat/x-y-z`, a raw
+  hash -> `detached`, garbage -> `unknown`, a worktree `.git` file ->
+  `unknown`, an 80-char branch -> capped at 64.
+- Host QA: `test_muse_build_info` 7/7 OK (four `cc -std=c11 -Wall -Wextra
+  -Werror` cases: main/MAIN BUILD, obd-vtec-reaction/OBD BUILD,
+  feature/new-thing/DEV BUILD, no macro/unknown/DEV BUILD; plus the CMake,
+  face, Settings and menu source contracts). Full suite: 191 tests, 4
+  errors, 4 skipped. The 4 errors are the known pre-existing `setUpClass`
+  failures in link_discovery, link_sensecap_sensors, muse_chat_link_errors
+  and muse_chat_session (`managed_components/espressif__cjson/.../cJSON.c`
+  absent); the same 4 occur with this change stashed.
+- No ESP-IDF build ran (no IDF on this VM). `muse_ui.c`,
+  `muse_settings_ui.c` and `muse_menu.c` need LVGL/IDF headers and were not
+  compiled; their diffs were reviewed line by line. The real-board
+  acceptance steps above are still to do on Derek's Mac.
