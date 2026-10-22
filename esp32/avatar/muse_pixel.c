@@ -2,11 +2,12 @@
 //
 // Jollybot is Meta's character and is not covered by the Apache License.
 // The waveshare-muse-gadget-sdk fork adds complementary reactions to it
-// (dizzy, sleepy, waking, tickled, VTEC, coolant, warm-up: react_setup and what it drives). These additions
+// (dizzy, sleepy, waking, tickled, VTEC, coolant, warm-up: react_setup and what it drives) and a
+// racing helmet (draw_helmet, pose.helmet). These additions
 // are NOT covered by the Apache License either; they share the character's
 // status. The fork claims no rights to Jollybot or to these additions,
 // charges nothing for them, and will remove them at Meta's request
-// (wupsbr@gmail.com). With the reactions at 0 this renders exactly as Meta's.
+// (wupsbr@gmail.com). With the reactions at 0 and no helmet this renders exactly as Meta's.
 
 #include "muse_pixel.h"
 
@@ -64,6 +65,10 @@ enum {
     C_HOTD,
     C_STEAM,     /* steam off an overheating head */
     C_STEAMD,
+    C_HELM,      /* the racing helmet's shell */
+    C_HELM_SH,   /* its shade */
+    C_VISOR,     /* its raised visor, smoked */
+    C_VISOR_HI,  /* the visor's glint */
     C_COUNT,
 };
 
@@ -121,6 +126,10 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_HOTD] = 0x7a2008,
     [C_STEAM] = 0xe4eaee,
     [C_STEAMD] = 0x8e98a2,
+    [C_HELM] = 0xeef1f6,
+    [C_HELM_SH] = 0xb3bbc9,
+    [C_VISOR] = 0x283244,
+    [C_VISOR_HI] = 0x7f8da8,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -1223,6 +1232,106 @@ static void draw_thumbs_up(int x, int y)
     }
 }
 
+/*
+ * A racing helmet (pose.helmet), worn while linked to the car: a light shell
+ * over the hood, a little bigger than the head, with a stripe in the mode's
+ * accent down the crown. The eye port is the face panel and a pixel more, so
+ * the eyes, cheeks and mouth all show and every reaction reads. The visor is
+ * raised: a smoked band over the top of the port, on a pivot each side.
+ * Under the port the shell reaches lower at the sides, a hint of the chin
+ * bar, and leaves the chin open. Drawn after the face, it follows the body's
+ * squash and lean; the arms stay in front of it.
+ */
+static void draw_helmet(const avatar_t *j)
+{
+    static uint64_t shell[H], visor[H];   /* cells, a bit per column (W is 64) */
+    avatar_t h = *j;
+    h.a += 2.5f;   /* a helmet is rounder than the head in it */
+    h.b += 3.0f;
+    float port_a = j->fa + 1.0f, port_b = j->fb + 1.0f;   /* the eye port */
+    float vis_a = port_a + 1.5f, vis_b = port_b + 5.0f;   /* the visor's outer edge */
+    float vis_y = j->fy - port_b * 0.4f;                  /* where the visor's ends sit */
+    float bottom = j->fy + j->fb + 0.5f;                  /* the shell's lowest middle */
+    int y0 = (int)(h.cy - h.b) - 1, y1 = (int)(bottom + 4);
+    y0 = y0 < 0 ? 0 : y0;
+    y1 = y1 >= H ? H - 1 : y1;
+    memset(shell, 0, sizeof(shell));
+    memset(visor, 0, sizeof(visor));
+    for (int y = y0; y <= y1; y++) {
+        float fy = y + 0.5f, sh = j->shear * (j->pivot - fy);
+        float cx = h.cx + sh, fcx = j->fx + sh;
+        float pv = (fy - j->fy) / port_b, vv = (fy - j->fy) / vis_b;
+        pv *= pv;
+        vv *= vv;
+        row_t row;
+        row_setup(&h, fy, &row);
+        /* Below the eyes it tucks in around the jaw, rather than flaring
+         * over a body that is squashed wide. */
+        float tuck = 1.0f + 0.3f * clampf((fy - j->fy) / port_b, 0, 2);
+        for (int x = 0; x < W; x++) {
+            float dx = x + 0.5f - cx;
+            int32_t ux;
+            if (body_field(&row, QF(dx * tuck), &ux) > ONE || fy > bottom + 2.0f * fabsf(dx) / h.a) {
+                continue;
+            }
+            float pu = (x + 0.5f - fcx) / port_a, vu = (x + 0.5f - fcx) / vis_a;
+            pu *= pu;
+            vu *= vu;
+            uint8_t m = s_mask[y * W + x];
+            if (pu * pu + pv * pv <= 1.0f || m == M_ARM || m == M_FACE) {
+                continue;
+            }
+            shell[y] |= 1ull << x;
+            if (fy < vis_y && vu * vu + vv * vv <= 1.0f) {
+                visor[y] |= 1ull << x;
+            }
+        }
+    }
+#define HAS(set, x, y) ((unsigned)(x) < W && (unsigned)(y) < H && ((set)[y] >> (x) & 1))
+    for (int y = y0; y <= y1; y++) {
+        float fy = y + 0.5f, sh = j->shear * (j->pivot - fy);
+        float cx = h.cx + sh;
+        float v = (fy - h.cy) / h.b;
+        for (int x = 0; x < W; x++) {
+            if (!HAS(shell, x, y)) {
+                continue;
+            }
+            uint8_t c;
+            if (!HAS(shell, x + 1, y) || !HAS(shell, x - 1, y) || !HAS(shell, x, y + 1) || !HAS(shell, x, y - 1)) {
+                c = C_OUT;
+            } else if (HAS(visor, x, y)) {
+                /* Outlined along the top (the port's rim is its bottom); a
+                 * glint across it, on the left. */
+                bool rim = !HAS(visor, x, y - 1);
+                int gx = (int)floorf(x + 0.5f - cx), gy = y - (int)floorf(j->fy - port_b);   /* -1: above the port */
+                bool glint = gx >= -9 && gx <= -3 && (gx - gy == -6 || gx - gy == -5);   /* slanted, two wide */
+                c = rim ? C_OUT : glint ? C_VISOR_HI : C_VISOR;
+            } else if (fabsf(x + 0.5f - cx) < 1.0f && fy < vis_y) {
+                c = C_ACC;   /* the stripe, down to the visor */
+            } else {
+                /* Lit from the top left, like the fur, dithered between three tones. */
+                float u = (x + 0.5f - cx) / h.a, r2 = u * u + v * v;
+                float nz = r2 < 1.0f ? sqrtf(1.0f - r2) : 0.0f;
+                float l = -0.40f * u - 0.50f * v + 0.76f * nz + (bayer(x, y) - 0.5f) * 0.25f;
+                c = l > 0.92f ? C_WHITE : l > 0.22f ? C_HELM : C_HELM_SH;
+            }
+            px(x, y, c);
+        }
+    }
+    /* The visor's pivots: a bolt each side, at its ends. */
+    for (int side = 0; side < 2; side++) {
+        float sgn = side ? 1.0f : -1.0f;
+        int y = (int)floorf(vis_y) - 1;
+        float sh = j->shear * (j->pivot - (y + 0.5f));
+        int x = (int)floorf(j->fx + sh + sgn * (vis_a - 0.5f));
+        if (HAS(shell, x, y)) {
+            px(x, y, C_HELM_SH);
+            px(x, y + 1, C_OUT);
+        }
+    }
+#undef HAS
+}
+
 typedef enum { RE_NONE, RE_DIZZY, RE_SLEEPY, RE_WAKING, RE_TICKLE, RE_VTEC, RE_COOLANT, RE_WARMUP } react_kind_t;
 
 /* Giggling runs on the clock at 3.2 Hz: each "ha" is a bounce, a squish and an open mouth (0..1). */
@@ -2057,7 +2166,9 @@ void muse_pixel_render(const muse_pose_t *p)
         draw_blush(iround(j.fx + j.fa * 0.72f), iround(eye_y + 2), blush);
         draw_mouth(iround(j.fx), iround(eye_y + 3), mouth, mouth_open);
     }
-    if (mode == MUSE_MODE_THINKING) {
+    if (p->helmet) {
+        draw_helmet(&j);   /* over the ears: no headphones with it */
+    } else if (mode == MUSE_MODE_THINKING) {
         draw_headphones(&j, eye_y);
     }
 
