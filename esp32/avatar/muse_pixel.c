@@ -2,7 +2,7 @@
 //
 // Jollybot is Meta's character and is not covered by the Apache License.
 // The waveshare-muse-gadget-sdk fork adds complementary reactions to it
-// (dizzy, sleepy, waking, tickled, VTEC, coolant: react_setup and what it drives). These additions
+// (dizzy, sleepy, waking, tickled, VTEC, coolant, warm-up: react_setup and what it drives). These additions
 // are NOT covered by the Apache License either; they share the character's
 // status. The fork claims no rights to Jollybot or to these additions,
 // charges nothing for them, and will remove them at Meta's request
@@ -971,7 +971,8 @@ static void draw_alert(int x, int y)
 
 /* ---------------------------------------------------------------------------
  * Reactions: dizzy (shaken), sleepy (screen about to sleep), waking, tickled,
- * VTEC (the car's engine crossed into VTEC), coolant (the car's running hot)
+ * VTEC (the car's engine crossed into VTEC), coolant (the car's running hot),
+ * warm-up (the car's coolant reached operating temperature)
  * ------------------------------------------------------------------------- */
 
 static inline float smooth(float e0, float e1, float x)
@@ -1195,7 +1196,34 @@ static void draw_wisp(float x, int y, float phase, float a)
     }
 }
 
-typedef enum { RE_NONE, RE_DIZZY, RE_SLEEPY, RE_WAKING, RE_TICKLE, RE_VTEC, RE_COOLANT } react_kind_t;
+/* A thumbs-up: a fist, fingers curled toward us, the thumb straight up. Drawn
+ * over the raised paw, centred on (x, y), the bottom of the fist. 'h' is the
+ * fur's highlight, 'm' its light tone, 'd' the creases between the fingers. */
+static void draw_thumbs_up(int x, int y)
+{
+    static const char *const THUMB[] = {
+        "..##....",
+        ".#hh#...",
+        ".#hm#...",
+        ".#mm#...",
+        "##mm####",
+        "#hmmmmm#",
+        "#mddddm#",
+        "#hmmmmm#",
+        "#mddddm#",
+        ".######.",
+    };
+    for (int r = 0; r < 10; r++) {
+        for (int c = 0; c < 8; c++) {
+            char ch = THUMB[r][c];
+            if (ch != '.') {
+                px(x - 4 + c, y - 9 + r, ch == '#' ? C_OUT : ch == 'h' ? C_BH : ch == 'm' ? C_BL : C_BM);
+            }
+        }
+    }
+}
+
+typedef enum { RE_NONE, RE_DIZZY, RE_SLEEPY, RE_WAKING, RE_TICKLE, RE_VTEC, RE_COOLANT, RE_WARMUP } react_kind_t;
 
 /* Giggling runs on the clock at 3.2 Hz: each "ha" is a bounce, a squish and an open mouth (0..1). */
 #define GIGGLE_HZ 3.2f
@@ -1223,6 +1251,7 @@ typedef struct {
     float gaze;         /* gaze multiplier */
     float blush;        /* cheek strength */
     float shake;        /* whole-avatar x offset, px */
+    bool arm_one;       /* only the right arm takes the pose; the left keeps idle's */
 } react_t;
 
 static void react_setup(const muse_pose_t *p, react_t *r)
@@ -1245,6 +1274,11 @@ static void react_setup(const muse_pose_t *p, react_t *r)
         r->kind = RE_VTEC;
         r->p = clampf(p->vtec, 0, 1);
         r->ts = r->p * MUSE_VTEC_S;
+    } else if (p->warmup > 0) {
+        /* Below both: a pat on the back, not an alarm. */
+        r->kind = RE_WARMUP;
+        r->p = clampf(p->warmup, 0, 1);
+        r->ts = r->p * MUSE_WARMUP_S;
     } else if (p->dizzy > 0) {
         r->kind = RE_DIZZY;
         r->p = clampf(p->dizzy, 0, 1);
@@ -1394,6 +1428,25 @@ static void react_setup(const muse_pose_t *p, react_t *r)
         r->gaze = smooth(0.9f, 1.0f, d);
         r->glow = 1 - 0.25f * fret;
         r->blush = 0.55f + 0.45f * fret;
+        break;
+    }
+    case RE_WARMUP: {
+        /* Up goes one paw beside his head, thumb up, with a little hop as it
+         * lands and two proud pumps, held, then back down. */
+        float up = smooth(0.02f, 0.14f, d) * (1 - smooth(0.82f, 0.95f, d));
+        float land = window(d, 0.12f, 0.16f, 0.18f, 0.26f);
+        float pump = window(d, 0.18f, 0.22f, 0.4f, 0.46f) * fmaxf(0.0f, sinf((ts - 0.54f) * 10.5f));
+        r->hop = 1.5f * land;
+        r->squash = 1 - 0.05f * window(d, 0.0f, 0.04f, 0.08f, 0.14f) + 0.04f * land;
+        r->face_dy = -0.3f * up;
+        r->arm_one = true;
+        r->arm_k = up;
+        r->arm_dx = -3.5f;
+        r->arm_dy = -11.0f - 1.2f * pump;
+        r->arm_ang = -0.3f;   /* the paw tips out, away from his head */
+        r->gaze = smooth(0.9f, 1.0f, d);
+        r->glow = 1 + 0.3f * up;
+        r->blush = 0.55f + 0.3f * up;
         break;
     }
     default:
@@ -1580,6 +1633,18 @@ static bool react_face(const react_t *r, const avatar_t *j, float eye_y, float e
             draw_eye(j->fx + off - eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
             draw_eye(j->fx + off + eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
             draw_mouth(iround(mx), my, MOUTH_SMILE, 0);
+        }
+        return true;
+    case RE_WARMUP:
+        if (d < 0.08f || d >= 0.94f) {
+            draw_eye(j->fx + off - eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
+            draw_eye(j->fx + off + eye_dx, eye_y, open, EYES_NORMAL, gx, gy);
+            draw_mouth(iround(mx), my, MOUTH_SMILE, 0);
+        } else {
+            /* Pleased: happy closed eyes and a big smile. */
+            draw_eye(j->fx + off - eye_dx, eye_y, 1, EYES_HAPPY, 0, 0);
+            draw_eye(j->fx + off + eye_dx, eye_y, 1, EYES_HAPPY, 0, 0);
+            draw_mouth(iround(mx), my, MOUTH_GRIN, 0);
         }
         return true;
     default:
@@ -1915,7 +1980,7 @@ void muse_pixel_render(const muse_pose_t *p)
         for (int i = 0; i < 2; i++) {
             float sgn = i ? 1.0f : -1.0f;
             limb_t to = { j.cx + sgn * (adx - re.arm_dx), j.cy + re.arm_dy, -sgn * re.arm_ang };
-            float k = re.arm_k;
+            float k = re.arm_one && i == 0 ? 0.0f : re.arm_k;
             arms[i].x += (to.x - arms[i].x) * k;
             arms[i].y += (to.y - arms[i].y) * k;
             arms[i].angle += (to.angle - arms[i].angle) * k;
@@ -2030,6 +2095,16 @@ void muse_pixel_render(const muse_pose_t *p)
         float a = smooth(0.03f, 0.1f, re.p) * (1 - smooth(0.84f, 0.94f, re.p));
         if (a > 0) {
             draw_hot_banner(re.p < 0.1f ? 1 : 2, a, re.p > 0.06f && re.p < 0.16f);
+        }
+    } else if (re.kind == RE_WARMUP && re.arm_k > 0.5f) {
+        /* The fist on top of the raised paw, and a glint off the thumb as it lands. */
+        float ry = arms[1].len > 0 ? arms[1].len : 5.2f;
+        int hx = iround(arms[1].x + ry * sinf(arms[1].angle));
+        int hy = iround(arms[1].y - ry * cosf(arms[1].angle)) + 3;
+        draw_thumbs_up(hx, hy);
+        float glint = window(re.p, 0.14f, 0.18f, 0.28f, 0.34f);
+        if (glint > 0) {
+            draw_sparkle(hx + 4, hy - 11, glint, true);
         }
     }
 
