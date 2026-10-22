@@ -473,18 +473,28 @@ static bool elm_init(void)
     return true;
 }
 
+void muse_obd_fire_vtec(void)
+{
+    muse_state_start_vtec();
+    muse_hatch_say(VTEC_LINE);
+}
+
+void muse_obd_fire_coolant(void)
+{
+    muse_state_start_coolant();
+    muse_hatch_say(COOLANT_LINE);
+}
+
 static void fire(int rpm)
 {
     ESP_LOGI(TAG, "VTEC! %d rpm", rpm);
-    muse_state_start_vtec();
-    muse_hatch_say(VTEC_LINE);
+    muse_obd_fire_vtec();
 }
 
 static void fire_coolant(int coolant_c)
 {
     ESP_LOGW(TAG, "coolant hot: %d C at %d rpm", coolant_c, s_rpm);
-    muse_state_start_coolant();
-    muse_hatch_say(COOLANT_LINE);
+    muse_obd_fire_coolant();
 }
 
 /* A coolant reply: feeds the warning. Anything else (NO DATA, an ECU without

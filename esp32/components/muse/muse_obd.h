@@ -30,3 +30,12 @@
  * voice session are up.
  */
 void muse_obd_start(void);
+
+/*
+ * Play a reaction and say its line, as a trigger firing would, without
+ * touching either trigger (no arming, sustain or cooldown) and without needing
+ * the adapter. The triggers call these; so do the bench console's ">vtec" and
+ * ">coolant".
+ */
+void muse_obd_fire_vtec(void);
+void muse_obd_fire_coolant(void);
