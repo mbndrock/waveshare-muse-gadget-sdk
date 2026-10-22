@@ -175,7 +175,7 @@ Results). Do NOT push.
 - Deviations / additions, both small:
   - `answer_layout_t.hides` grew from 4 to 5. With three fixed labels,
     `add_hides()` can append both hint icons (mic and aux), which would
-    have written `hides[4]` out of bounds. `show_answer()` loops over
+    have written `hides[4]` out of bounds. `set_answer()` loops over
     `sizeof(hides)`, so nothing else changes. The test checks it.
   - On CMake 3.29+ (what IDF v6 ships) `IS_READABLE` guards the read, so
     an unreadable HEAD gives `unknown` instead of a configure error; older
