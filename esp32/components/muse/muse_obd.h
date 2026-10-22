@@ -38,10 +38,21 @@
 void muse_obd_start(void);
 
 /*
+ * Settings' OBD switch (muse_settings_obd_on), from any task; on until told
+ * otherwise. Off is completely off: the task drops a link that is up, stops
+ * a scan or connection under way, and then neither scans nor connects, so
+ * the adapter is free for a phone app; the reactions don't play and the
+ * snapshot's state is "off" with no readings. Turned back on, it starts
+ * looking for the adapter again, without a reboot.
+ */
+void muse_obd_set_enabled(bool on);
+bool muse_obd_enabled(void);
+
+/*
  * Play a reaction (visual only, no speech), as a trigger firing would,
  * without touching either trigger (no arming, sustain or cooldown) and without
  * needing the adapter. The triggers call these; so do the bench console's
- * ">vtec", ">coolant" and ">warmup".
+ * ">vtec", ">coolant" and ">warmup". Nothing plays while OBD is turned off.
  */
 void muse_obd_fire_vtec(void);
 void muse_obd_fire_coolant(void);
@@ -79,8 +90,9 @@ typedef struct {
 #define MUSE_OBD_SUPPORT_RANGES 3   /* PIDs 01-20, 21-40, 41-60 */
 
 /*
- * What the OBD task is doing and its latest readings. state is one of "off",
- * "waiting" (for Link's BLE host), "scanning", "connecting", "discovering",
+ * What the OBD task is doing and its latest readings. state is one of "off"
+ * (not started, or turned off in Settings: see enabled), "waiting" (for
+ * Link's BLE host), "scanning", "connecting", "discovering",
  * "initializing" (the ELM's AT commands and the support scan), "polling" and
  * "backoff" (between attempts). A dropped link clears every reading: there is
  * no current one. The protocol and the supported-PID masks describe the car,
@@ -89,6 +101,7 @@ typedef struct {
  */
 typedef struct {
     bool started;          /* muse_obd_start() created the task */
+    bool enabled;          /* Settings' OBD switch is on (muse_obd_set_enabled) */
     const char *state;     /* one of the state strings above */
     bool adapter_found;    /* the current/last scan saw the adapter */
     bool connected;        /* a BLE connection to the adapter is up */
@@ -113,6 +126,11 @@ typedef struct {
  * the bench console's ">obd" report it.
  */
 void muse_obd_status(muse_obd_status_t *out);
+
+/* *st has a link to the adapter up: notifications subscribed, or polling
+ * (the status-row "OBD" label shows, and the card tiles and the avatar's
+ * helmet are there). Never while turned off. */
+bool muse_obd_linked(const muse_obd_status_t *st);
 
 /* The support masks in *st prove that Mode 01 `pid` is not supported (the
  * car data cards show "--" for it, and the poll loop never asks). */

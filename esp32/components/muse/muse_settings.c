@@ -49,6 +49,9 @@ static struct {
     uint16_t sleep_s;
     bool wifi_on;
     bool ble_on;
+#if CONFIG_MUSE_OBD_VTEC
+    bool obd_on;
+#endif
     char ssid[MUSE_SSID_MAX + 1];
     char pass[MUSE_PASS_MAX + 1];
     char host[MUSE_HOST_MAX + 1];
@@ -63,6 +66,9 @@ static struct {
     .brightness = 100,
     .sleep_s = 120,
     .wifi_on = true,
+#if CONFIG_MUSE_OBD_VTEC
+    .obd_on = true,
+#endif
     .host = DEFAULT_HOST,
 };
 
@@ -179,6 +185,12 @@ esp_err_t muse_settings_init(void)
     if (nvs_get_u8(s_nvs, "ble_on", &b) == ESP_OK) {
         s.ble_on = b;
     }
+#if CONFIG_MUSE_OBD_VTEC
+    if (nvs_get_u8(s_nvs, "obd_on", &b) == ESP_OK) {
+        s.obd_on = b;
+    }
+    ESP_LOGI(TAG, "OBD %s", s.obd_on ? "on" : "off");
+#endif
     load_str("ssid", s.ssid, sizeof(s.ssid));
     load_str("pass", s.pass, sizeof(s.pass));
     load_str("host", s.host, sizeof(s.host));
@@ -213,6 +225,9 @@ int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
 bool muse_settings_wifi_on(void) { return s.wifi_on; }
 bool muse_settings_ble_on(void) { return s.ble_on; }
+#if CONFIG_MUSE_OBD_VTEC
+bool muse_settings_obd_on(void) { return s.obd_on; }
+#endif
 int muse_settings_voice_count(void) { return s_nvoices; }
 int muse_settings_voice(void) { return s.voice; }
 
@@ -325,6 +340,15 @@ void muse_settings_set_ble_on(bool on)
     save_u8("ble_on", on);
     notify(MUSE_SETTING_BLE);
 }
+
+#if CONFIG_MUSE_OBD_VTEC
+void muse_settings_set_obd_on(bool on)
+{
+    s.obd_on = on;
+    save_u8("obd_on", on);
+    notify(MUSE_SETTING_OBD);
+}
+#endif
 
 void muse_settings_set_voice(int i)
 {

@@ -21,6 +21,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 
 #include "muse_voices.h"
 
@@ -50,6 +51,9 @@ typedef enum {
     MUSE_SETTING_PUSHES,
     MUSE_SETTING_VOICE,
     MUSE_SETTING_TOUCH_VOLUME,
+#if CONFIG_MUSE_OBD_VTEC
+    MUSE_SETTING_OBD,
+#endif
 } muse_setting_t;
 
 typedef void (*muse_setting_cb_t)(muse_setting_t what);
@@ -66,6 +70,9 @@ int muse_settings_brightness(void);     /* 10..100 */
 int muse_settings_sleep_s(void);        /* 0 = never */
 bool muse_settings_wifi_on(void);
 bool muse_settings_ble_on(void);
+#if CONFIG_MUSE_OBD_VTEC
+bool muse_settings_obd_on(void);        /* off: no OBD link at all (muse_obd.c), the adapter is left alone */
+#endif
 /* The ElevenLabs voices to choose from (muse_voices.h); 0 without a voice ID. */
 int muse_settings_voice_count(void);
 const char *muse_settings_voice_name(int i);   /* NULL past the end */
@@ -87,6 +94,9 @@ void muse_settings_set_brightness(int pct);
 void muse_settings_set_sleep_s(int secs);
 void muse_settings_set_wifi_on(bool on);
 void muse_settings_set_ble_on(bool on);
+#if CONFIG_MUSE_OBD_VTEC
+void muse_settings_set_obd_on(bool on);
+#endif
 void muse_settings_set_voice(int i);
 /* A network name is remembered first among the saved ones and joined now;
  * an empty ssid forgets every saved network. */

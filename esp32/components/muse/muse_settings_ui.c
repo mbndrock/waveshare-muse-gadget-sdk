@@ -83,6 +83,9 @@ static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_pushes, *s_home_ble, *s_hom
 #if CONFIG_MUSE_VIDEO
 static lv_obj_t *s_home_camera;
 #endif
+#if CONFIG_MUSE_OBD_VTEC
+static lv_obj_t *s_home_obd;
+#endif
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -1359,6 +1362,15 @@ static void on_pushes_sw(lv_event_t *e)
     muse_settings_set_pushes_on(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+#if CONFIG_MUSE_OBD_VTEC
+/* On (the default): the car's OBD adapter, its cards, reactions and helmet.
+ * Off: no OBD connection at all, leaving the adapter to a phone app. */
+static void on_obd_sw(lv_event_t *e)
+{
+    muse_settings_set_obd_on(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+#endif
+
 #if CONFIG_MUSE_VIDEO
 /* Phone camera: the video view, which asks the phone for a stream. */
 static void on_camera(lv_event_t *e)
@@ -1376,6 +1388,9 @@ static void build_home(lv_obj_t *tile)
     row(list, LV_SYMBOL_HOME, "Muse", &s_home_hatch, on_nav, (void *)&HATCH);
     s_home_pushes = switch_row_icon(list, LV_SYMBOL_BELL, "All messages", muse_settings_pushes_on(), on_pushes_sw);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
+#if CONFIG_MUSE_OBD_VTEC
+    s_home_obd = switch_row_icon(list, LV_SYMBOL_GPS, "OBD", muse_settings_obd_on(), on_obd_sw);
+#endif
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     /* Brightness, which e-paper has none of. */
     if (!muse_board->epaper) {
@@ -1434,6 +1449,12 @@ static void tick_home(void)
     if (pushes != lv_obj_has_state(s_home_pushes, LV_STATE_CHECKED)) {
         lv_obj_set_state(s_home_pushes, LV_STATE_CHECKED, pushes);
     }
+#if CONFIG_MUSE_OBD_VTEC
+    bool obd = muse_settings_obd_on();
+    if (obd != lv_obj_has_state(s_home_obd, LV_STATE_CHECKED)) {
+        lv_obj_set_state(s_home_obd, LV_STATE_CHECKED, obd);
+    }
+#endif
 
     muse_power_t p = muse_state_power();
     char buf[128];

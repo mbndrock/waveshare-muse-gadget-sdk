@@ -59,6 +59,11 @@ static void on_setting(muse_setting_t what)
     case MUSE_SETTING_HATCH:
         muse_hatch_config_changed();
         break;
+#if CONFIG_MUSE_OBD_VTEC
+    case MUSE_SETTING_OBD:
+        muse_obd_set_enabled(muse_settings_obd_on());
+        break;
+#endif
     default:
         break;   /* brightness, sleep and the speaker are polled where they're used */
     }
@@ -105,6 +110,7 @@ void muse_app_run(const muse_board_t *board)
     muse_wifi_apply();
     muse_ble_apply();
 #if CONFIG_MUSE_OBD_VTEC
+    muse_obd_set_enabled(muse_settings_obd_on());   /* off: the task starts in "off" */
     muse_obd_start();
 #endif
     ESP_LOGI(TAG, "ready: free heap %u internal, %u psram",

@@ -84,6 +84,10 @@ typedef enum {
 } ev_type_t;
 
 #define BIT_EV(t) (1u << (t))
+/* In a wait's mask: the wait takes a connection down, so it runs even when
+ * turned off. Only events of the current connection pass, so it is harmless
+ * when there is none. */
+#define UNWIND BIT_EV(EV_DISCONNECT)
 
 typedef struct {
     uint8_t type;
@@ -99,6 +103,10 @@ static StreamBufferHandle_t s_rx_bytes;
 static volatile uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static volatile uint16_t s_val;       /* FFE1's value handle, once subscribed */
 static volatile bool s_found;         /* this scan has found the adapter */
+/* Settings' OBD switch (muse_obd_set_enabled). Off, every wait below gives up
+ * at once, except the ones that take a connection down (UNWIND), and the
+ * task sits in "off" without scanning until it is turned back on. */
+static volatile bool s_enabled = true;
 static uint8_t s_props;
 static uint8_t s_own_addr;
 static muse_elm_rx_t s_rx;
@@ -112,7 +120,7 @@ static bool s_have_protocol;          /* this connection has read ATDPN */
 
 /* muse_obd_status()'s snapshot: written by this task, read from any task. */
 static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
-static muse_obd_status_t s_status = { .state = "off", .protocol = -1 };
+static muse_obd_status_t s_status = { .state = "off", .enabled = true, .protocol = -1 };
 static uint32_t s_rpm_at, s_coolant_at;   /* now_ms() of each reading */
 static uint32_t s_extra_at[MUSE_OBD_EXTRAS];
 
@@ -418,6 +426,11 @@ void muse_obd_status(muse_obd_status_t *out)
     }
 }
 
+bool muse_obd_linked(const muse_obd_status_t *st)
+{
+    return st->enabled && (st->subscribed || st->polling);
+}
+
 bool muse_obd_pid_unsupported(const muse_obd_status_t *st, int pid)
 {
     muse_elm_support_t sup;
@@ -431,13 +444,17 @@ bool muse_obd_pid_unsupported(const muse_obd_status_t *st, int pid)
 /*
  * Waits up to timeout_ms for an event in `mask`, or with want_resp for the
  * adapter to finish a response (in s_rx). Returns the event's type, -1 for a
- * response, or 0 on a timeout or when the adapter disconnected (which always
- * ends the wait). Events of an earlier connection are dropped.
+ * response, or 0 on a timeout, when the adapter disconnected (which always
+ * ends the wait) or once Settings turns OBD off (unless mask has UNWIND).
+ * Events of an earlier connection are dropped.
  */
 static int wait_for(uint32_t mask, bool want_resp, uint32_t timeout_ms, obd_ev_t *out)
 {
     TickType_t start = xTaskGetTickCount(), limit = pdMS_TO_TICKS(timeout_ms);
     for (;;) {
+        if (!s_enabled && !(mask & UNWIND)) {
+            return 0;
+        }
         uint8_t buf[32];
         size_t n;
         while ((n = xStreamBufferReceive(s_rx_bytes, buf, sizeof(buf), 0)) > 0) {
@@ -522,7 +539,12 @@ static bool connect(const ble_addr_t *addr)
     obd_ev_t ev;
     if (wait_for(BIT_EV(EV_CONNECT), false, CONNECT_MS + 2000, &ev) != EV_CONNECT) {
         ble_gap_conn_cancel();
-        return false;
+        /* The cancel ends in a failed connect event, unless the connection
+         * beat it: then it is up and the caller's drop() takes it down, so
+         * none is left behind (turned off too: UNWIND). */
+        if (wait_for(BIT_EV(EV_CONNECT) | UNWIND, false, 1000, &ev) != EV_CONNECT || ev.status != 0) {
+            return false;
+        }
     }
     if (ev.status != 0) {
         ESP_LOGI(TAG, "connect failed: %d", ev.status);
@@ -590,7 +612,7 @@ static bool subscribe(void)
 /* Sends an ELM command and waits for its '>': the response is in s_rx. */
 static bool elm_cmd(const char *cmd, uint32_t timeout_ms)
 {
-    if (s_conn == BLE_HS_CONN_HANDLE_NONE) {
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_enabled) {
         return false;
     }
     /* Anything that came unasked (a prompt on connect, a late reply) goes. */
@@ -606,7 +628,7 @@ static bool elm_cmd(const char *cmd, uint32_t timeout_ms)
         return false;
     }
     if (wait_for(0, true, timeout_ms, NULL) != -1) {
-        if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
+        if (s_conn != BLE_HS_CONN_HANDLE_NONE && s_enabled) {
             ESP_LOGW(TAG, "%s: no '>' in %u ms", cmd, (unsigned)timeout_ms);
         }
         return false;
@@ -648,7 +670,8 @@ static void read_protocol(void)
  * that lists PID 40. A range that doesn't answer stays unknown, and so do the
  * ones after it: the poll loop keeps asking those PIDs and lets NO DATA skip
  * them. The first 0100 after ATSP0 may search for the protocol, so it gets
- * SEARCH_MS. False only once the adapter has disconnected.
+ * SEARCH_MS. False only once the adapter has disconnected, or OBD was turned
+ * off.
  */
 static bool scan_support(void)
 {
@@ -659,7 +682,7 @@ static bool scan_support(void)
             break;   /* the bottom bit is PID 0x20 * i: nothing past this range */
         }
         if (!elm_cmd(CMDS[i], i == 0 ? SEARCH_MS : CMD_MS)) {
-            if (s_conn == BLE_HS_CONN_HANDLE_NONE) {
+            if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_enabled) {
                 return false;
             }
             break;
@@ -681,17 +704,23 @@ static bool scan_support(void)
 
 void muse_obd_fire_vtec(void)
 {
-    muse_state_start_vtec();
+    if (s_enabled) {
+        muse_state_start_vtec();
+    }
 }
 
 void muse_obd_fire_coolant(void)
 {
-    muse_state_start_coolant();
+    if (s_enabled) {
+        muse_state_start_coolant();
+    }
 }
 
 void muse_obd_fire_warmup(void)
 {
-    muse_state_start_warmup();
+    if (s_enabled) {
+        muse_state_start_warmup();
+    }
 }
 
 static void fire(int rpm)
@@ -826,6 +855,15 @@ static void drop(void)
     set_link_down();
 }
 
+/* Sleeps for ms, or less once turned off. */
+static void nap(uint32_t ms)
+{
+    TickType_t start = xTaskGetTickCount(), limit = pdMS_TO_TICKS(ms);
+    for (TickType_t gone = 0; s_enabled && gone < limit; gone = xTaskGetTickCount() - start) {
+        ulTaskNotifyTake(pdTRUE, limit - gone);
+    }
+}
+
 static void obd_task(void *arg)
 {
     (void)arg;
@@ -834,10 +872,25 @@ static void obd_task(void *arg)
     muse_warmup_init(&s_warmup);
     uint32_t backoff = BACKOFF_MIN_MS;
     for (;;) {
+        /* Turned off in Settings: no scan and no connection, which leaves
+         * the adapter free for a phone, until it is turned back on. */
+        if (!s_enabled) {
+            set_state("off");
+            set_flag(&s_status.adapter_found, false);
+            ESP_LOGI(TAG, "off");
+            while (!s_enabled) {
+                ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            }
+            ESP_LOGI(TAG, "on: looking for the adapter");
+            backoff = BACKOFF_MIN_MS;
+        }
         /* Link brings the host up (at boot on PSRAM boards) and may restart it. */
         set_state("waiting");
-        while (!muse_link_ble_started() || !ble_hs_synced()) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
+        while (s_enabled && (!muse_link_ble_started() || !ble_hs_synced())) {
+            nap(1000);
+        }
+        if (!s_enabled) {
+            continue;
         }
         ble_addr_t addr;
         bool polled = false;
@@ -863,11 +916,30 @@ static void obd_task(void *arg)
                 drop();
             }
         }
+        if (!s_enabled) {
+            continue;
+        }
         set_state("backoff");
         backoff = polled ? BACKOFF_MIN_MS : backoff;
-        vTaskDelay(pdMS_TO_TICKS(backoff));
+        nap(backoff);
         backoff = backoff * 2 > BACKOFF_MAX_MS ? BACKOFF_MAX_MS : backoff * 2;
     }
+}
+
+void muse_obd_set_enabled(bool on)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    s_enabled = on;
+    s_status.enabled = on;
+    taskEXIT_CRITICAL(&s_status_lock);
+    if (s_task) {
+        xTaskNotifyGive(s_task);   /* out of whatever it waits on, to see it */
+    }
+}
+
+bool muse_obd_enabled(void)
+{
+    return s_enabled;
 }
 
 void muse_obd_start(void)
@@ -878,7 +950,7 @@ void muse_obd_start(void)
     /* Before the task exists, so it can't run ahead of this. */
     taskENTER_CRITICAL(&s_status_lock);
     s_status.started = true;
-    s_status.state = "waiting";
+    s_status.state = s_enabled ? "waiting" : "off";
     taskEXIT_CRITICAL(&s_status_lock);
     s_events = xQueueCreateWithCaps(16, sizeof(obd_ev_t), MALLOC_CAP_SPIRAM);
     s_rx_bytes = xStreamBufferCreateWithCaps(RX_BYTES, 1, MALLOC_CAP_SPIRAM);

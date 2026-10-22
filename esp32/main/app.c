@@ -1888,6 +1888,7 @@ static cJSON *obd_read_command(void) {
         return command_error("out_of_memory", "failed to allocate");
     }
     cJSON_AddStringToObject(payload, "state", st.state);
+    cJSON_AddBoolToObject(payload, "enabled", st.enabled);
     cJSON_AddBoolToObject(payload, "adapter_found", st.adapter_found);
     cJSON_AddBoolToObject(payload, "connected", st.connected);
     cJSON_AddBoolToObject(payload, "subscribed", st.subscribed);

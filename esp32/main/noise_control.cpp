@@ -1530,8 +1530,9 @@ static char *build_register_json(void) {
 #if CONFIG_MUSE_OBD_VTEC
     add_command(commands, "obd.read",
                 "Report the OBD-II adapter state and the latest engine "
-                "readings from the LELink^2 adapter: the link state, "
-                "whether it is polling, engine RPM, coolant temperature "
+                "readings from the LELink^2 adapter: the link state "
+                "(\"off\" with enabled false when OBD is turned off in "
+                "Settings), whether it is polling, engine RPM, coolant temperature "
                 "in degrees Celsius, and engine load, manifold pressure, "
                 "speed, timing advance, intake and ambient air "
                 "temperature, throttle position and short- and long-term "

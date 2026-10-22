@@ -814,9 +814,9 @@ static void print_obd(void)
     muse_obd_status_t st;
     muse_obd_status(&st);
     char rpm[16], rpm_age[16], coolant[16], coolant_age[16];
-    printf("@obd {\"state\":\"%s\",\"adapter_found\":%s,\"connected\":%s,\"subscribed\":%s,"
+    printf("@obd {\"state\":\"%s\",\"enabled\":%s,\"adapter_found\":%s,\"connected\":%s,\"subscribed\":%s,"
            "\"polling\":%s,\"rpm\":%s,\"rpm_age_ms\":%s,\"coolant_c\":%s,\"coolant_age_ms\":%s",
-           st.state, st.adapter_found ? "true" : "false", st.connected ? "true" : "false",
+           st.state, st.enabled ? "true" : "false", st.adapter_found ? "true" : "false", st.connected ? "true" : "false",
            st.subscribed ? "true" : "false", st.polling ? "true" : "false",
            obd_number(rpm, sizeof(rpm), st.rpm_valid, st.rpm),
            obd_number(rpm_age, sizeof(rpm_age), st.rpm_valid, st.rpm_age_ms),
@@ -916,6 +916,11 @@ static bool console_command(char *line, bool whole)
     }
 #endif
 #if CONFIG_MUSE_OBD_VTEC
+    if (!muse_obd_enabled() && (!strcmp(line, "vtec") || !strcmp(line, "coolant") || !strcmp(line, "warmup"))) {
+        printf("@obd.off OBD is turned off in Settings\n");   /* the fires do nothing then */
+        fflush(stdout);
+        return true;
+    }
     if (!strcmp(line, "vtec")) {
         muse_obd_fire_vtec();
         return true;
