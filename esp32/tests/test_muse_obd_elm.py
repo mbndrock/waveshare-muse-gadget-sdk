@@ -14,7 +14,8 @@
 
 """The OBD reactions' ELM327 parser and triggers (muse_obd_elm.c): RPM and
 the VTEC trigger, coolant (PID 05), the coolant warning and the warm-up
-thumbs-up."""
+thumbs-up; and the car data cards' PIDs, the supported-PID scan, the
+secondary poll cycle and ATDPN."""
 from pathlib import Path
 import os
 import shlex
