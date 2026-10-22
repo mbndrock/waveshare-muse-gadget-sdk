@@ -148,10 +148,12 @@ BOOT 5 s resets setup.
 - **Build branch indicator:** `muse_build_info.c`. CMake stamps the checked-out branch from `.git/HEAD` as `MUSE_GIT_BRANCH` (no `git` call; `detached` or `unknown` otherwise).
   - Settings home shows `Build: <branch>` (the exact branch, `muse_settings_ui.c` `s_build`) directly under the `Muse <ver> - <IP>` line; the button menu's Status page has it too (`Build`). The face has no branch badge.
   - `.git/HEAD` is a CMake configure dependency, so a branch switch in a reused `build-muse-<board>/` re-runs CMake and restamps instead of keeping the last branch.
-- **VTEC reaction (s18 only, `CONFIG_MUSE_OBD_VTEC`):** `muse_obd.c` is a NimBLE central to a LELink^2 ELM327 adapter (FFE0/FFE1), beside Link's peripheral; its GAP events go to its own callback, not Link's.
+- **VTEC reaction and coolant warning (s18 only, `CONFIG_MUSE_OBD_VTEC`):** `muse_obd.c` is a NimBLE central to a LELink^2 ELM327 adapter (FFE0/FFE1), beside Link's peripheral; its GAP events go to its own callback, not Link's.
   - The s18 overlay turns on `BT_NIMBLE_ROLE_CENTRAL`/`OBSERVER` and `MAX_CONNECTIONS=2`; every other board keeps them off.
-  - `muse_obd_elm.c` (plain C, `tests/test_muse_obd_elm.py`) parses the ELM byte stream and runs the trigger: armed at <= 5500 rpm, fires at >= 6000, 30 s apart.
+  - `muse_obd_elm.c` (plain C, `tests/test_muse_obd_elm.py`) parses the ELM byte stream and runs both triggers. VTEC: armed at <= 5500 rpm, fires at >= 6000, 30 s apart.
   - A fire calls `muse_state_start_vtec()` and `muse_hatch_say("VTEC just kicked in yo!")`. Jollybot draws it (`RE_VTEC`, `tests/test_muse_pixel_vtec.py`).
+  - Coolant: every 4th poll is `0105` (A - 40 °C). Fires at >= 105 °C held 5 s with the latest RPM >= 400 (engine off or a dip below 105 restarts the 5 s); then waits for <= 100 °C and 120 s. Constants beside the VTEC ones in `muse_obd_elm.h`.
+  - A coolant fire calls `muse_state_start_coolant()` and `muse_hatch_say("Coolant temperature is high!")`. Jollybot draws it (`RE_COOLANT`, outranks `RE_VTEC`; `tests/test_muse_pixel_coolant.py`).
 - **Battery:** each board's `read_power`.
   - The 1.85C infers USB from voltage trends, because it has no VBUS or charge pin.
   - Errs toward `usb = true`: on battery the firmware dozes Wi-Fi and closes idle sessions.
