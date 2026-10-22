@@ -80,6 +80,9 @@ typedef struct {
 /* Home values. */
 static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_pushes, *s_home_ble, *s_home_sound, *s_home_display, *s_home_voice,
     *s_home_sleep, *s_home_battery, *s_about, *s_build;
+#if CONFIG_MUSE_VIDEO
+static lv_obj_t *s_home_camera;
+#endif
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -1088,9 +1091,11 @@ static void build_sound_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_sound = page(tile, "SOUND", true, &list);
-    s_spk_sw = switch_row(list, "Speaker", muse_settings_speaker_on(), on_speaker_sw);
-    s_vol_sl = slider(list, "Volume", 0, 100, muse_settings_volume(), &s_vol_val, on_volume);
-    switch_row(list, "Touch volume", muse_settings_touch_volume_on(), on_touch_volume_sw);
+    if (muse_board->audio_init) {
+        s_spk_sw = switch_row(list, "Speaker", muse_settings_speaker_on(), on_speaker_sw);
+        s_vol_sl = slider(list, "Volume", 0, 100, muse_settings_volume(), &s_vol_val, on_volume);
+        switch_row(list, "Touch volume", muse_settings_touch_volume_on(), on_touch_volume_sw);
+    }
     s_gain_sl = slider(list, "Mic gain", 0, MUSE_MIC_GAIN_MAX / 3, muse_settings_mic_gain() / 3, &s_gain_val, on_gain);
 
     lv_obj_t *meter = lv_obj_create(list);
@@ -1113,7 +1118,8 @@ static void build_sound_page(lv_obj_t *tile)
         note(list, "Talk at arm's length: the bar should reach green (-30 to -15 dBFS) without going orange.");
     }
 
-    set_val(s_vol_val, "%d%%", muse_settings_volume());
+    /* Brightness is on the Display page. */
+    if (s_vol_val) set_val(s_vol_val, "%d%%", muse_settings_volume());
     set_val(s_gain_val, "%d dB", muse_settings_mic_gain() / 3 * 3);
 }
 
@@ -1124,10 +1130,11 @@ static void tick_sound(void)
         lv_obj_set_state(s_spk_sw, LV_STATE_CHECKED, on);
     }
     int vol = muse_settings_volume();   /* also dragged on the face, or set from the phone */
-    if (vol != lv_slider_get_value(s_vol_sl) && !lv_obj_has_state(s_vol_sl, LV_STATE_PRESSED)) {
+    if (s_vol_sl && vol != lv_slider_get_value(s_vol_sl) && !lv_obj_has_state(s_vol_sl, LV_STATE_PRESSED)) {
         lv_slider_set_value(s_vol_sl, vol, LV_ANIM_OFF);
         set_val(s_vol_val, "%d%%", vol);
     }
+    if (muse_board->epaper) return;
     float db = muse_voice_monitor_db();
     int v = (int)(db + 70.0f);
     v = v < 0 ? 0 : (v > 60 ? 60 : v);
@@ -1352,6 +1359,15 @@ static void on_pushes_sw(lv_event_t *e)
     muse_settings_set_pushes_on(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+#if CONFIG_MUSE_VIDEO
+/* Phone camera: the video view, which asks the phone for a stream. */
+static void on_camera(lv_event_t *e)
+{
+    (void)e;
+    muse_video_open();
+}
+#endif
+
 static void build_home(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -1361,7 +1377,10 @@ static void build_home(lv_obj_t *tile)
     s_home_pushes = switch_row_icon(list, LV_SYMBOL_BELL, "All messages", muse_settings_pushes_on(), on_pushes_sw);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
-    row(list, LV_SYMBOL_IMAGE, "Display", &s_home_display, on_nav, (void *)&DISPLAY);
+    /* Brightness, which e-paper has none of. */
+    if (!muse_board->epaper) {
+        row(list, LV_SYMBOL_IMAGE, "Display", &s_home_display, on_nav, (void *)&DISPLAY);
+    }
     /* Only with spoken replies and something to choose between. */
 #if CONFIG_MUSE_HATCH
     if (CONFIG_MUSE_ELEVENLABS_API_KEY[0] && muse_settings_voice_count() > 1) {
@@ -1404,7 +1423,9 @@ static void tick_home(void)
     } else {
         set_text(s_home_sound, "Muted");
     }
-    set_val(s_home_display, "%d%%", muse_settings_brightness());
+    if (s_home_display) {
+        set_val(s_home_display, "%d%%", muse_settings_brightness());
+    }
     if (s_home_voice) {
         set_text(s_home_voice, muse_settings_voice_name(muse_settings_voice()));
     }
