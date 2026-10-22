@@ -51,6 +51,77 @@ flagged this gap ("no console key to trigger it without a car").
 ## Results (Claude Code fills this in)
 
 - Implemented:
-- Host QA:
+  - `esp32/components/muse/muse_obd.[ch]`: public `muse_obd_fire_vtec()` and
+    `muse_obd_fire_coolant()`. Each one is `muse_state_start_*()` +
+    `muse_hatch_say(VTEC_LINE / COOLANT_LINE)` and nothing else: it doesn't
+    touch arming, sustain or cooldown, and needs no adapter. The triggers'
+    `fire()` / `fire_coolant()` keep their log lines and now call these.
+    The header comment says the triggers and the bench console share them.
+  - `esp32/components/muse/muse_input.c` `console_command()`: `vtec` and
+    `coolant` entries right after `nap`, in its style (`!strcmp`, call,
+    `return true;`). One `#if CONFIG_MUSE_OBD_VTEC` covers both, and a second
+    covers the `muse_obd.h` include (beside the `CONFIG_MUSE_WATCHER_CAMERA`
+    one). This matches the CMake gate, which compiles `muse_obd.c` only with
+    that option, so the link is consistent either way.
+  - Docs: the "Bench testing over the USB cable" comment lists `vtec` /
+    `coolant`. Note: that block actually sits above `serial_task()`, just
+    after `console_command()`, not above it. That's where it was edited.
+    CLAUDE.md's OBD bullet gained a line about the fire functions and
+    `>vtec` / `>coolant`. VTEC-TASK.md and COOLANT-TASK.md are untouched.
+- Host QA (this VM, no ESP-IDF):
+  1. `muse_obd.c` type-check: `cc -fsyntax-only -Wall -Wextra -Wformat=2
+     -Wmissing-prototypes -Wstrict-prototypes` against the real esp-nimble
+     headers (espressif/esp-nimble `nimble-1.5.0-idf`, shallow clone).
+     FreeRTOS, esp_log (as printf), esp_err, esp_heap_caps, esp_timer and
+     `os_mempool.h` were stubbed, plus one syscfg value
+     (`MYNEWT_VAL_BLE_GATT_CSFC_SIZE`). Result: **no diagnostics in
+     muse_obd.c**. The only output is from the headers (glibc `sys/queue.h`
+     vs NimBLE's `CIRCLEQ_*` redefinitions and an unused parameter in
+     `transport/monitor.h`). `muse_obd.h` also compiles on its own. Mutation
+     check: with the two declarations removed from the header,
+     `-Wmissing-prototypes` flags both definitions, so the header really
+     declares what the .c defines. The clone and stubs were deleted after.
+  2. Full host suite `python3 -m unittest discover -s tests -p 'test_*.py'`:
+     190 ran, 4 skipped, 4 errors. That's the same as the coolant run. The
+     4 errors are the known setUpClass failures (link_discovery,
+     link_sensecap_sensors, muse_chat_link_errors, muse_chat_session): no
+     `managed_components/espressif__cjson`. No new failures.
+  3. `muse_input.c` **was not compiled**. It needs LVGL and the rest of the
+     IDF, and per the spec I didn't work around that. Line-by-line review of
+     its diff:
+     - Both entries copy `nap`'s form exactly (`if (!strcmp(line, "..."))
+       {`, one call, `return true;`, 4-space indent).
+     - Both return true, so `>vtec` / `>coolant` never fall through to
+       `muse_ble_command()`.
+     - They sit before the `chat` prefix check, which returns false for
+       non-chat lines, so they're reachable.
+     - The `#if` wraps exactly the include and the two entries.
+       `sdkconfig.h` is included above it.
+     - With the option off, the only other change is in a comment. By
+       inspection, not by running the preprocessor, the compiled code and
+       behaviour are as before.
+  4. Phrases, by grep: `muse_obd.c:74 #define VTEC_LINE "VTEC just kicked in
+     yo!"` and `:75 #define COOLANT_LINE "Coolant temperature is high!"`,
+     unchanged and used only by the fire functions. The Kconfig help and
+     `muse_obd.h` text quote them identically.
 - Commits on obd-vtec-reaction:
+  - 41a262d OBD: muse_obd_fire_vtec/_coolant as the one place a fire happens
+  - 0e82e2e Console: ">vtec" and ">coolant" force the car reactions on the bench
+  - the commit adding these Results and the CLAUDE.md line
 - Unverified until Mac build:
+  - The s18 build with the overlay, and that the other boards build
+    unchanged. `muse_input.c` hasn't been compiled at all.
+  - On the device: `>vtec` / `>coolant` on /dev/cu.usbmodem101 play the
+    reactions and speak the lines. Expect the same limits as a real fire:
+    - The animation is idle-only. With the screen asleep it pokes but
+      doesn't wake the screen.
+    - `muse_hatch_say()` drops the line if the session is busy or offline.
+      Typing `>coolant` right after `>vtec` may lose the second line.
+  - Calling the fire functions from the serial task rather than the OBD
+    task. Both calls are already made off the UI task (state is
+    esp_timer-based; `muse_hatch_say` queues to the session), so this should
+    be fine, but it hasn't run.
+  - Very early in boot: the fire functions don't depend on
+    `muse_obd_start()`. But before the voice session exists,
+    `muse_hatch_say` drops the line (`s_cmds` is null), so only the
+    animation would play.

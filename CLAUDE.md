@@ -154,6 +154,7 @@ BOOT 5 s resets setup.
   - A fire calls `muse_state_start_vtec()` and `muse_hatch_say("VTEC just kicked in yo!")`. Jollybot draws it (`RE_VTEC`, `tests/test_muse_pixel_vtec.py`).
   - Coolant: every 4th poll is `0105` (A - 40 °C). Fires at >= 105 °C held 5 s with the latest RPM >= 400 (engine off or a dip below 105 restarts the 5 s); then waits for <= 100 °C and 120 s. Constants beside the VTEC ones in `muse_obd_elm.h`.
   - A coolant fire calls `muse_state_start_coolant()` and `muse_hatch_say("Coolant temperature is high!")`. Jollybot draws it (`RE_COOLANT`, outranks `RE_VTEC`; `tests/test_muse_pixel_coolant.py`).
+  - Both fires go through `muse_obd_fire_vtec()` / `muse_obd_fire_coolant()` (`muse_obd.h`), which leave the triggers alone and need no adapter. On the bench, `>vtec` and `>coolant` on the USB serial console force them (`muse_input.c` `console_command`, only with `CONFIG_MUSE_OBD_VTEC`).
 - **Battery:** each board's `read_power`.
   - The 1.85C infers USB from voltage trends, because it has no VBUS or charge pin.
   - Errs toward `usb = true`: on battery the firmware dozes Wi-Fi and closes idle sessions.
