@@ -214,9 +214,12 @@ size_t muse_hatch_speech_cut(const char *text, size_t from, size_t len, bool don
     if (done) {
         return len;
     }
-    size_t cut = 0, space = 0;
+    size_t cut = 0, space = 0, end = from;
     for (size_t i = from; i < len; i++) {
         size_t n = sentence_end(text, i, len);
+        if (n) {
+            end = i + n;
+        }
         if (n && i + n - from >= min) {
             cut = i + n;
         }
@@ -224,7 +227,11 @@ size_t muse_hatch_speech_cut(const char *text, size_t from, size_t len, bool don
             space = i + 1;
         }
     }
-    if (!cut && len - from >= MUSE_HATCH_SPEECH_RUN && space > from) {
+    /* A minimum past the run raises it, but only text since the last sentence
+     * end counts as a run: a sentence still arriving isn't cut at a space. */
+    bool run = min > MUSE_HATCH_SPEECH_RUN ? len - from >= min && len - end >= MUSE_HATCH_SPEECH_RUN
+                                            : len - from >= MUSE_HATCH_SPEECH_RUN;
+    if (!cut && run && space > from) {
         cut = space;
     }
     return cut;

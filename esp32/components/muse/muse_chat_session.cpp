@@ -112,6 +112,7 @@ static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP
 #define TEXT_CHARS_PER_S 16                /* speaker off: reading pace, a little over speech */
 #define TEXT_HOLD_S 2                      /* speaker off: how long a message's last lines stay up */
 #define SPEECH_FIRST_MIN 30                /* bytes: a reply's first spoken piece, sent before it's all in */
+#define SPEECH_LATER_MIN 240               /* bytes: each piece after it, about 17 s of speech */
 
 #define PING_US (20 * 1000000LL)
 #define DEAD_US (60 * 1000000LL)           /* nothing from the server, pongs included */
@@ -1816,7 +1817,7 @@ static size_t speech_cut(const msg_t &m)
         return 0;
     }
     const char *t = msg_text(m);
-    return muse_hatch_speech_cut(t, m.spoken, strlen(t), m.done, m.spoken ? 1 : SPEECH_FIRST_MIN);
+    return muse_hatch_speech_cut(t, m.spoken, strlen(t), m.done, m.spoken ? SPEECH_LATER_MIN : SPEECH_FIRST_MIN);
 }
 
 /* Starts speaking message i, up to byte `cut` of its text. */

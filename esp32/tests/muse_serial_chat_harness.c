@@ -20,9 +20,10 @@
  *   unescape   stdin is console lines: prints each unescaped, as "<length>:<bytes>"
  *   caption C  stdin is a reply's text: prints it wrapped to C columns, as the
  *              screen pages it (test_muse_caption_wrap.py)
- *   speech M S stdin is a reply's text, arriving S bytes at a time: prints the
- *              pieces it's spoken in, the first at least M bytes, each ended
- *              by \x1f (test_muse_speech_pieces.py)
+ *   speech M S [L]  stdin is a reply's text, arriving S bytes at a time:
+ *              prints the pieces it's spoken in, the first at least M bytes
+ *              and later ones at least L (default 1), each ended by \x1f
+ *              (test_muse_speech_pieces.py)
  *   ascii      stdin is a reply's text: prints it with the ASCII stand-ins the
  *              caption shows (muse_text.c, test_muse_caption_wrap.py) */
 #include <stdio.h>
@@ -101,10 +102,11 @@ int main(int argc, char **argv)
         }
     } else if (argc > 3 && !strcmp(argv[1], "speech")) {
         size_t min = (size_t)atoi(argv[2]), step = (size_t)atoi(argv[3]), spoken = 0;
+        size_t later = argc > 4 ? (size_t)atoi(argv[4]) : 1;
         for (size_t have = step; have < len + step; have += step) {
             bool done = have >= len;
             size_t n = done ? len : have;
-            size_t cut = muse_hatch_speech_cut(in, spoken, n, done, spoken ? 1 : min);
+            size_t cut = muse_hatch_speech_cut(in, spoken, n, done, spoken ? later : min);
             if (cut) {
                 fwrite(in + spoken, 1, cut - spoken, stdout);
                 fputc('\x1f', stdout);
@@ -117,7 +119,7 @@ int main(int argc, char **argv)
         muse_text_to_ascii(shown, sizeof(shown));
         fputs(shown, stdout);
     } else {
-        fprintf(stderr, "usage: %s console|unescape|caption COLS|speech MIN STEP|ascii < input\n", argv[0]);
+        fprintf(stderr, "usage: %s console|unescape|caption COLS|speech MIN STEP [LATER]|ascii < input\n", argv[0]);
         return 2;
     }
     free(in);

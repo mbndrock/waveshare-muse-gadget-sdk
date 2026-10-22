@@ -92,7 +92,8 @@ bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap);
  * ends, given its first `len` bytes so far and the `from` already spoken. It
  * ends after the last sentence end that leaves at least `min` bytes, so the
  * speech can start before the whole reply is in, or after the last space of
- * a run of MUSE_HATCH_SPEECH_RUN bytes without one. 0: wait for more text.
+ * a run of MUSE_HATCH_SPEECH_RUN bytes without one (and, for a larger `min`,
+ * at least `min` bytes in all). 0: wait for more text.
  * Once the reply is `done`, the rest of it.
  */
 #define MUSE_HATCH_SPEECH_RUN 160

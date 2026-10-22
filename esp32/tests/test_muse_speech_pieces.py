@@ -29,6 +29,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN = 160   # MUSE_HATCH_SPEECH_RUN
+FIRST = 30  # SPEECH_FIRST_MIN, muse_chat_session.cpp
+LATER = 240 # SPEECH_LATER_MIN, muse_chat_session.cpp
+
+# A reply of many short sentences, about 600 bytes.
+STORY = ("The weather today is mild and calm. " + " ".join(
+    f"Point {i} costs 3.50 euros, e.g at noon." for i in range(14)) + " That is all for now")
 
 
 class SpeechPiecesTest(unittest.TestCase):
@@ -55,9 +61,9 @@ class SpeechPiecesTest(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.tmp.cleanup()
 
-    def pieces(self, text: str, first_min: int = 30, step: int = 1) -> list[str]:
-        out = subprocess.run([str(self.binary), "speech", str(first_min), str(step)], input=text.encode(),
-                             capture_output=True, check=True).stdout.decode()
+    def pieces(self, text: str, first_min: int = 30, step: int = 1, later: int | None = None) -> list[str]:
+        args = [str(self.binary), "speech", str(first_min), str(step)] + ([] if later is None else [str(later)])
+        out = subprocess.run(args, input=text.encode(), capture_output=True, check=True).stdout.decode()
         parts = out.split("\x1f")
         self.assertEqual(parts[-1], "")
         parts = parts[:-1]
@@ -95,6 +101,55 @@ class SpeechPiecesTest(unittest.TestCase):
 
     def test_short_reply_waits_for_the_end(self):
         self.assertEqual(self.pieces("Yes. Sure."), ["Yes. Sure."])
+
+    # ---- The production minimums: 30 bytes first, 240 after ----
+
+    def test_later_pieces_group_several_sentences(self):
+        for step in (1, 7, 40):
+            old = self.pieces(STORY, FIRST, step)
+            new = self.pieces(STORY, FIRST, step, LATER)
+            self.assertEqual(new[0], old[0], "the first piece is unchanged")
+            self.assertLess(len(new), len(old))
+            self.assertLessEqual(len(new), 4)
+            longest_old = max(len(p) for p in old[1:])
+            self.assertTrue(all(len(p) > 3 * longest_old for p in new[1:-1]), (step, new))
+
+    def test_a_later_piece_waits_for_240_bytes_before_a_sentence_end(self):
+        for step in (1, 5, 33):
+            parts = self.pieces(STORY, FIRST, step, LATER)
+            self.assertGreater(len(parts), 2)
+            for p in parts[1:-1]:
+                self.assertGreaterEqual(len(p), LATER, (step, p))
+                self.assertIn(p[-1], ".!?\n")
+        # Short of 240 when it's done: the rest goes anyway, as one piece.
+        text = "This first sentence is long enough. Then. Another one. And the end."
+        self.assertEqual(self.pieces(text, FIRST, 1, LATER),
+                         ["This first sentence is long enough.", " Then. Another one. And the end."])
+
+    def test_a_long_run_without_a_sentence_end_waits_for_the_later_minimum(self):
+        text = ("word " * 200).strip()
+        parts = self.pieces(text, FIRST, 1, LATER)
+        self.assertTrue(parts[0].endswith(" ") and len(parts[0]) <= RUN, "the first still breaks at 160")
+        self.assertGreater(len(parts), 2)
+        for p in parts[1:-1]:
+            self.assertTrue(p.endswith(" "), p)
+            self.assertGreater(len(p), RUN)
+            self.assertLessEqual(len(p), LATER)
+            self.assertGreater(len(p), LATER - len("word "))
+
+    def test_production_minimums_keep_sentence_rules(self):
+        text = STORY + "\n今日はとてもいい天気ですね。" * 30 + "\nThe end"
+        for step in (1, 3, 64):
+            parts = self.pieces(text, FIRST, step, LATER)   # checks every byte said once, in order
+            raw, cut = text.encode(), 0
+            for p in parts[:-1]:
+                cut += len(p.encode())
+                # Only at a real sentence end: never inside "3.50" or "e.g".
+                self.assertTrue(raw[cut - 1:cut] == b"\n" or raw[cut - 3:cut] == "。".encode()
+                                or (raw[cut - 1:cut] in (b".", b"!", b"?") and raw[cut:cut + 1] in (b" ", b"\n")),
+                                (step, p[-12:]))
+        self.assertEqual(self.pieces("Yes. Sure.", FIRST, 1, LATER), ["Yes. Sure."])
+        self.assertEqual(self.pieces(STORY, FIRST, len(STORY), LATER), [STORY])
 
 
 if __name__ == "__main__":

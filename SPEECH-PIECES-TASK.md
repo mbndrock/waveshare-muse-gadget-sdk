@@ -79,7 +79,52 @@ up to 400 bytes of `previous_text`.
 
 ## Results
 
-Fill in this section in the implementation commit or a following docs
-commit:
+Implemented 2026-10-21 on `speech-bigger-pieces`, one commit after the spec.
 
-- Pending.
+- **Session:** `SPEECH_LATER_MIN 240` next to `SPEECH_FIRST_MIN 30` in
+  `muse_chat_session.cpp`; `speech_cut()` passes
+  `m.spoken ? SPEECH_LATER_MIN : SPEECH_FIRST_MIN`. Nothing else in the TTS
+  path changed (URL, model, voice, `previous_text`, format, playback,
+  timeouts).
+- **Cut (`muse_chat_text.c`):** sentence-end rules untouched. The space
+  fallback for a caller `min` > `MUSE_HATCH_SPEECH_RUN` now needs at least
+  `min` bytes in all **and** a 160-byte run since the last sentence end (any
+  sentence end, even one short of `min`). Callers with `min` <= 160 take the
+  same branch as before, byte for byte.
+  - Why the second condition: the plain "run rises to `min`" version cut
+    ordinary prose mid-sentence at a space. Once 240 bytes were in and the
+    next sentence end was still arriving, the fallback fired before that end
+    showed up (a 235-byte piece cut at a space, seen in the new test). With
+    the condition, prose waits for the next sentence end (pieces of 273/277
+    bytes below). A run with no punctuation still cuts at the last space once
+    240 bytes are in.
+- **Harness:** `speech M S [L]`. The optional `L` is the later-piece minimum,
+  default 1, so existing `speech M S` calls mean what they did.
+- **Tests (`tests/test_muse_speech_pieces.py`):** 4 new cases with the
+  production 30/240 minimums, next to the 7 existing ones (unchanged):
+  - grouping into larger later pieces at steps 1/7/40;
+  - no later sentence-end close before 240 bytes unless done, and a short
+    remainder goes as one piece when done;
+  - a no-punctuation run breaks at 160 for the first piece, then at a space
+    after 236 to 240 bytes, never at 160;
+  - sentence rules at steps 1/3/64 (decimals and `e.g` whole, newline and
+    `。` ends, byte-exact cuts, short reply waits, one-go reply is one piece).
+  - Example, 605-byte reply of 16 sentences arriving 1 byte at a time:
+    before, 16 pieces `[35, 39, 39, … 40, 20]`; now, 4 pieces
+    `[35, 273, 277, 20]`. No-punctuation `"word " * 200`: `[160, 240, 240,
+    240, 119]`.
+- **Runs (from `esp32/`):**
+  - `python3 -m unittest tests.test_muse_speech_pieces`: 11 tests, OK.
+  - `python3 -m unittest discover -s tests -p 'test_*.py'`: 640 tests (baseline
+    636 + 4 new), 0 failures, 6 errors, 10 skipped. All 6 errors are
+    `setUpClass` failing on missing `managed_components/espressif__cjson`
+    (`test_link_discovery`, `test_link_reterminal_sht4x`,
+    `test_link_sensecap_sensors`, `test_muse_chat_link_errors`,
+    `test_muse_chat_link_note`, `test_muse_chat_session`). That's the known
+    baseline.
+- **Not verified here:** no ESP-IDF on this VM, so no board build. The
+  `muse_chat_session.cpp` change (one `#define`, one argument) was not
+  host-compiled, because `test_muse_chat_session` is one of the cJSON errors.
+  `muse_chat_text.c` and the harness compile under `-Wall -Wextra -Werror`.
+  Next gate: the Mac build, then listening on a board to see whether drift
+  improves and how much the longer gap before the second piece costs.
