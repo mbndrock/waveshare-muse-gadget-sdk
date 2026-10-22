@@ -53,6 +53,9 @@
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
 #endif
+#if CONFIG_MUSE_OBD_VTEC
+#include "muse_obd.h"
+#endif
 
 static atomic_uint s_touch_talk_events;
 
@@ -865,6 +868,16 @@ static bool console_command(char *line, bool whole)
         return true;
     }
 #endif
+#if CONFIG_MUSE_OBD_VTEC
+    if (!strcmp(line, "vtec")) {
+        muse_obd_fire_vtec();
+        return true;
+    }
+    if (!strcmp(line, "coolant")) {
+        muse_obd_fire_coolant();
+        return true;
+    }
+#endif
     if (!strncmp(line, "face=", 5)) {
         set_face(line + 5);
         return true;
@@ -900,8 +913,10 @@ static bool console_command(char *line, bool whole)
  * the device's state, "power" the battery meter (muse_battery.h) and
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
  * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
- * (see set_face), and "chat=" sends a typed message to Hatch (see chat_line
- * and tools/muse/chat.py).
+ * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
+ * and tools/muse/chat.py), and with CONFIG_MUSE_OBD_VTEC "vtec" / "coolant"
+ * play the car reactions and say their lines without a car or adapter
+ * (muse_obd_fire_vtec / muse_obd_fire_coolant).
  */
 static void serial_task(void *arg)
 {
