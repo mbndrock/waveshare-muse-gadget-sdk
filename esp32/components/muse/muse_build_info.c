@@ -16,8 +16,6 @@
 
 #include "muse_build_info.h"
 
-#include <string.h>
-
 const char *muse_build_branch(void)
 {
 #ifdef MUSE_GIT_BRANCH
@@ -25,16 +23,4 @@ const char *muse_build_branch(void)
 #else
     return "unknown";
 #endif
-}
-
-const char *muse_build_badge(void)
-{
-    const char *branch = muse_build_branch();
-    if (strcmp(branch, "main") == 0) {
-        return "MAIN BUILD";
-    }
-    if (strcmp(branch, "obd-vtec-reaction") == 0) {
-        return "OBD BUILD";
-    }
-    return "DEV BUILD";
 }

@@ -34,7 +34,6 @@
 #include "muse_audio.h"
 #include "muse_ble.h"
 #include "muse_board.h"
-#include "muse_build_info.h"
 #include "muse_chat.h"
 #include "muse_console.h"
 #include "muse_link.h"
@@ -115,7 +114,6 @@ static lv_obj_t *s_ring;
 static lv_obj_t *s_bar;     /* compact layout's stand-in for the ring */
 static lv_obj_t *s_state_lbl;
 static lv_obj_t *s_name_lbl;    /* this gadget's own name, to tell it from the next one */
-static lv_obj_t *s_branch_lbl;  /* which branch built this firmware */
 static lv_obj_t *s_power_lbl;
 static lv_obj_t *s_caption_lbl;
 static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering */
@@ -209,7 +207,7 @@ typedef struct {
     int cols, lines;          /* the reply's page */
     int w, h, top;            /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[5];       /* what it covers: up to 3 labels and 2 hint icons */
+    lv_obj_t *hides[4];       /* what it covers */
 } answer_layout_t;
 
 enum { ANSWER_HEARD, ANSWER_READ };
@@ -804,8 +802,7 @@ static void build_answer(lv_obj_t *face, int ring_in)
     lv_obj_update_layout(face);
     s_answers[ANSWER_READ].hides[0] = s_state_lbl;
     s_answers[ANSWER_READ].hides[1] = s_name_lbl;   /* the reply takes the top too */
-    s_answers[ANSWER_READ].hides[2] = s_branch_lbl;
-    add_hides(&s_answers[ANSWER_READ], 3);
+    add_hides(&s_answers[ANSWER_READ], 2);
     add_hides(&s_answers[ANSWER_HEARD], 0);
 }
 
@@ -952,14 +949,6 @@ static void build_screen(void)
     /* Same rule as the state label: a square 128 px screen centres Muse over
      * these rows, so there's nowhere to put this without covering the face. */
     lv_obj_set_flag(s_name_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
-
-    /* The branch this firmware was built from (muse_build_info.h), a row
-     * under the name, so a flashed gadget says which checkout it came from. */
-    s_branch_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, COLOR_DIM);
-    lv_obj_set_style_text_letter_space(s_branch_lbl, 1, 0);
-    lv_label_set_text(s_branch_lbl, muse_build_badge());
-    lv_obj_align(s_branch_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 42 : 80 + s_dy);
-    lv_obj_set_flag(s_branch_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
     s_caption_lbl = make_label(face, font_pick(caption_font(), &lv_font_unscii_8), COLOR_CAPTION);
     if (s_small) {

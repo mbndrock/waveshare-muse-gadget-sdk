@@ -21,6 +21,6 @@
 /* Prints what the firmware would show; the test compiles one per MUSE_GIT_BRANCH. */
 int main(void)
 {
-    printf("branch=%s\nbadge=%s\n", muse_build_branch(), muse_build_badge());
+    printf("branch=%s\n", muse_build_branch());
     return 0;
 }

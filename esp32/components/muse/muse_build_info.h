@@ -26,6 +26,3 @@
 
 /* The checkout's branch, "detached" for a detached HEAD, or "unknown". */
 const char *muse_build_branch(void);
-
-/* A static face badge: "MAIN BUILD", "OBD BUILD", or "DEV BUILD" for anything else. */
-const char *muse_build_badge(void);

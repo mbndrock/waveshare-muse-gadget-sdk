@@ -251,4 +251,35 @@ version line.
 
 ## Amendment results (Claude Code fills this in)
 
-- Pending.
+- One commit on `main` (not pushed).
+- Face: `muse_ui.c` is back to its pre-badge text exactly (restored from
+  `8e7dd15`): no `s_branch_lbl`, no `muse_build_info.h` include,
+  `hides[4]`, `add_hides(&s_answers[ANSWER_READ], 2)`. Two labels plus
+  the two hint icons fit in 4 again, so the earlier `hides[5]` deviation
+  is gone with the third label.
+- `muse_build_badge()` removed from `muse_build_info.{h,c}` (and the
+  now-unused `<string.h>`). `muse_build_branch()`, the CMake stamping and
+  the `.git/HEAD` configure dependency are untouched.
+- Settings home: `s_build = note(list, "")` right after `s_about` in
+  `build_home()`; `tick_home()` sets `s_about` to `"Muse %s - %s"`
+  (version, IP or `offline`) and `s_build` to `"Build: %s"` from
+  `muse_build_branch()`, both from the 128-byte buffer. The version line
+  keeps the single-space `" - "` separator the spec gives (the original
+  pre-task footer used `"  -  "`).
+- Button menu Status page `Build %s` line and its 192-byte buffer
+  unchanged.
+- Host QA: `test_muse_build_info` 8/8 OK: four harness cases now check
+  the branch only (main, obd-vtec-reaction, feature/new-thing, no macro ->
+  unknown); contracts check the CMake stamp, that `muse_ui.c` has no
+  badge/branch code and is back to `hides[4]` / count 2, that
+  `muse_build_badge` is gone from the header, source and harness, that
+  Settings creates `s_build` right after `s_about` with the version/IP and
+  `Build: %s` lines, and that the menu still shows the branch.
+- Full suite: 192 tests, 4 errors, 4 skipped. The 4 errors are the same
+  pre-existing `setUpClass` failures as before (link_discovery,
+  link_sensecap_sensors, muse_chat_link_errors, muse_chat_session:
+  `managed_components/espressif__cjson/.../cJSON.c` and `cJSON.h` absent),
+  unrelated to this change.
+- No ESP-IDF build ran (no IDF on this VM); `muse_ui.c` and
+  `muse_settings_ui.c` were not compiled. The real-board acceptance above
+  is still to do on Derek's Mac.

@@ -76,7 +76,7 @@ typedef struct {
 
 /* Home values. */
 static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_pushes, *s_home_ble, *s_home_sound, *s_home_display, *s_home_voice,
-    *s_home_sleep, *s_home_battery, *s_about;
+    *s_home_sleep, *s_home_battery, *s_about, *s_build;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -1293,6 +1293,7 @@ static void build_home(lv_obj_t *tile)
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
     s_about = note(list, "");
+    s_build = note(list, "");   /* the branch this firmware was built from */
 }
 
 static void tick_home(void)
@@ -1334,9 +1335,11 @@ static void tick_home(void)
     }
     set_text(s_home_battery, buf);
 
-    snprintf(buf, sizeof(buf), "Muse %s - %s - %s", esp_app_get_description()->version,
-             muse_build_branch(), w.state == MUSE_WIFI_CONNECTED ? w.ip : "offline");
+    snprintf(buf, sizeof(buf), "Muse %s - %s", esp_app_get_description()->version,
+             w.state == MUSE_WIFI_CONNECTED ? w.ip : "offline");
     set_text(s_about, buf);
+    snprintf(buf, sizeof(buf), "Build: %s", muse_build_branch());
+    set_text(s_build, buf);
 }
 
 /* ---------- public ---------- */

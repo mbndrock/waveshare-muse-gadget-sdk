@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The build branch stamp: badge mapping on the host, and where it's wired in."""
+"""The build branch stamp: the branch on the host, and where it's shown."""
 from pathlib import Path
 import os
 import re
@@ -56,19 +56,19 @@ class MuseBuildInfoTest(unittest.TestCase):
 
     def test_main(self):
         self.assertEqual(self.run_case("main", '-DMUSE_GIT_BRANCH="main"'),
-                         {"branch": "main", "badge": "MAIN BUILD"})
+                         {"branch": "main"})
 
     def test_obd(self):
         self.assertEqual(self.run_case("obd", '-DMUSE_GIT_BRANCH="obd-vtec-reaction"'),
-                         {"branch": "obd-vtec-reaction", "badge": "OBD BUILD"})
+                         {"branch": "obd-vtec-reaction"})
 
     def test_other_branch(self):
         self.assertEqual(self.run_case("other", '-DMUSE_GIT_BRANCH="feature/new-thing"'),
-                         {"branch": "feature/new-thing", "badge": "DEV BUILD"})
+                         {"branch": "feature/new-thing"})
 
     def test_no_macro(self):
         self.assertEqual(self.run_case("none", None),
-                         {"branch": "unknown", "badge": "DEV BUILD"})
+                         {"branch": "unknown"})
 
     def test_cmake_stamps_branch(self):
         src = (MUSE / "CMakeLists.txt").read_text()
@@ -85,22 +85,30 @@ class MuseBuildInfoTest(unittest.TestCase):
         # After registration, inside the Muse-only block.
         self.assertLess(src.index("idf_component_register("), src.index("MUSE_GIT_BRANCH="))
 
-    def test_face_badge(self):
+    def test_no_face_badge(self):
         src = (MUSE / "muse_ui.c").read_text()
-        self.has('#include "muse_build_info.h"', src)
-        self.has("static lv_obj_t *s_branch_lbl;", src)
-        self.has("lv_label_set_text(s_branch_lbl, muse_build_badge());", src)
-        self.has("s_answers[ANSWER_READ].hides[2] = s_branch_lbl;", src)
-        self.has("add_hides(&s_answers[ANSWER_READ], 3);", src)
-        # Three labels plus add_hides' two hint icons.
-        self.has("lv_obj_t *hides[5];", src)
+        self.assertNotIn("muse_build_info.h", src)
+        self.assertNotIn("s_branch_lbl", src)
+        self.assertNotIn("muse_build_badge", src)
+        self.assertNotIn("muse_build_branch", src)
+        self.has("lv_obj_t *hides[4];", src)
+        self.has("add_hides(&s_answers[ANSWER_READ], 2);", src)
         self.has("add_hides(&s_answers[ANSWER_HEARD], 0);", src)
-        self.assertIsNone(re.search(r"s_answers\[ANSWER_HEARD\]\.hides\[\d\] = s_branch_lbl", src))
+
+    def test_no_badge_api(self):
+        for name in ("muse_build_info.h", "muse_build_info.c"):
+            self.assertNotIn("muse_build_badge", (MUSE / name).read_text(), name)
+        self.assertNotIn("muse_build_badge", (ROOT / "tests/muse_build_info_harness.c").read_text())
 
     def test_exact_branch_in_settings_and_menu(self):
         settings = (MUSE / "muse_settings_ui.c").read_text()
         self.has('#include "muse_build_info.h"', settings)
-        self.matches(settings, r'"Muse %s - %s - %s", esp_app_get_description\(\)->version,\s*muse_build_branch\(\)')
+        self.matches(settings, r"\*s_about, \*s_build;")
+        # The build line is the note directly under the version/IP line.
+        self.matches(settings, r's_about = note\(list, ""\);\n    s_build = note\(list, ""\);')
+        self.matches(settings, r'"Muse %s - %s", esp_app_get_description\(\)->version,\s*w\.state == MUSE_WIFI_CONNECTED')
+        self.matches(settings, r'snprintf\(buf, sizeof\(buf\), "Build: %s", muse_build_branch\(\)\);\n    set_text\(s_build, buf\);')
+        self.has("char buf[128];", settings)
         menu = (MUSE / "muse_menu.c").read_text()
         self.has('#include "muse_build_info.h"', menu)
         self.matches(menu, r"Power %s\\nBuild %s\\nVer   %s")

@@ -146,8 +146,7 @@ BOOT 5 s resets setup.
   - Tickle: rubbing (4 reversals in 1 s within 15% of the screen) or 4 quick taps in 1.2 s on the face tile, while idle. `muse_ui.c` `touch_read` wraps the board's touch read to sample every 15 ms; `on_touch` counts taps; `tickle_poll` takes the press from LVGL and undoes a volume drag or a slide to settings. Progress waits below `MUSE_TICKLE_HOLD` while it goes on (`muse_state_tickle_hold`).
   - Jollybot (`avatar/muse_pixel.c`) draws them in this fork (`react_setup` and what it drives). Those additions, like Jollybot, are **not** under the Apache License: keep Meta's copyright line and the notice under it, never add an Apache header, and keep them in their own commit so they can be removed on Meta's request.
 - **Build branch indicator:** `muse_build_info.c`. CMake stamps the checked-out branch from `.git/HEAD` as `MUSE_GIT_BRANCH` (no `git` call; `detached` or `unknown` otherwise).
-  - The face shows a dim badge under the name row: `MAIN BUILD`, `OBD BUILD` (`obd-vtec-reaction`) or `DEV BUILD`; the read-reply layout hides it with the state and name.
-  - The exact branch is in the Settings footer (`Muse <ver> - <branch> - <IP>`) and the button menu's Status page (`Build`).
+  - Settings home shows `Build: <branch>` (the exact branch, `muse_settings_ui.c` `s_build`) directly under the `Muse <ver> - <IP>` line; the button menu's Status page has it too (`Build`). The face has no branch badge.
   - `.git/HEAD` is a CMake configure dependency, so a branch switch in a reused `build-muse-<board>/` re-runs CMake and restamps instead of keeping the last branch.
 - **Battery:** each board's `read_power`.
   - The 1.85C infers USB from voltage trends, because it has no VBUS or charge pin.
