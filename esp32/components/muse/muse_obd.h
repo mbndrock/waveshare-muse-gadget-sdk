@@ -16,6 +16,9 @@
 
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 /*
  * The VTEC reaction (CONFIG_MUSE_OBD_VTEC): a BLE central, beside Link's own
  * peripheral, to a LELink^2 ELM327 OBD-II adapter. It finds the adapter,
@@ -39,3 +42,31 @@ void muse_obd_start(void);
  */
 void muse_obd_fire_vtec(void);
 void muse_obd_fire_coolant(void);
+
+/*
+ * What the OBD task is doing and its latest readings. state is one of "off",
+ * "waiting" (for Link's BLE host), "scanning", "connecting", "discovering",
+ * "initializing" (the ELM's AT commands), "polling" and "backoff" (between
+ * attempts). A dropped link clears both readings: there is no current one.
+ */
+typedef struct {
+    bool started;          /* muse_obd_start() created the task */
+    const char *state;     /* one of the state strings above */
+    bool adapter_found;    /* the current/last scan saw the adapter */
+    bool connected;        /* a BLE connection to the adapter is up */
+    bool subscribed;       /* FFE1 notifications are on */
+    bool polling;          /* inside poll_rpm(): ELM init done, asking PIDs */
+    bool rpm_valid;        /* rpm holds a current reading */
+    int rpm;               /* latest engine RPM; 0 is a real reading */
+    uint32_t rpm_age_ms;   /* ms since that reading; UINT32_MAX if none */
+    bool coolant_valid;    /* coolant_c holds a current reading */
+    int coolant_c;         /* latest coolant temperature, degrees C */
+    uint32_t coolant_age_ms; /* ms since that reading; UINT32_MAX if none */
+} muse_obd_status_t;
+
+/*
+ * Copies the snapshot into *out. Never blocks and never touches BLE: safe
+ * from any task, before muse_obd_start() too. The obd.read Link command and
+ * the bench console's ">obd" report it.
+ */
+void muse_obd_status(muse_obd_status_t *out);

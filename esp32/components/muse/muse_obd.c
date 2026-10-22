@@ -108,6 +108,11 @@ static muse_vtec_trigger_t s_trigger;
 static muse_coolant_trigger_t s_coolant;
 static int s_rpm = -1;                /* the latest RPM; -1 when unknown (engine off, link down) */
 
+/* muse_obd_status()'s snapshot: written by this task, read from any task. */
+static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
+static muse_obd_status_t s_status = { .state = "off" };
+static uint32_t s_rpm_at, s_coolant_at;   /* now_ms() of each reading */
+
 /* ---- On the host task: post and wake ---- */
 
 static void post(const obd_ev_t *ev)
@@ -276,6 +281,72 @@ static uint32_t now_ms(void)
     return (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount());
 }
 
+/* ---- The status snapshot ---- */
+
+static void set_state(const char *state)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.state = state;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+static void set_flag(bool *flag, bool on)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    *flag = on;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+static void set_rpm(bool valid, int rpm)
+{
+    uint32_t at = now_ms();
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.rpm_valid = valid;
+    if (valid) {
+        s_status.rpm = rpm;
+        s_rpm_at = at;
+    }
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+static void set_coolant(int coolant_c)
+{
+    uint32_t at = now_ms();
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.coolant_valid = true;
+    s_status.coolant_c = coolant_c;
+    s_coolant_at = at;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+/* The link is down: nothing is connected and no reading is current. */
+static void set_link_down(void)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.connected = false;
+    s_status.subscribed = false;
+    s_status.polling = false;
+    s_status.rpm_valid = false;
+    s_status.coolant_valid = false;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+void muse_obd_status(muse_obd_status_t *out)
+{
+    if (!out) {
+        return;
+    }
+    uint32_t now = now_ms();
+    uint32_t rpm_at, coolant_at;
+    taskENTER_CRITICAL(&s_status_lock);
+    *out = s_status;
+    rpm_at = s_rpm_at;
+    coolant_at = s_coolant_at;
+    taskEXIT_CRITICAL(&s_status_lock);
+    out->rpm_age_ms = out->rpm_valid ? now - rpm_at : UINT32_MAX;
+    out->coolant_age_ms = out->coolant_valid ? now - coolant_at : UINT32_MAX;
+}
+
 /*
  * Waits up to timeout_ms for an event in `mask`, or with want_resp for the
  * adapter to finish a response (in s_rx). Returns the event's type, -1 for a
@@ -356,6 +427,7 @@ static bool scan(ble_addr_t *addr)
         return false;
     }
     *addr = ev.addr;
+    set_flag(&s_status.adapter_found, true);
     return true;
 }
 
@@ -376,6 +448,7 @@ static bool connect(const ble_addr_t *addr)
         return false;
     }
     s_conn = ev.conn;
+    set_flag(&s_status.connected, true);
     ESP_LOGI(TAG, "adapter connected");
     return true;
 }
@@ -429,6 +502,7 @@ static bool subscribe(void)
         ESP_LOGW(TAG, "couldn't subscribe to FFE1");
         return false;
     }
+    set_flag(&s_status.subscribed, true);
     return true;
 }
 
@@ -507,6 +581,7 @@ static void got_coolant(void)
         return;
     }
     ESP_LOGD(TAG, "coolant %d C", coolant_c);
+    set_coolant(coolant_c);
     if (muse_coolant_update(&s_coolant, coolant_c, s_rpm, now_ms())) {
         fire_coolant(coolant_c);
     }
@@ -538,6 +613,7 @@ static bool poll_rpm(void)
         muse_elm_result_t res = muse_elm_parse_rpm(s_rx.resp, &rpm);
         locked = res == MUSE_ELM_RPM;
         s_rpm = locked ? rpm : -1;
+        set_rpm(locked, rpm);
         if (locked) {
             ESP_LOGD(TAG, "%d rpm", rpm);
             if (muse_vtec_update(&s_trigger, rpm, now_ms())) {
@@ -561,6 +637,7 @@ static void drop(void)
     muse_vtec_disarm(&s_trigger);
     muse_coolant_reset(&s_coolant);
     s_rpm = -1;
+    set_link_down();
 }
 
 static void obd_task(void *arg)
@@ -571,18 +648,32 @@ static void obd_task(void *arg)
     uint32_t backoff = BACKOFF_MIN_MS;
     for (;;) {
         /* Link brings the host up (at boot on PSRAM boards) and may restart it. */
+        set_state("waiting");
         while (!muse_link_ble_started() || !ble_hs_synced()) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
         ble_addr_t addr;
         bool polled = false;
-        if (scan(&addr) && connect(&addr)) {
-            if (subscribe() && elm_init()) {
-                ESP_LOGI(TAG, "polling RPM and coolant");
-                polled = poll_rpm();
+        set_state("scanning");
+        set_flag(&s_status.adapter_found, false);
+        if (scan(&addr)) {
+            set_state("connecting");
+            if (connect(&addr)) {
+                set_state("discovering");
+                if (subscribe()) {
+                    set_state("initializing");
+                    if (elm_init()) {
+                        ESP_LOGI(TAG, "polling RPM and coolant");
+                        set_state("polling");
+                        set_flag(&s_status.polling, true);
+                        polled = poll_rpm();
+                        set_flag(&s_status.polling, false);
+                    }
+                }
+                drop();
             }
-            drop();
         }
+        set_state("backoff");
         backoff = polled ? BACKOFF_MIN_MS : backoff;
         vTaskDelay(pdMS_TO_TICKS(backoff));
         backoff = backoff * 2 > BACKOFF_MAX_MS ? BACKOFF_MAX_MS : backoff * 2;
@@ -594,11 +685,20 @@ void muse_obd_start(void)
     if (s_task) {
         return;
     }
+    /* Before the task exists, so it can't run ahead of this. */
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.started = true;
+    s_status.state = "waiting";
+    taskEXIT_CRITICAL(&s_status_lock);
     s_events = xQueueCreateWithCaps(16, sizeof(obd_ev_t), MALLOC_CAP_SPIRAM);
     s_rx_bytes = xStreamBufferCreateWithCaps(RX_BYTES, 1, MALLOC_CAP_SPIRAM);
     if (!s_events || !s_rx_bytes
         || xTaskCreateWithCaps(obd_task, "muse_obd", 4096, NULL, 3, &s_task, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "failed to start");
+        taskENTER_CRITICAL(&s_status_lock);
+        s_status.started = false;
+        s_status.state = "off";
+        taskEXIT_CRITICAL(&s_status_lock);
         return;
     }
     ESP_LOGI(TAG, "looking for an OBD adapter (%s*)", ADAPTER_NAME);
