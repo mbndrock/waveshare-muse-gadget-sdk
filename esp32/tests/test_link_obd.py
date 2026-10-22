@@ -59,6 +59,52 @@ class LinkObdTest(unittest.TestCase):
         self.assertIsNotNone(block)
         self.assertIn("print_obd();", block)
         self.assertIsNotNone(gated_block_with(source, "static void print_obd(void)"))
+        block = gated_block_with(body, 'if (!strcmp(line, "warmup"))')
+        self.assertIsNotNone(block)
+        self.assertIn("muse_obd_fire_warmup();", block)
+
+    def test_car_reactions_are_visual_only(self):
+        """The fires start the reaction and say nothing: a spoken line would
+        swap the reaction face for the speaking pose."""
+        source = (ROOT / "components/muse/muse_obd.c").read_text()
+        self.assertNotIn("muse_hatch_say", source)
+        for name in ("vtec", "coolant", "warmup"):
+            start = source.index(f"void muse_obd_fire_{name}(void)")
+            body = source[start:source.index("\n}\n", start)]
+            self.assertIn(f"muse_state_start_{name}();", body)
+        header = (ROOT / "components/muse/muse_obd.h").read_text()
+        self.assertIn("void muse_obd_fire_warmup(void);", header)
+
+    def test_warmup_trigger_is_fed_and_reset(self):
+        source = (ROOT / "components/muse/muse_obd.c").read_text()
+        start = source.index("static void got_coolant(void)")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertIn("muse_warmup_update(&s_warmup, coolant_c)", body)
+        start = source.index("static void drop(void)")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertIn("muse_warmup_init(&s_warmup);", body)
+        self.assertIn('#define COOLANT_EVERY 4 ', source)   # poll cadence unchanged
+
+    def test_status_row_indicator_is_gated(self):
+        ui = (ROOT / "components/muse/muse_ui.c").read_text()
+        self.assertIsNotNone(gated_block_with(ui, '#include "muse_obd.h"'))
+        self.assertIsNotNone(gated_block_with(ui, "static lv_obj_t *s_obd_icon;"))
+        build = gated_block_with(ui, 'lv_label_set_text(s_obd_icon, "OBD");')
+        self.assertIsNotNone(build)
+        self.assertIn("&lv_font_montserrat_14", build)
+        tick = gated_block_with(ui, "muse_obd_status(&o);")
+        self.assertIsNotNone(tick)
+        self.assertIn("LV_OBJ_FLAG_HIDDEN", tick)
+        self.assertIn("obd != s_shown_obd", tick)
+        # Nothing about the indicator outside the gate.
+        stripped = ui
+        start = stripped.find(GATE)
+        while start != -1:
+            end = stripped.index("#endif", start)
+            stripped = stripped[:start] + stripped[end:]
+            start = stripped.find(GATE)
+        self.assertNotIn("s_obd_icon", stripped)
+        self.assertNotIn("muse_obd_", stripped)
 
 
 if __name__ == "__main__":
