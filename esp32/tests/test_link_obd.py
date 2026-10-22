@@ -181,24 +181,70 @@ class LinkObdTest(unittest.TestCase):
         statics = gated_block_with(ui, "static lv_obj_t *s_cards[MUSE_OBD_CARDS];")
         self.assertIsNotNone(statics)
         self.assertIn("#else\n#define CARD_TILES 0", statics)
-        self.assertIn("#define SETTINGS_COL (1 + CARD_TILES)", ui)
-        tiles = gated_block_with(ui, "lv_tileview_add_tile(s_tv, 1 + i, 0, LV_DIR_HOR);")
-        self.assertIsNotNone(tiles)
-        self.assertIn("for (int i = 0; i < MUSE_OBD_CARDS; i++)", tiles)
-        self.assertIn("s_settings = lv_tileview_add_tile(s_tv, SETTINGS_COL, 0, LV_DIR_LEFT);", ui)
-        self.assertIsNotNone(gated_block_with(ui, "muse_obd_cards_build(s_cards);"))
+        self.assertIn("#define TILES (2 + CARD_TILES)", ui)
         self.assertIsNotNone(gated_block_with(ui, "muse_obd_cards_tick();"))
-        # One dot per tile, laid out so two tiles keep their old -8 / +8.
+        # One dot per tile there is, laid out so two tiles keep their old -8 / +8.
         self.assertIn("static lv_obj_t *s_dots[TILES];", ui)
-        self.assertIn("16 * i - 8 * (TILES - 1)", ui)
+        self.assertIn("16 * i - 8 * (n - 1)", function_body(ui, "static void place_dots(void)"))
         # Without the option: no cards, and the old two tiles.
         stripped = strip_gated(ui)
-        for name in ("s_cards", "muse_obd_cards", "MUSE_OBD_CARDS", "muse_ui_bench_tile"):
+        for name in ("s_cards", "muse_obd_cards", "MUSE_OBD_CARDS", "muse_ui_bench_tile", "sync_cards",
+                     "s_obd_linked"):
             self.assertNotIn(name, stripped)
+        self.assertIn("return TILES;", function_body(ui, "static int tile_count(void)"))
         cmake = (ROOT / "components/muse/CMakeLists.txt").read_text()
         start = cmake.index("if(CONFIG_MUSE_OBD_VTEC)")
         self.assertIn('"muse_obd_cards.c"', cmake[start:cmake.index("endif()", start)])
         self.assertEqual(cmake.count("muse_obd_cards.c"), 1)
+
+    def test_card_tiles_follow_the_link(self):
+        """OBD-PRESENCE-TASK: the UI starts with the face and settings only,
+        and the cards come and go with the link snapshot (sync_cards)."""
+        ui = (ROOT / "components/muse/muse_ui.c").read_text()
+        build = function_body(ui, "static void build_screen(void)")
+        self.assertIn("s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);", build)
+        self.assertNotIn("s_cards", build)
+        self.assertNotIn("muse_obd_cards", function_body(ui, "esp_err_t muse_ui_start(void)"))
+        self.assertEqual(ui.count("lv_tileview_add_tile(s_tv, 1 + i, 0, LV_DIR_HOR);"), 1)
+        self.assertEqual(ui.count("muse_obd_cards_build(s_cards);"), 1)
+
+        sync = gated_block_with(ui, "static void sync_cards(bool linked)")
+        self.assertIsNotNone(sync)
+        for needle in ("lv_tileview_add_tile(s_tv, 1 + i, 0, LV_DIR_HOR);", "muse_obd_cards_build(s_cards);",
+                       "muse_obd_cards_drop();", "lv_obj_delete(s_cards[i]);", "s_cards[i] = NULL;",
+                       "s_cards_shown = linked;",
+                       "lv_obj_set_pos(s_settings, lv_pct(100 * (tile_count() - 1)), 0);",
+                       # The tile on screen stays, by object; a card that goes lands on the face.
+                       "lv_obj_t *active = lv_tileview_get_tile_active(s_tv);",
+                       "on_card = on_card || active == s_cards[i];",
+                       "lv_obj_t *show = active && !on_card ? active : s_face;",
+                       "lv_tileview_set_tile(s_tv, show, LV_ANIM_OFF);",
+                       "place_dots();",
+                       # Not under a finger or a slide.
+                       "lv_indev_get_state(s_indev) == LV_INDEV_STATE_PRESSED", "lv_obj_is_scrolling(s_tv)"):
+            self.assertIn(needle, sync)
+
+        # Driven by the snapshot, on the LVGL task's chrome tick, before the dots.
+        chrome = function_body(ui, "static void update_chrome(float now)")
+        tick = gated_block_with(chrome, "sync_cards(s_obd_linked);")
+        self.assertIsNotNone(tick)
+        self.assertIn("muse_obd_status(&o);", tick)
+        self.assertIn("s_obd_linked = muse_obd_linked(&o);", tick)
+        self.assertLess(chrome.index("sync_cards(s_obd_linked);"), chrome.index("if (s_tv) {"))
+        self.assertIn("i >= tiles || (settings && subpage)", chrome)
+        self.assertIn("(tiles - 2) * lv_obj_get_width(s_tv)", chrome)
+
+        # "Linked" is the status-row indicator's condition, and never while off.
+        obd = (ROOT / "components/muse/muse_obd.c").read_text()
+        self.assertIn("return st->enabled && (st->subscribed || st->polling);",
+                      function_body(obd, "bool muse_obd_linked(const muse_obd_status_t *st)"))
+        self.assertIn("int obd = o.polling ? 2 : o.subscribed ? 1 : 0;", chrome)
+
+        cards = (ROOT / "components/muse/muse_obd_cards.c").read_text()
+        drop = function_body(cards, "void muse_obd_cards_drop(void)")
+        self.assertIn("s_built = false;", drop)
+        header = (ROOT / "components/muse/muse_obd_cards.h").read_text()
+        self.assertIn("void muse_obd_cards_drop(void);", header)
 
     def test_cards_read_the_snapshot_and_stay_passive(self):
         cards = (ROOT / "components/muse/muse_obd_cards.c").read_text()
@@ -221,13 +267,101 @@ class LinkObdTest(unittest.TestCase):
         block = gated_block_with(body, 'if (!strncmp(line, "card ", 5))')
         self.assertIsNotNone(block)
         self.assertIn("muse_ui_bench_tile((int)n)", block)
+        self.assertIn("@card.error no cards: the OBD link is down", block)
         self.assertNotIn("muse_ui_bench_tile", strip_gated(source))
         header = (ROOT / "components/muse/muse_ui.h").read_text()
         self.assertIsNotNone(gated_block_with(header, "bool muse_ui_bench_tile(int index);"))
+        self.assertIsNotNone(gated_block_with(header, "bool muse_ui_cards_shown(void);"))
         ui = (ROOT / "components/muse/muse_ui.c").read_text()
         block = gated_block_with(ui, "bool muse_ui_bench_tile(int index)")
         self.assertIsNotNone(block)
         self.assertIn("s_bench_page = index;", block)
+        # A card while the cards are out is refused; one gone since is a no-op.
+        self.assertIn("(card && !s_cards_shown)", block)
+        frame = function_body(ui, "static void frame_tick(lv_timer_t *timer)")
+        self.assertIn("if (s_tv && tile) lv_tileview_set_tile(s_tv, tile, LV_ANIM_OFF);", frame)
+        self.assertIn("return index == TILES - 1 ? s_settings : s_face;", ui)
+
+    def test_settings_switch_only_with_the_feature(self):
+        """OBD-PRESENCE-TASK: Settings' OBD switch, saved in NVS as obd_on, on
+        by default, present only with the option."""
+        header = (ROOT / "components/muse/muse_settings.h").read_text()
+        for needle in ("bool muse_settings_obd_on(void);", "void muse_settings_set_obd_on(bool on);",
+                       "MUSE_SETTING_OBD,"):
+            self.assertIsNotNone(gated_block_with(header, needle), needle)
+        self.assertNotIn("obd", strip_gated(header).lower())
+
+        settings = (ROOT / "components/muse/muse_settings.c").read_text()
+        self.assertIsNotNone(gated_block_with(settings, ".obd_on = true,"))
+        load = gated_block_with(settings, 'nvs_get_u8(s_nvs, "obd_on", &b)')
+        self.assertIsNotNone(load)
+        self.assertIn("s.obd_on = b;", load)
+        setter = gated_block_with(settings, "void muse_settings_set_obd_on(bool on)")
+        self.assertIsNotNone(setter)
+        self.assertIn('save_u8("obd_on", on);', setter)
+        self.assertIn("notify(MUSE_SETTING_OBD);", setter)
+        self.assertNotIn("obd", strip_gated(settings).lower())
+
+        page = (ROOT / "components/muse/muse_settings_ui.c").read_text()
+        row = gated_block_with(page, 's_home_obd = switch_row_icon(')
+        self.assertIsNotNone(row)
+        self.assertIn('"OBD", muse_settings_obd_on(), on_obd_sw);', row)
+        cb = gated_block_with(page, "static void on_obd_sw(lv_event_t *e)")
+        self.assertIsNotNone(cb)
+        self.assertIn("muse_settings_set_obd_on(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));", cb)
+        self.assertIsNotNone(gated_block_with(page, "lv_obj_set_state(s_home_obd, LV_STATE_CHECKED, obd);"))
+        self.assertNotIn("obd", strip_gated(page).lower())
+
+    def test_settings_switch_drives_the_obd_task(self):
+        app = (ROOT / "components/muse/muse_app.c").read_text()
+        case = gated_block_with(app, "case MUSE_SETTING_OBD:")
+        self.assertIsNotNone(case)
+        self.assertIn("muse_obd_set_enabled(muse_settings_obd_on());", case)
+        start = gated_block_with(app, "muse_obd_start();")
+        self.assertLess(start.index("muse_obd_set_enabled(muse_settings_obd_on());"), start.index("muse_obd_start();"))
+
+        obd = (ROOT / "components/muse/muse_obd.c").read_text()
+        header = (ROOT / "components/muse/muse_obd.h").read_text()
+        self.assertIn("void muse_obd_set_enabled(bool on);", header)
+        self.assertIn("bool enabled;", header)
+        setter = function_body(obd, "void muse_obd_set_enabled(bool on)")
+        self.assertIn("s_status.enabled = on;", setter)
+        self.assertIn("xTaskNotifyGive(s_task);", setter)
+        # Every wait gives up once off, except the ones taking a link down.
+        wait = function_body(obd, "static int wait_for(")
+        self.assertIn("if (!s_enabled && !(mask & UNWIND)) {\n            return 0;", wait)
+        self.assertIn("#define UNWIND BIT_EV(EV_DISCONNECT)", obd)
+        self.assertIn("wait_for(BIT_EV(EV_DISCONNECT), false, 2000, NULL);", function_body(obd, "static void drop(void)"))
+        connect = function_body(obd, "static bool connect(const ble_addr_t *addr)")
+        self.assertIn("wait_for(BIT_EV(EV_CONNECT) | UNWIND, false, 1000, &ev)", connect)
+        # Off: no scan, no connection, until it is turned back on.
+        task = function_body(obd, "static void obd_task(void *arg)")
+        off = task.index("if (!s_enabled) {\n            set_state(\"off\");")
+        self.assertLess(off, task.index("scan(&addr)"))
+        self.assertIn("ulTaskNotifyTake(pdTRUE, portMAX_DELAY);", task)
+        self.assertNotIn("vTaskDelay", task)   # naps that end once turned off
+        for name in ("vtec", "coolant", "warmup"):
+            body = function_body(obd, f"void muse_obd_fire_{name}(void)")
+            self.assertIn(f"if (s_enabled) {{\n        muse_state_start_{name}();", body)
+
+    def test_obd_read_reports_enabled_and_off(self):
+        app = (ROOT / "main/app.c").read_text()
+        block = gated_block_with(app, "static cJSON *obd_read_command(void)")
+        body = block[block.index("static cJSON *obd_read_command(void)"):]
+        self.assertIn('cJSON_AddStringToObject(payload, "state", st.state);', body)
+        self.assertIn('cJSON_AddBoolToObject(payload, "enabled", st.enabled);', body)
+        console = (ROOT / "components/muse/muse_input.c").read_text()
+        block = gated_block_with(console, "static void print_obd(void)")
+        self.assertIn('\\"enabled\\":%s', block)
+        self.assertIn('st.enabled ? "true" : "false"', block)
+        obd = (ROOT / "components/muse/muse_obd.c").read_text()
+        self.assertIn('set_state("off");', function_body(obd, "static void obd_task(void *arg)"))
+        self.assertIn('s_status.state = s_enabled ? "waiting" : "off";', obd)
+        # The bench fires say why they do nothing while off.
+        body = function_body(console, "static bool console_command(")
+        block = gated_block_with(body, "!muse_obd_enabled()")
+        self.assertIsNotNone(block)
+        self.assertIn("@obd.off", block)
 
     def test_status_row_indicator_is_gated(self):
         ui = (ROOT / "components/muse/muse_ui.c").read_text()
@@ -236,10 +370,12 @@ class LinkObdTest(unittest.TestCase):
         build = gated_block_with(ui, 'lv_label_set_text(s_obd_icon, "OBD");')
         self.assertIsNotNone(build)
         self.assertIn("&lv_font_montserrat_14", build)
-        tick = gated_block_with(ui, "muse_obd_status(&o);")
+        tick = gated_block_with(ui, "obd != s_shown_obd")
         self.assertIsNotNone(tick)
         self.assertIn("LV_OBJ_FLAG_HIDDEN", tick)
-        self.assertIn("obd != s_shown_obd", tick)
+        # Read from the snapshot taken at the top of the tick.
+        chrome = function_body(ui, "static void update_chrome(float now)")
+        self.assertLess(chrome.index("muse_obd_status(&o);"), chrome.index("obd != s_shown_obd"))
         # Nothing about the indicator outside the gate.
         stripped = ui
         start = stripped.find(GATE)
