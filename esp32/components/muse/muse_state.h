@@ -148,3 +148,12 @@ float muse_state_vtec(void);
  */
 void muse_state_start_coolant(void);
 float muse_state_coolant(void);
+
+/*
+ * Warm-up: the car's coolant reached operating temperature after a cold start
+ * (muse_obd.c, MUSE_WARMUP_S). Shown only while idle, under VTEC and the
+ * coolant warning if either is on. Starting it pokes and ends drowsing
+ * quietly. Built only with CONFIG_MUSE_OBD_VTEC.
+ */
+void muse_state_start_warmup(void);
+float muse_state_warmup(void);

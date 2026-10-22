@@ -2048,6 +2048,7 @@ static void frame_tick(lv_timer_t *timer)
 #if CONFIG_MUSE_OBD_VTEC
         .vtec = muse_state_vtec(),
         .coolant = muse_state_coolant(),
+        .warmup = muse_state_warmup(),
 #endif
     };
     if (!muse_board->epaper || mode != s_last_epaper_pose) {

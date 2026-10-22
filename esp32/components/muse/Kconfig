@@ -436,7 +436,9 @@ menu "Muse"
             polls engine RPM (Mode 01 PID 0C) and, when it crosses 6000 rpm,
             plays the avatar's VTEC reaction. Every 4th request reads coolant
             instead (PID 05): 105 C or more for 5 s with the engine running
-            plays the coolant warning. The reactions are visual only.
+            plays the coolant warning, and the first reading of 82 C or more
+            after one of 70 C or less plays a warm-up thumbs-up. The
+            reactions are visual only.
             Needs the NimBLE central and observer
             roles and a second connection (BT_NIMBLE_MAX_CONNECTIONS=2); the
             AMOLED-1.8's overlay turns them on with this.

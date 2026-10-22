@@ -102,6 +102,7 @@ static uint8_t s_own_addr;
 static muse_elm_rx_t s_rx;
 static muse_vtec_trigger_t s_trigger;
 static muse_coolant_trigger_t s_coolant;
+static muse_warmup_trigger_t s_warmup;
 static int s_rpm = -1;                /* the latest RPM; -1 when unknown (engine off, link down) */
 
 /* muse_obd_status()'s snapshot: written by this task, read from any task. */
@@ -553,6 +554,11 @@ void muse_obd_fire_coolant(void)
     muse_state_start_coolant();
 }
 
+void muse_obd_fire_warmup(void)
+{
+    muse_state_start_warmup();
+}
+
 static void fire(int rpm)
 {
     ESP_LOGI(TAG, "VTEC! %d rpm", rpm);
@@ -565,8 +571,14 @@ static void fire_coolant(int coolant_c)
     muse_obd_fire_coolant();
 }
 
-/* A coolant reply: feeds the warning. Anything else (NO DATA, an ECU without
- * PID 05) is skipped without slowing the RPM polling. */
+static void fire_warmup(int coolant_c)
+{
+    ESP_LOGI(TAG, "warmed up: %d C", coolant_c);
+    muse_obd_fire_warmup();
+}
+
+/* A coolant reply: feeds the warning and the warm-up. Anything else (NO DATA,
+ * an ECU without PID 05) is skipped without slowing the RPM polling. */
 static void got_coolant(void)
 {
     int coolant_c = 0;
@@ -578,6 +590,9 @@ static void got_coolant(void)
     set_coolant(coolant_c);
     if (muse_coolant_update(&s_coolant, coolant_c, s_rpm, now_ms())) {
         fire_coolant(coolant_c);
+    }
+    if (muse_warmup_update(&s_warmup, coolant_c)) {
+        fire_warmup(coolant_c);
     }
 }
 
@@ -630,6 +645,7 @@ static void drop(void)
     }
     muse_vtec_disarm(&s_trigger);
     muse_coolant_reset(&s_coolant);
+    muse_warmup_init(&s_warmup);   /* a new connection must see the engine cold again */
     s_rpm = -1;
     set_link_down();
 }
@@ -639,6 +655,7 @@ static void obd_task(void *arg)
     (void)arg;
     muse_vtec_init(&s_trigger);
     muse_coolant_init(&s_coolant);
+    muse_warmup_init(&s_warmup);
     uint32_t backoff = BACKOFF_MIN_MS;
     for (;;) {
         /* Link brings the host up (at boot on PSRAM boards) and may restart it. */
