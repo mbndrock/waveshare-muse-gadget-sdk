@@ -68,7 +68,9 @@ static const char *TAG = "muse_obd";
 #define BACKOFF_MAX_MS 60000
 #define RX_BYTES 512
 
-#define COOLANT_EVERY 4                /* every 4th request reads coolant (0105), the rest RPM */
+/* Requests alternate RPM (010C) with one secondary PID, in turn from
+ * MUSE_ELM_SECONDARY (muse_obd_elm.c): coolant (0105) first, then the cards'. */
+#define RPM 0x0C
 
 typedef enum {
     EV_FOUND = 1,       /* addr: the adapter's advertisement */
@@ -104,11 +106,43 @@ static muse_vtec_trigger_t s_trigger;
 static muse_coolant_trigger_t s_coolant;
 static muse_warmup_trigger_t s_warmup;
 static int s_rpm = -1;                /* the latest RPM; -1 when unknown (engine off, link down) */
+static muse_elm_support_t s_support;  /* this connection's support scan; all unknown until it answers */
+static unsigned s_cursor;             /* the next secondary PID in MUSE_ELM_SECONDARY */
+static bool s_have_protocol;          /* this connection has read ATDPN */
 
 /* muse_obd_status()'s snapshot: written by this task, read from any task. */
 static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
-static muse_obd_status_t s_status = { .state = "off" };
+static muse_obd_status_t s_status = { .state = "off", .protocol = -1 };
 static uint32_t s_rpm_at, s_coolant_at;   /* now_ms() of each reading */
+static uint32_t s_extra_at[MUSE_OBD_EXTRAS];
+
+const muse_obd_extra_info_t MUSE_OBD_EXTRA[MUSE_OBD_EXTRAS] = {
+    [MUSE_OBD_LOAD] = { 0x04, "load_pct", "load_age_ms" },
+    [MUSE_OBD_MAP] = { 0x0B, "map_kpa", "map_age_ms" },
+    [MUSE_OBD_SPEED] = { 0x0D, "speed_kmh", "speed_age_ms" },
+    [MUSE_OBD_TIMING] = { 0x0E, "timing_deg", "timing_age_ms" },
+    [MUSE_OBD_IAT] = { 0x0F, "iat_c", "iat_age_ms" },
+    [MUSE_OBD_THROTTLE] = { 0x11, "throttle_pct", "throttle_age_ms" },
+    [MUSE_OBD_STFT] = { 0x06, "stft_pct", "stft_age_ms" },
+    [MUSE_OBD_LTFT] = { 0x07, "ltft_pct", "ltft_age_ms" },
+    [MUSE_OBD_AMBIENT] = { 0x46, "ambient_c", "ambient_age_ms" },
+};
+
+/* Each extra's parser, and the result that means it read a value. */
+static const struct {
+    muse_elm_result_t (*parse)(const char *resp, int *value);
+    muse_elm_result_t ok;
+} EXTRA_PARSE[MUSE_OBD_EXTRAS] = {
+    [MUSE_OBD_LOAD] = { muse_elm_parse_load, MUSE_ELM_LOAD },
+    [MUSE_OBD_MAP] = { muse_elm_parse_map, MUSE_ELM_MAP },
+    [MUSE_OBD_SPEED] = { muse_elm_parse_speed, MUSE_ELM_SPEED },
+    [MUSE_OBD_TIMING] = { muse_elm_parse_timing, MUSE_ELM_TIMING },
+    [MUSE_OBD_IAT] = { muse_elm_parse_iat, MUSE_ELM_IAT },
+    [MUSE_OBD_THROTTLE] = { muse_elm_parse_throttle, MUSE_ELM_THROTTLE },
+    [MUSE_OBD_STFT] = { muse_elm_parse_stft, MUSE_ELM_STFT },
+    [MUSE_OBD_LTFT] = { muse_elm_parse_ltft, MUSE_ELM_LTFT },
+    [MUSE_OBD_AMBIENT] = { muse_elm_parse_ambient, MUSE_ELM_AMBIENT },
+};
 
 /* ---- On the host task: post and wake ---- */
 
@@ -316,7 +350,40 @@ static void set_coolant(int coolant_c)
     taskEXIT_CRITICAL(&s_status_lock);
 }
 
-/* The link is down: nothing is connected and no reading is current. */
+static void set_extra(muse_obd_extra_t i, int value)
+{
+    uint32_t at = now_ms();
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.extra[i].valid = true;
+    s_status.extra[i].value = value;
+    s_extra_at[i] = at;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+static void set_protocol(int protocol)
+{
+    char name[sizeof(s_status.protocol_name)];
+    muse_elm_protocol_name(protocol, name, sizeof(name));
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.protocol = protocol;
+    memcpy(s_status.protocol_name, name, sizeof(name));
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+/* A scan that read the 01-20 mask: the snapshot takes all three ranges from
+ * it, so a range this scan didn't reach doesn't keep an older car's mask. */
+static void set_support(const muse_elm_support_t *sup)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    for (int i = 0; i < MUSE_OBD_SUPPORT_RANGES; i++) {
+        s_status.support_valid[i] = sup->valid[i];
+        s_status.support[i] = sup->valid[i] ? sup->masks[i] : 0;
+    }
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+/* The link is down: nothing is connected and no reading is current. The
+ * protocol and the support masks stay (see muse_obd_status_t). */
 static void set_link_down(void)
 {
     taskENTER_CRITICAL(&s_status_lock);
@@ -325,6 +392,9 @@ static void set_link_down(void)
     s_status.polling = false;
     s_status.rpm_valid = false;
     s_status.coolant_valid = false;
+    for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
+        s_status.extra[i].valid = false;
+    }
     taskEXIT_CRITICAL(&s_status_lock);
 }
 
@@ -334,14 +404,28 @@ void muse_obd_status(muse_obd_status_t *out)
         return;
     }
     uint32_t now = now_ms();
-    uint32_t rpm_at, coolant_at;
+    uint32_t rpm_at, coolant_at, extra_at[MUSE_OBD_EXTRAS];
     taskENTER_CRITICAL(&s_status_lock);
     *out = s_status;
     rpm_at = s_rpm_at;
     coolant_at = s_coolant_at;
+    memcpy(extra_at, s_extra_at, sizeof(extra_at));
     taskEXIT_CRITICAL(&s_status_lock);
     out->rpm_age_ms = out->rpm_valid ? now - rpm_at : UINT32_MAX;
     out->coolant_age_ms = out->coolant_valid ? now - coolant_at : UINT32_MAX;
+    for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
+        out->extra[i].age_ms = out->extra[i].valid ? now - extra_at[i] : UINT32_MAX;
+    }
+}
+
+bool muse_obd_pid_unsupported(const muse_obd_status_t *st, int pid)
+{
+    muse_elm_support_t sup;
+    for (int i = 0; i < MUSE_ELM_SUPPORT_RANGES; i++) {
+        sup.valid[i] = st->support_valid[i];
+        sup.masks[i] = st->support[i];
+    }
+    return muse_elm_pid_support(&sup, pid) == MUSE_ELM_PID_UNSUPPORTED;
 }
 
 /*
@@ -544,6 +628,57 @@ static bool elm_init(void)
     return true;
 }
 
+/* Which protocol ATSP0 settled on ("ATDPN"). Not known (-1) until the first
+ * OBD request has made the ELM search for it. */
+static void read_protocol(void)
+{
+    if (!elm_cmd("ATDPN", CMD_MS)) {
+        return;
+    }
+    int protocol = muse_elm_parse_protocol(s_rx.resp);
+    if (protocol > 0) {
+        ESP_LOGI(TAG, "protocol %d", protocol);
+        set_protocol(protocol);
+        s_have_protocol = true;
+    }
+}
+
+/*
+ * The supported-PID scan: 0100, then 0120 if it lists PID 20, then 0140 if
+ * that lists PID 40. A range that doesn't answer stays unknown, and so do the
+ * ones after it: the poll loop keeps asking those PIDs and lets NO DATA skip
+ * them. The first 0100 after ATSP0 may search for the protocol, so it gets
+ * SEARCH_MS. False only once the adapter has disconnected.
+ */
+static bool scan_support(void)
+{
+    static const char *const CMDS[MUSE_ELM_SUPPORT_RANGES] = { "0100", "0120", "0140" };
+    muse_elm_support_t sup = { 0 };
+    for (int i = 0; i < MUSE_ELM_SUPPORT_RANGES; i++) {
+        if (i > 0 && !(sup.masks[i - 1] & 1)) {
+            break;   /* the bottom bit is PID 0x20 * i: nothing past this range */
+        }
+        if (!elm_cmd(CMDS[i], i == 0 ? SEARCH_MS : CMD_MS)) {
+            if (s_conn == BLE_HS_CONN_HANDLE_NONE) {
+                return false;
+            }
+            break;
+        }
+        if (muse_elm_parse_support(s_rx.resp, 0x20 * i, &sup.masks[i]) != MUSE_ELM_SUPPORT) {
+            break;
+        }
+        sup.valid[i] = true;
+        ESP_LOGI(TAG, "PIDs %02X-%02X: %08X", 0x20 * i + 1, 0x20 * (i + 1), (unsigned)sup.masks[i]);
+    }
+    if (sup.valid[0]) {
+        s_support = sup;
+        set_support(&sup);
+    } else {
+        ESP_LOGI(TAG, "no support scan: polling every PID");
+    }
+    return true;
+}
+
 void muse_obd_fire_vtec(void)
 {
     muse_state_start_vtec();
@@ -596,26 +731,55 @@ static void got_coolant(void)
     }
 }
 
+/* A reply to one of the cards' PIDs: into the snapshot. NO DATA (an ECU
+ * without it, or nothing yet) is skipped like coolant's, keeping the last
+ * reading, which ages. */
+static void got_extra(int pid)
+{
+    for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
+        if (MUSE_OBD_EXTRA[i].pid != pid) {
+            continue;
+        }
+        int value = 0;
+        if (EXTRA_PARSE[i].parse(s_rx.resp, &value) == EXTRA_PARSE[i].ok) {
+            ESP_LOGD(TAG, "%s %d", MUSE_OBD_EXTRA[i].key, value);
+            set_extra((muse_obd_extra_t)i, value);
+        }
+        return;
+    }
+}
+
 /*
- * Asks for RPM back to back, each request after the last '>', with every
- * COOLANT_EVERY-th request reading coolant instead. While frames come, a reply
- * that takes over POLL_MS drops the link. Until then (the first request, or
- * after NO DATA or an error) the ELM may be searching for the car's protocol,
- * which takes seconds, so it gets SEARCH_MS. Only RPM replies decide that, and
- * the pause after a non-answer. Returns once the link is lost; true if the
+ * Asks for RPM and a secondary PID by turns, each request after the last '>':
+ * RPM, coolant, RPM, the next card PID, ... (muse_elm_next_secondary). While
+ * frames come, a reply that takes over POLL_MS drops the link. Until then (the
+ * first request, or after NO DATA or an error) the ELM may be searching for
+ * the car's protocol, which takes seconds, so it gets SEARCH_MS. Only RPM
+ * replies decide that, and the pause after a non-answer. The first RPM reply
+ * also redoes whatever init couldn't learn with the engine still off: the
+ * support scan and the protocol. Returns once the link is lost; true if the
  * adapter answered at all.
  */
 static bool poll_rpm(void)
 {
-    bool answered = false, locked = false;
+    bool answered = false, locked = false, retried = false;
     for (unsigned n = 0;; n++) {
-        bool coolant = n % COOLANT_EVERY == COOLANT_EVERY - 1;
-        if (!elm_cmd(coolant ? "0105" : "010C", locked ? POLL_MS : SEARCH_MS)) {
+        int pid = n % 2 ? muse_elm_next_secondary(&s_support, &s_cursor) : RPM;
+        if (pid < 0) {
+            continue;   /* every secondary is unsupported: RPM only */
+        }
+        char cmd[8];
+        snprintf(cmd, sizeof(cmd), "01%02X", pid);
+        if (!elm_cmd(cmd, locked ? POLL_MS : SEARCH_MS)) {
             return answered;
         }
         answered = true;
-        if (coolant) {
+        if (pid == 0x05) {
             got_coolant();
+            continue;
+        }
+        if (pid != RPM) {
+            got_extra(pid);
             continue;
         }
         int rpm = 0;
@@ -627,6 +791,15 @@ static bool poll_rpm(void)
             ESP_LOGD(TAG, "%d rpm", rpm);
             if (muse_vtec_update(&s_trigger, rpm, now_ms())) {
                 fire(rpm);
+            }
+            if (!retried) {
+                retried = true;
+                if (!s_support.valid[0] && !scan_support()) {
+                    return answered;
+                }
+                if (!s_have_protocol) {
+                    read_protocol();
+                }
             }
         } else {
             vTaskDelay(pdMS_TO_TICKS(NO_RPM_PAUSE_MS));
@@ -647,6 +820,9 @@ static void drop(void)
     muse_coolant_reset(&s_coolant);
     muse_warmup_init(&s_warmup);   /* a new connection must see the engine cold again */
     s_rpm = -1;
+    s_support = (muse_elm_support_t){ 0 };   /* the next connection scans again */
+    s_cursor = 0;
+    s_have_protocol = false;
     set_link_down();
 }
 
@@ -673,8 +849,11 @@ static void obd_task(void *arg)
                 set_state("discovering");
                 if (subscribe()) {
                     set_state("initializing");
-                    if (elm_init()) {
-                        ESP_LOGI(TAG, "polling RPM and coolant");
+                    /* ATDPN after the scan: the scan's 0100 is what makes
+                     * ATSP0 search for the protocol. */
+                    if (elm_init() && scan_support()) {
+                        read_protocol();
+                        ESP_LOGI(TAG, "polling RPM, coolant and the cards' PIDs");
                         set_state("polling");
                         set_flag(&s_status.polling, true);
                         polled = poll_rpm();

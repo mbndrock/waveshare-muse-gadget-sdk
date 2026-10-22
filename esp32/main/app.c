@@ -1895,6 +1895,28 @@ static cJSON *obd_read_command(void) {
     add_obd_reading(payload, "rpm", "rpm_age_ms", st.rpm_valid, st.rpm, st.rpm_age_ms);
     add_obd_reading(payload, "coolant_c", "coolant_age_ms", st.coolant_valid, st.coolant_c,
                     st.coolant_age_ms);
+    for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
+        add_obd_reading(payload, MUSE_OBD_EXTRA[i].key, MUSE_OBD_EXTRA[i].age_key, st.extra[i].valid,
+                        st.extra[i].value, st.extra[i].age_ms);
+    }
+    if (st.protocol > 0) {
+        cJSON_AddStringToObject(payload, "protocol", st.protocol_name);
+    } else {
+        cJSON_AddNullToObject(payload, "protocol");
+    }
+    // The supported-PID masks as 8 hex digits, null when not read.
+    static const char *const SUPPORTED[MUSE_OBD_SUPPORT_RANGES] = {
+        "supported_00", "supported_20", "supported_40",
+    };
+    for (int i = 0; i < MUSE_OBD_SUPPORT_RANGES; i++) {
+        if (st.support_valid[i]) {
+            char hex[9];
+            snprintf(hex, sizeof(hex), "%08lX", (unsigned long)st.support[i]);
+            cJSON_AddStringToObject(payload, SUPPORTED[i], hex);
+        } else {
+            cJSON_AddNullToObject(payload, SUPPORTED[i]);
+        }
+    }
     cJSON_AddBoolToObject(result, "ok", true);
     cJSON_AddItemToObject(result, "payload", payload);
     return result;

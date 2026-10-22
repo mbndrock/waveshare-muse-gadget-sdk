@@ -1531,9 +1531,14 @@ static char *build_register_json(void) {
     add_command(commands, "obd.read",
                 "Report the OBD-II adapter state and the latest engine "
                 "readings from the LELink^2 adapter: the link state, "
-                "whether it is polling, engine RPM and coolant temperature "
-                "in degrees Celsius, each null when there is no current "
-                "reading, with each reading's age in milliseconds.",
+                "whether it is polling, engine RPM, coolant temperature "
+                "in degrees Celsius, and engine load, manifold pressure, "
+                "speed, timing advance, intake and ambient air "
+                "temperature, throttle position and short- and long-term "
+                "fuel trims, each null when there is no current reading, "
+                "with each reading's age in milliseconds; also the OBD "
+                "protocol the car answered on and the supported-PID "
+                "bitmasks for PIDs 01-60 as hex strings (null if unknown).",
                 nullptr, nullptr);
 #endif
 

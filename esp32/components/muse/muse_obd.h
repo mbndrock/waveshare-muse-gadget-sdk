@@ -24,11 +24,12 @@
  * peripheral, to a LELink^2 ELM327 OBD-II adapter. It finds the adapter,
  * subscribes to its FFE1 characteristic, polls engine RPM (01 0C) and, when
  * the trigger in muse_obd_elm.h fires, plays the avatar's VTEC reaction.
- * Every 4th request reads coolant (01 05) instead; when the coolant trigger
- * fires it plays the coolant warning, and when the coolant first reaches
- * operating temperature after a cold start, a thumbs-up. The reactions are
- * visual only: a spoken line would swap the reaction face for the speaking
- * pose.
+ * Every other request reads a secondary PID instead, in turn: coolant (01 05)
+ * and then the car data cards' PIDs, less any the support scan (01 00 / 20 /
+ * 40, after the ELM init) proved unsupported. When the coolant trigger fires
+ * it plays the coolant warning, and when the coolant first reaches operating
+ * temperature after a cold start, a thumbs-up. The reactions are visual only:
+ * a spoken line would swap the reaction face for the speaking pose.
  *
  * Starts a task that waits for Link's BLE host, then keeps the adapter
  * connected, reconnecting with backoff. Call once, after the UI and the
@@ -46,11 +47,45 @@ void muse_obd_fire_vtec(void);
 void muse_obd_fire_coolant(void);
 void muse_obd_fire_warmup(void);
 
+/* The car data cards' readings beyond RPM and coolant, in obd.read's order. */
+typedef enum {
+    MUSE_OBD_LOAD,       /* 04, % */
+    MUSE_OBD_MAP,        /* 0B, kPa */
+    MUSE_OBD_SPEED,      /* 0D, km/h */
+    MUSE_OBD_TIMING,     /* 0E, degrees */
+    MUSE_OBD_IAT,        /* 0F, degrees C */
+    MUSE_OBD_THROTTLE,   /* 11, % */
+    MUSE_OBD_STFT,       /* 06, % */
+    MUSE_OBD_LTFT,       /* 07, % */
+    MUSE_OBD_AMBIENT,    /* 46, degrees C */
+    MUSE_OBD_EXTRAS,
+} muse_obd_extra_t;
+
+typedef struct {
+    uint8_t pid;           /* Mode 01 PID */
+    const char *key;       /* obd.read's name for it: "load_pct", ... */
+    const char *age_key;   /* and for its age: "load_age_ms", ... */
+} muse_obd_extra_info_t;
+
+/* One per muse_obd_extra_t, in that order. */
+extern const muse_obd_extra_info_t MUSE_OBD_EXTRA[MUSE_OBD_EXTRAS];
+
+typedef struct {
+    bool valid;            /* value holds a current reading */
+    int value;             /* in the unit above */
+    uint32_t age_ms;       /* ms since that reading; UINT32_MAX if none */
+} muse_obd_reading_t;
+
+#define MUSE_OBD_SUPPORT_RANGES 3   /* PIDs 01-20, 21-40, 41-60 */
+
 /*
  * What the OBD task is doing and its latest readings. state is one of "off",
  * "waiting" (for Link's BLE host), "scanning", "connecting", "discovering",
- * "initializing" (the ELM's AT commands), "polling" and "backoff" (between
- * attempts). A dropped link clears both readings: there is no current one.
+ * "initializing" (the ELM's AT commands and the support scan), "polling" and
+ * "backoff" (between attempts). A dropped link clears every reading: there is
+ * no current one. The protocol and the supported-PID masks describe the car,
+ * not a moment: they are the last ones read and stay across a dropped link,
+ * so they can be read after the drive, until the next scan replaces them.
  */
 typedef struct {
     bool started;          /* muse_obd_start() created the task */
@@ -65,6 +100,11 @@ typedef struct {
     bool coolant_valid;    /* coolant_c holds a current reading */
     int coolant_c;         /* latest coolant temperature, degrees C */
     uint32_t coolant_age_ms; /* ms since that reading; UINT32_MAX if none */
+    muse_obd_reading_t extra[MUSE_OBD_EXTRAS];   /* the cards' other PIDs */
+    int protocol;          /* ATDPN's protocol number (6: CAN 11/500); -1 if not known */
+    char protocol_name[20]; /* its short name ("CAN 11/500", "proto 13"); "" if not known */
+    bool support_valid[MUSE_OBD_SUPPORT_RANGES];   /* support[i] was read */
+    uint32_t support[MUSE_OBD_SUPPORT_RANGES];     /* 01 00 / 20 / 40's bitmask (A << 24 | ... | D) */
 } muse_obd_status_t;
 
 /*
@@ -73,3 +113,7 @@ typedef struct {
  * the bench console's ">obd" report it.
  */
 void muse_obd_status(muse_obd_status_t *out);
+
+/* The support masks in *st prove that Mode 01 `pid` is not supported (the
+ * car data cards show "--" for it, and the poll loop never asks). */
+bool muse_obd_pid_unsupported(const muse_obd_status_t *st, int pid);
