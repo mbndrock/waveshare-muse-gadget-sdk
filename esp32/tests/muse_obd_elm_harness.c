@@ -15,7 +15,7 @@
  */
 
 /* The OBD reactions' ELM327 parser and triggers (muse_obd_elm.c: VTEC on RPM,
- * the coolant warning on PID 05), fed the way the LELink^2 adapter's FFE1
+ * the coolant warning and the warm-up thumbs-up on PID 05), fed the way the LELink^2 adapter's FFE1
  * notifications cut its replies. */
 
 #include <stdio.h>
@@ -368,6 +368,77 @@ static void test_coolant_trigger(void)
     CHECK(muse_coolant_update(&t, 106, run, 0x00000400u + MUSE_COOLANT_COOLDOWN_MS));
 }
 
+static void test_warmup_trigger(void)
+{
+    muse_warmup_trigger_t t;
+
+    /* A cold start: armed at <= 70, fires once at 82, then quiet while hot. */
+    muse_warmup_init(&t);
+    CHECK(!t.armed);
+    CHECK(!muse_warmup_update(&t, 20));
+    CHECK(t.armed);
+    CHECK(!muse_warmup_update(&t, 55));
+    CHECK(!muse_warmup_update(&t, 71));
+    CHECK(!muse_warmup_update(&t, 81));
+    CHECK(muse_warmup_update(&t, MUSE_WARMUP_FIRE_C));
+    CHECK(!t.armed);
+    for (int c = 82; c <= 110; c++) {
+        CHECK(!muse_warmup_update(&t, c));
+    }
+    /* Cooling off but not cold (71..81, back to 90) doesn't re-arm. */
+    CHECK(!muse_warmup_update(&t, 71));
+    CHECK(!muse_warmup_update(&t, 90));
+    /* Back to 70 re-arms it, and the next warm-up fires again, once. */
+    CHECK(!muse_warmup_update(&t, MUSE_WARMUP_COLD_C));
+    CHECK(t.armed);
+    CHECK(!muse_warmup_update(&t, 76));
+    CHECK(muse_warmup_update(&t, 88));
+    CHECK(!muse_warmup_update(&t, 88));
+
+    /* Already warm on the first reading (hot restart, reconnect mid-drive):
+     * never fires, however long it stays warm. */
+    muse_warmup_init(&t);
+    CHECK(!muse_warmup_update(&t, 90));
+    CHECK(!muse_warmup_update(&t, 82));
+    CHECK(!muse_warmup_update(&t, 75));
+    CHECK(!muse_warmup_update(&t, 95));
+    CHECK(!t.armed);
+
+    /* Invalid readings change nothing: they neither arm nor fire. */
+    muse_warmup_init(&t);
+    CHECK(!muse_warmup_update(&t, -41));
+    CHECK(!muse_warmup_update(&t, -1000));
+    CHECK(!t.armed);
+    CHECK(!muse_warmup_update(&t, 50));
+    CHECK(!muse_warmup_update(&t, 216));
+    CHECK(!muse_warmup_update(&t, 9999));
+    CHECK(t.armed);
+    CHECK(muse_warmup_update(&t, 84));
+    /* The PID's range ends are real readings: -40 arms, 215 fires. */
+    muse_warmup_init(&t);
+    CHECK(!muse_warmup_update(&t, -40));
+    CHECK(muse_warmup_update(&t, 215));
+
+    /* A link drop re-initialises it: armed before the drop, the new
+     * connection must see cold again. */
+    muse_warmup_init(&t);
+    CHECK(!muse_warmup_update(&t, 40));
+    muse_warmup_init(&t);
+    CHECK(!muse_warmup_update(&t, 85));
+
+    /* Fed from parsed replies, the way muse_obd.c does it. */
+    muse_warmup_init(&t);
+    static const char *const REPLIES[] = { "41 05 64", "NO DATA", "41 05 6E", "?", "41 05 7A", "41 05 7B" };
+    int fires = 0;
+    for (size_t i = 0; i < sizeof(REPLIES) / sizeof(REPLIES[0]); i++) {
+        int c = 0;
+        if (muse_elm_parse_coolant(REPLIES[i], &c) == MUSE_ELM_COOLANT) {
+            fires += muse_warmup_update(&t, c);   /* 60, 70, 82, 83 */
+        }
+    }
+    CHECK(fires == 1);
+}
+
 int main(void)
 {
     test_fragmented_atz();
@@ -378,6 +449,7 @@ int main(void)
     test_coolant_frames();
     test_coolant_parse_cases();
     test_coolant_trigger();
+    test_warmup_trigger();
     if (s_fail) {
         fprintf(stderr, "%d checks failed\n", s_fail);
         return 1;

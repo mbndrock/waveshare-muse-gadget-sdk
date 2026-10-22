@@ -231,3 +231,24 @@ bool muse_coolant_update(muse_coolant_trigger_t *t, int coolant_c, int rpm, uint
     t->last_fire_ms = now_ms;
     return true;
 }
+
+void muse_warmup_init(muse_warmup_trigger_t *t)
+{
+    memset(t, 0, sizeof(*t));
+}
+
+bool muse_warmup_update(muse_warmup_trigger_t *t, int coolant_c)
+{
+    if (coolant_c < -40 || coolant_c > 215) {
+        return false;   /* not a reading */
+    }
+    if (coolant_c <= MUSE_WARMUP_COLD_C) {
+        t->armed = true;
+        return false;
+    }
+    if (coolant_c < MUSE_WARMUP_FIRE_C || !t->armed) {
+        return false;
+    }
+    t->armed = false;
+    return true;
+}

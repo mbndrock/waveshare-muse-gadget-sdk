@@ -21,8 +21,8 @@
 #include <stdint.h>
 
 /*
- * The ELM327 side of the OBD reactions (muse_obd.c: VTEC, and the coolant
- * temperature warning), as plain C with no BLE or FreeRTOS in it, so the host
+ * The ELM327 side of the OBD reactions (muse_obd.c: VTEC, the coolant
+ * temperature warning and the warm-up thumbs-up), as plain C with no BLE or FreeRTOS in it, so the host
  * tests can drive it byte by byte.
  *
  * An ELM327 answers each command with text and then its '>' prompt. Over BLE
@@ -117,3 +117,23 @@ void muse_coolant_reset(muse_coolant_trigger_t *t);
 /* One coolant reading at now_ms (any wrapping millisecond clock), with the
  * latest RPM (negative: unknown); true to fire. */
 bool muse_coolant_update(muse_coolant_trigger_t *t, int coolant_c, int rpm, uint32_t now_ms);
+
+/*
+ * The warm-up thumbs-up: the coolant reached operating temperature. It fires
+ * only after this drive has been seen cold: a reading <= MUSE_WARMUP_COLD_C
+ * arms it, and the first reading >= MUSE_WARMUP_FIRE_C after that fires it,
+ * once. Then it stays quiet until a reading <= MUSE_WARMUP_COLD_C arms it
+ * again. It starts disarmed, so a first reading that's already warm (a hot
+ * restart, a reconnect mid-drive) never fires; a new connection starts over.
+ */
+#define MUSE_WARMUP_FIRE_C 82
+#define MUSE_WARMUP_COLD_C 70
+
+typedef struct {
+    bool armed;
+} muse_warmup_trigger_t;
+
+void muse_warmup_init(muse_warmup_trigger_t *t);
+/* One coolant reading (deg C); true to fire. Readings outside the PID's
+ * -40..215 change nothing. */
+bool muse_warmup_update(muse_warmup_trigger_t *t, int coolant_c);
