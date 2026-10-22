@@ -40,6 +40,9 @@
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
+#if CONFIG_MUSE_OBD_VTEC
+#include "muse_obd.h"
+#endif
 #include "muse_pixel.h"
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
@@ -122,6 +125,10 @@ static lv_obj_t *s_settings;
 static lv_obj_t *s_dots[2];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
+#if CONFIG_MUSE_OBD_VTEC
+static lv_obj_t *s_obd_icon;   /* "OBD" while linked to the car's adapter */
+static int s_shown_obd;        /* 0 hidden, 1 dim (subscribed), 2 accent (polling) */
+#endif
 static lv_obj_t *s_cover;
 static lv_obj_t *s_pair;
 static lv_obj_t *s_pair_code;
@@ -1000,6 +1007,20 @@ static void build_screen(void)
     lv_obj_align(status, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 40 : s_small ? 1 : 20 + s_dy);
     s_wifi_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
     s_ble_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
+#if CONFIG_MUSE_OBD_VTEC
+    /* A fixed slot the size of "OBD" holds the label, so hiding it (flex
+     * skips hidden children) never moves or resizes its neighbours. */
+    lv_obj_t *obd_slot = lv_obj_create(status);
+    lv_obj_remove_style_all(obd_slot);
+    lv_obj_remove_flag(obd_slot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    s_obd_icon = make_label(obd_slot, &lv_font_montserrat_14, COLOR_DIM);
+    lv_label_set_text(s_obd_icon, "OBD");
+    lv_obj_update_layout(s_obd_icon);
+    lv_obj_set_size(obd_slot, lv_obj_get_width(s_obd_icon), lv_font_get_line_height(&lv_font_montserrat_14));
+    lv_obj_center(s_obd_icon);
+    lv_obj_add_flag(s_obd_icon, LV_OBJ_FLAG_HIDDEN);
+    s_shown_obd = 0;
+#endif
     s_power_lbl = make_label(status, &lv_font_unscii_8, COLOR_DIM);
 
     /* The compact layout leaves the state to the avatar and the caption,
@@ -1673,6 +1694,19 @@ static void update_chrome(float now)
         lv_label_set_text(s_ble_icon, ble);
         lv_obj_set_style_text_color(s_ble_icon, lv_color_hex(b.state == MUSE_BLE_CONNECTED ? COLOR_ACCENT : COLOR_DIM), 0);
     }
+#if CONFIG_MUSE_OBD_VTEC
+    /* Linked to the car's adapter: dim once subscribed, accent while polling. */
+    muse_obd_status_t o;
+    muse_obd_status(&o);
+    int obd = o.polling ? 2 : o.subscribed ? 1 : 0;
+    if (obd != s_shown_obd) {
+        if (obd) {
+            lv_obj_set_style_text_color(s_obd_icon, lv_color_hex(obd == 2 ? COLOR_ACCENT : COLOR_DIM), 0);
+        }
+        lv_obj_set_flag(s_obd_icon, LV_OBJ_FLAG_HIDDEN, !obd);
+        s_shown_obd = obd;
+    }
+#endif
 
     /* Paired, the name has done its job (picking this one out in the Muse
      * app) and the speaker button has replies to mute. */
