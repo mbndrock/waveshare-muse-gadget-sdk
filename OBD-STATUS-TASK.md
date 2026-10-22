@@ -199,6 +199,169 @@ plumbing; tests/docs/results). Do NOT push.
 ## Results (Claude Code fills this in)
 
 - Implemented:
-- Host QA:
-- Commits:
+  - `esp32/components/muse/muse_obd.[ch]`:
+    - `muse_obd_status_t` and `muse_obd_status()` are declared exactly as
+      specified. The header now includes `<stdbool.h>` / `<stdint.h>` and
+      lists the state strings in a comment.
+    - The snapshot is a static `muse_obd_status_t s_status` (starts as
+      "off"), plus the two readings' `now_ms()` timestamps. All of it sits
+      behind `portMUX_TYPE s_status_lock`, the `sensecap_sensors.c` pattern.
+    - Small setters each take the lock once: `set_state`, `set_flag`,
+      `set_rpm`, `set_coolant` and `set_link_down`.
+    - `muse_obd_status()` copies under the lock and computes ages
+      (`now - at`, wrap-safe) outside it. Ages are `UINT32_MAX` whenever the
+      reading isn't valid. It ignores a NULL `out`, and it never blocks or
+      touches BLE, so it works before `muse_obd_start()` too ("off", all
+      false).
+  - State tracking:
+    - `muse_obd_start()` sets started / "waiting" *before* it creates the
+      task, so the task can't run ahead and get overwritten. If the queue,
+      stream buffer or task creation fails, it goes back to started=false /
+      "off".
+    - Each loop: "waiting" while it waits for the BLE host, then
+      "scanning" with adapter_found reset. A successful `scan()` sets
+      adapter_found.
+    - Then "connecting"; a successful `connect()` sets connected. Then
+      "discovering"; a successful `subscribe()` sets subscribed. Then
+      "initializing" around `elm_init()`.
+    - Then "polling" with polling=true around `poll_rpm()`, and
+      polling=false after it returns.
+    - After `drop()` or any failed step: "backoff" for the sleep.
+    - The loop's `&&` chain became nested `if`s so each state is set just
+      before its step. The control flow is the same: `drop()` still runs
+      exactly when `connect()` succeeded.
+  - Readings:
+    - `poll_rpm()` calls `set_rpm(locked, rpm)` right after the existing
+      `s_rpm` line. A valid parse stores the value and time. A non-RPM
+      reply clears rpm_valid, which mirrors `s_rpm = -1`. `s_rpm` itself is
+      untouched.
+    - `got_coolant()` calls `set_coolant()` only after a valid parse.
+      NO DATA or an invalid reply returns early as before, so the last value
+      stays and its age keeps growing.
+    - `drop()` ends with `set_link_down()`, which clears connected,
+      subscribed, polling, rpm_valid and coolant_valid.
+    - Choice: a disconnect noticed inside `wait_for()` doesn't clear
+      `connected` there. `drop()` follows right away, because every step
+      fails fast with `s_conn` gone, so the window is short.
+  - Link (`esp32/main/noise_control.cpp`, `esp32/main/app.c`):
+    - `obd.read` is advertised in `build_register_json()` after
+      `sensors.read`, with the spec's description verbatim, under
+      `#if CONFIG_MUSE_OBD_VTEC`.
+    - `app.c` includes `muse_obd.h` under the same `#if`, beside the
+      sensecap include.
+    - A gated `obd_read_command()` (plus an `add_obd_reading()` helper)
+      builds `{"ok":true,"payload":{...}}` from one `muse_obd_status()`
+      call. `rpm` / `coolant_c` and their `*_age_ms` are all JSON null when
+      the reading isn't valid, so UINT32_MAX never reaches the JSON.
+    - If an allocation fails it returns `command_error("out_of_memory", ...)`,
+      never NULL. It answers synchronously, with no task.
+    - Dispatch is in `on_ws_command()` right after `sensors.read`, under the
+      same `#if`.
+  - Console (`muse_input.c`):
+    - A gated `print_obd()` prints the spec's `@obd {...}` line, using
+      `obd_number()` for number-or-null, then flushes.
+    - An `obd` entry follows `vtec` / `coolant` inside their existing
+      `#if`, in the same form (`!strcmp`, call, `return true;`).
+    - The bench-testing comment above `serial_task()` mentions `"obd"`.
+  - CLAUDE.md: the OBD bullet has a new "Readout" line.
+- Host QA (this VM, no ESP-IDF):
+  1. `muse_obd.c` type-check:
+     - Command: `cc -std=gnu11 -fsyntax-only -Wall -Wextra -Wformat=2
+       -Wmissing-prototypes -Wstrict-prototypes`, against the real NimBLE
+       headers (espressif/esp-nimble `nimble-1.5.0-idf`, shallow clone).
+     - Stubs, as in the previous runs: FreeRTOS (incl. `portMUX_TYPE` and
+       `taskENTER/EXIT_CRITICAL`), esp_log (as printf), esp_err,
+       esp_heap_caps, esp_timer, `os/os_mempool.h`, and
+       `MYNEWT_VAL_BLE_GATT_CSFC_SIZE`.
+     - Result: **no diagnostics in muse_obd.c**. The only output comes from
+       the headers: glibc vs NimBLE `CIRCLEQ_*` redefinitions, and an unused
+       parameter in `transport/monitor.h`.
+     - `muse_obd.h` compiles on its own with the same flags: no output.
+     - Mutation check: with the `muse_obd_status` declaration deleted from
+       a copy of the header, `-Wmissing-prototypes` reports `no previous
+       prototype for 'muse_obd_status'`. With the real header, 0 warnings.
+       (The .c had to be copied beside the mutated header, because a quoted
+       include searches the source's own directory first.)
+  2. Not required by the spec, extra checks of the two output builders.
+     Each was extracted verbatim from its source file into a scratch harness
+     with a fake `muse_obd_status()`, built with `-Werror` and ASan/UBSan:
+     - `print_obd()` prints exactly the spec's example line for the
+       polling case. With no valid readings it prints `null` for all four
+       fields, even with stale values in the struct. `rpm` 0 and coolant
+       -40 print as real numbers. Every line parses as JSON.
+     - `obd_read_command()`, run against the in-tree
+       `tests/link_fakes/cJSON.c` (the harness adds `cJSON_AddNullToObject`,
+       which that fake lacks), gives exactly the spec's result shape. The
+       no-reading case gives nulls for all four fields.
+     - These are scratch checks only, not committed tests.
+  3. New `esp32/tests/test_link_obd.py` (3 tests):
+     - `obd.read` appears once in `noise_control.cpp`, and its
+       `add_command` sits inside a `#if CONFIG_MUSE_OBD_VTEC` block.
+     - It appears once in `on_ws_command()`'s dispatch, inside a gated block
+       that calls `obd_read_command()`. The `muse_obd.h` include and the
+       helper are gated too.
+     - `muse_obd.h` declares `muse_obd_status_t` and `muse_obd_status`.
+     - The `obd` entry in `console_command()`, and `print_obd()`, are
+       gated.
+     - Mutation check (on a scratch copy of the tree): moving the dispatch
+       out of its `#if` and the console entry out of its `#if` fails the two
+       matching tests.
+  4. Targeted runs: `test_link_obd`, `test_muse_obd_elm`,
+     `test_link_transport_contract`, `test_muse_pixel_vtec` and
+     `test_muse_pixel_coolant`: 16 tests, OK.
+  5. Full host suite `python3 -m unittest discover -s tests -p 'test_*.py'`:
+     193 ran (190 + the 3 new), 4 skipped, 4 errors. The errors are the
+     known setUpClass failures (link_discovery, link_sensecap_sensors,
+     muse_chat_link_errors, muse_chat_session), all from the missing
+     `managed_components/espressif__cjson`. No new failures.
+  6. `main/app.c`, `main/noise_control.cpp` and `muse_input.c` were **not
+     compiled** (they need the IDF, LVGL and the rest). Line-by-line review
+     of their diffs:
+     - Gates: every added code line is inside `#if CONFIG_MUSE_OBD_VTEC ...
+       #endif`. That's the include and the helpers in app.c, the dispatch,
+       the registration, `obd_number`/`print_obd` and the console entry.
+       The only change outside a gate is the comment above `serial_task()`.
+       With the option off, all three files compile to the same code as
+       before. This is by inspection, not by running the preprocessor.
+     - Name: `"obd.read"` is identical in the registration and the
+       dispatch, and the test pins both.
+     - Nulls: both outputs key on `rpm_valid` / `coolant_valid` alone, for
+       the value and its age together.
+     - Include path: `muse` is in main's unconditional `GADGET_REQUIRES`,
+       and `muse_obd.h` is in muse's public `INCLUDE_DIRS "."`.
+       `muse_obd.c` is compiled exactly when `CONFIG_MUSE_OBD_VTEC` is on,
+       so every reference resolves at link time. No CMake or Kconfig change.
+  7. Greps:
+     - The phrases are unchanged: `muse_obd.c:74 VTEC_LINE "VTEC just
+       kicked in yo!"`, `:75 COOLANT_LINE "Coolant temperature is high!"`.
+     - The thresholds are unchanged. `muse_obd_elm.[ch]`, `avatar/` and
+       `muse_chat_session.cpp` have an empty diff against b677001.
+     - As code, `obd.read` appears only in `noise_control.cpp:1382`
+       (registration) and `app.c:1944` (dispatch). It also appears in
+       comments in `muse_obd.h` and `muse_input.c`, in CLAUDE.md, in this
+       file and in the new test.
+  - Scratch: the esp-nimble clone, stubs and harnesses were in
+    `~/scratch-obd`, which was deleted afterwards.
+- Commits on obd-vtec-reaction (not pushed):
+  - 82f27e6 OBD: muse_obd_status() snapshot of the link state and latest readings
+  - d204eec Link: obd.read command and ">obd" console line for the OBD snapshot
+  - the commit adding `tests/test_link_obd.py`, the CLAUDE.md line and these
+    Results
 - Unverified until Mac build:
+  - The s18 build with the overlay (`check_sizes`), and that the other
+    boards build unchanged. `app.c`, `noise_control.cpp` and `muse_input.c`
+    haven't been compiled at all.
+  - That `link.register` still fits. The description adds about 300 bytes
+    to the 8 KB registration.
+  - On the device: `obd.read` in the command list, and the acceptance cases
+    above (no adapter: "scanning"/"backoff" with nulls; idling: "polling"
+    with RPM about 700-900 and fresh ages), plus `>obd` printing the same
+    snapshot.
+  - Expectations for the car:
+    - Coolant is read on every 4th request, so `coolant_age_ms` will
+      normally be larger than `rpm_age_ms`.
+    - After `ATZ`, while the ELM is still searching for the protocol, state
+      is "polling" with rpm null until the first frame arrives.
+    - With the engine off but the adapter powered, NO DATA replies make rpm
+      null while state stays "polling". Coolant keeps its last value (and
+      growing age) until the link drops.
