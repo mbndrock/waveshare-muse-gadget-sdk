@@ -76,6 +76,9 @@
 #if CONFIG_HOMEHUB_RETERMINAL_SHT4X
 #include "reterminal_sht4x.h"
 #endif
+#if CONFIG_MUSE_OBD_VTEC
+#include "muse_obd.h"
+#endif
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
 #endif
@@ -1861,6 +1864,43 @@ static cJSON *bug_report_command(
 
 #endif  // CONFIG_HOMEHUB_BLE_COMMANDS
 
+#if CONFIG_MUSE_OBD_VTEC
+// A reading and its age, or null for both when there is no current one.
+static void add_obd_reading(cJSON *payload, const char *key, const char *age_key,
+                            bool valid, int value, uint32_t age_ms) {
+    if (!valid) {
+        cJSON_AddNullToObject(payload, key);
+        cJSON_AddNullToObject(payload, age_key);
+        return;
+    }
+    cJSON_AddNumberToObject(payload, key, value);
+    cJSON_AddNumberToObject(payload, age_key, (double)age_ms);
+}
+
+static cJSON *obd_read_command(void) {
+    muse_obd_status_t st;
+    muse_obd_status(&st);
+    cJSON *result = cJSON_CreateObject();
+    cJSON *payload = cJSON_CreateObject();
+    if (!result || !payload) {
+        cJSON_Delete(result);
+        cJSON_Delete(payload);
+        return command_error("out_of_memory", "failed to allocate");
+    }
+    cJSON_AddStringToObject(payload, "state", st.state);
+    cJSON_AddBoolToObject(payload, "adapter_found", st.adapter_found);
+    cJSON_AddBoolToObject(payload, "connected", st.connected);
+    cJSON_AddBoolToObject(payload, "subscribed", st.subscribed);
+    cJSON_AddBoolToObject(payload, "polling", st.polling);
+    add_obd_reading(payload, "rpm", "rpm_age_ms", st.rpm_valid, st.rpm, st.rpm_age_ms);
+    add_obd_reading(payload, "coolant_c", "coolant_age_ms", st.coolant_valid, st.coolant_c,
+                    st.coolant_age_ms);
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddItemToObject(result, "payload", payload);
+    return result;
+}
+#endif
+
 static cJSON *on_ws_command(
     const char *command, cJSON *params, const char *request_id,
     noise_ctrl_session_generation_t session_generation) {
@@ -1940,6 +1980,11 @@ static cJSON *on_ws_command(
 #if CONFIG_HOMEHUB_RETERMINAL_SHT4X
     if (strcmp(command, "sensors.read") == 0) {
         return reterminal_sht4x_command();
+    }
+#endif
+#if CONFIG_MUSE_OBD_VTEC
+    if (strcmp(command, "obd.read") == 0) {
+        return obd_read_command();
     }
 #endif
     if (strcmp(command, "device.reset_vm") == 0) {

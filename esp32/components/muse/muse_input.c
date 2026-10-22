@@ -797,6 +797,35 @@ static void set_face(const char *name)
     fflush(stdout);
 }
 
+#if CONFIG_MUSE_OBD_VTEC
+/* A reading for the ">obd" line, or null when there is no current one. */
+static const char *obd_number(char *buf, size_t cap, bool valid, long long value)
+{
+    if (!valid) {
+        return "null";
+    }
+    snprintf(buf, cap, "%lld", value);
+    return buf;
+}
+
+/* The same snapshot as the obd.read Link command, as one line. */
+static void print_obd(void)
+{
+    muse_obd_status_t st;
+    muse_obd_status(&st);
+    char rpm[16], rpm_age[16], coolant[16], coolant_age[16];
+    printf("@obd {\"state\":\"%s\",\"adapter_found\":%s,\"connected\":%s,\"subscribed\":%s,"
+           "\"polling\":%s,\"rpm\":%s,\"rpm_age_ms\":%s,\"coolant_c\":%s,\"coolant_age_ms\":%s}\n",
+           st.state, st.adapter_found ? "true" : "false", st.connected ? "true" : "false",
+           st.subscribed ? "true" : "false", st.polling ? "true" : "false",
+           obd_number(rpm, sizeof(rpm), st.rpm_valid, st.rpm),
+           obd_number(rpm_age, sizeof(rpm_age), st.rpm_valid, st.rpm_age_ms),
+           obd_number(coolant, sizeof(coolant), st.coolant_valid, st.coolant_c),
+           obd_number(coolant_age, sizeof(coolant_age), st.coolant_valid, st.coolant_age_ms));
+    fflush(stdout);
+}
+#endif
+
 /*
  * Console-only commands; false for setup commands. Their buffers are taken
  * per command: without PSRAM, static ones would hold internal RAM for good.
@@ -877,6 +906,10 @@ static bool console_command(char *line, bool whole)
         muse_obd_fire_coolant();
         return true;
     }
+    if (!strcmp(line, "obd")) {
+        print_obd();
+        return true;
+    }
 #endif
     if (!strncmp(line, "face=", 5)) {
         set_face(line + 5);
@@ -916,7 +949,9 @@ static bool console_command(char *line, bool whole)
  * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and with CONFIG_MUSE_OBD_VTEC "vtec" / "coolant"
  * play the car reactions and say their lines without a car or adapter
- * (muse_obd_fire_vtec / muse_obd_fire_coolant).
+ * (muse_obd_fire_vtec / muse_obd_fire_coolant) and "obd" prints the OBD
+ * link's state and latest RPM / coolant, as the obd.read Link command does
+ * (muse_obd_status).
  */
 static void serial_task(void *arg)
 {

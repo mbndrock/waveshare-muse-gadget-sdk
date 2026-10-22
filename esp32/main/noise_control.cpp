@@ -1527,6 +1527,16 @@ static char *build_register_json(void) {
                 nullptr, nullptr);
 #endif
 
+#if CONFIG_MUSE_OBD_VTEC
+    add_command(commands, "obd.read",
+                "Report the OBD-II adapter state and the latest engine "
+                "readings from the LELink^2 adapter: the link state, "
+                "whether it is polling, engine RPM and coolant temperature "
+                "in degrees Celsius, each null when there is no current "
+                "reading, with each reading's age in milliseconds.",
+                nullptr, nullptr);
+#endif
+
 #if CONFIG_MUSE_WATCHER_CAMERA
     add_command(commands, "camera.capture",
                 "Capture one still JPEG frame from the SenseCAP Watcher camera. "
