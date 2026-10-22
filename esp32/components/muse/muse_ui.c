@@ -42,6 +42,7 @@
 #include "muse_menu.h"
 #if CONFIG_MUSE_OBD_VTEC
 #include "muse_obd.h"
+#include "muse_obd_cards.h"
 #endif
 #include "muse_pixel.h"
 #include "muse_settings.h"
@@ -122,7 +123,16 @@ bool muse_ui_face_active(void)
     return s_face_active;
 }
 static lv_obj_t *s_settings;
-static lv_obj_t *s_dots[2];
+#if CONFIG_MUSE_OBD_VTEC
+/* The car data cards (muse_obd_cards.c), between the face and settings. */
+#define CARD_TILES MUSE_OBD_CARDS
+static lv_obj_t *s_cards[MUSE_OBD_CARDS];
+#else
+#define CARD_TILES 0
+#endif
+#define SETTINGS_COL (1 + CARD_TILES)   /* settings' tile: the last */
+#define TILES (SETTINGS_COL + 1)
+static lv_obj_t *s_dots[TILES];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
 #if CONFIG_MUSE_OBD_VTEC
@@ -934,7 +944,12 @@ static void build_screen(void)
          * shows as a different-coloured square around the character. */
         lv_obj_set_style_bg_color(s_face, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_face, LV_OPA_COVER, 0);
-        s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);
+#if CONFIG_MUSE_OBD_VTEC
+        for (int i = 0; i < MUSE_OBD_CARDS; i++) {
+            s_cards[i] = lv_tileview_add_tile(s_tv, 1 + i, 0, LV_DIR_HOR);
+        }
+#endif
+        s_settings = lv_tileview_add_tile(s_tv, SETTINGS_COL, 0, LV_DIR_LEFT);
         lv_obj_add_event_cb(s_tv, tile_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
         face = s_face;
     }
@@ -1496,8 +1511,8 @@ static void build_overlays(void)
 {
     lv_obj_t *scr = lv_screen_active();
 
-    /* Page dots. */
-    for (int i = 0; i < 2 && s_tv; i++) {
+    /* Page dots, one per tile, 16 px apart. */
+    for (int i = 0; i < TILES && s_tv; i++) {
         lv_obj_t *d = lv_obj_create(scr);
         lv_obj_remove_style_all(d);
         lv_obj_set_size(d, 8, 8);
@@ -1505,7 +1520,7 @@ static void build_overlays(void)
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(COLOR_DOT_OFF), 0);
         lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, i ? 8 : -8, -14);
+        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, 16 * i - 8 * (TILES - 1), -14);
         s_dots[i] = d;
     }
 
@@ -1652,6 +1667,35 @@ static const char *idle_name(muse_wifi_state_t wifi)
     }
 }
 
+/* A tile's place in the tileview: 0 the face, then the cards, then settings. */
+static int tile_index(lv_obj_t *tile)
+{
+    if (tile == s_settings) {
+        return SETTINGS_COL;
+    }
+#if CONFIG_MUSE_OBD_VTEC
+    for (int i = 0; i < MUSE_OBD_CARDS; i++) {
+        if (tile == s_cards[i]) {
+            return 1 + i;
+        }
+    }
+#endif
+    return 0;
+}
+
+#if LV_USE_SNAPSHOT || CONFIG_MUSE_OBD_VTEC
+/* The other way round, for the bench's tile jumps. */
+static lv_obj_t *tile_at(int index)
+{
+#if CONFIG_MUSE_OBD_VTEC
+    if (index >= 1 && index <= MUSE_OBD_CARDS) {
+        return s_cards[index - 1];
+    }
+#endif
+    return index == SETTINGS_COL ? s_settings : s_face;
+}
+#endif
+
 static void update_chrome(float now)
 {
     if (now < s_next_settings_tick) {
@@ -1660,21 +1704,26 @@ static void update_chrome(float now)
     s_next_settings_tick = now + SETTINGS_TICK_S;
 
     if (s_tv) {
-        int page = lv_tileview_get_tile_active(s_tv) == s_settings;
+        int page = tile_index(lv_tileview_get_tile_active(s_tv));
+        bool settings = page == SETTINGS_COL;
         bool subpage = muse_settings_ui_in_subpage();
-        bool swipe = !page || !subpage;
+        bool swipe = !settings || !subpage;
         if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE)) {
             lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, swipe);
         }
         int shown = page * 2 + subpage;
         if (shown != s_shown_page) {
-            for (int i = 0; i < 2; i++) {
+            for (int i = 0; i < TILES; i++) {
                 lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == page ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
-                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, page && subpage);
+                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, settings && subpage);
             }
             s_shown_page = shown;
         }
-        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > 0);
+        /* Any of settings on screen: past the tile before it. */
+        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > (SETTINGS_COL - 1) * lv_obj_get_width(s_tv));
+#if CONFIG_MUSE_OBD_VTEC
+        muse_obd_cards_tick();
+#endif
     }
 
     /* Joining, the icon blinks: the compact layout has no state label. */
@@ -1933,11 +1982,28 @@ static void update_status(muse_mode_t mode, float now)
 }
 
 static volatile bool s_snapshot;
+#if LV_USE_SNAPSHOT || CONFIG_MUSE_OBD_VTEC
+static volatile int s_bench_page = -1;   /* a tile_index(), applied in the LVGL task */
+#endif
 #if LV_USE_SNAPSHOT
-static volatile int s_bench_page = -1;
 void muse_ui_bench_page(bool settings)
 {
-    s_bench_page = settings ? 1 : 0;   /* applied in the LVGL task */
+    s_bench_page = settings ? SETTINGS_COL : 0;
+}
+#endif
+#if CONFIG_MUSE_OBD_VTEC
+int muse_ui_tile_count(void)
+{
+    return muse_board->touch ? TILES : 1;
+}
+
+bool muse_ui_bench_tile(int index)
+{
+    if (index < 0 || index >= muse_ui_tile_count()) {
+        return false;
+    }
+    s_bench_page = index;
+    return true;
 }
 #endif
 
@@ -1981,11 +2047,11 @@ void muse_ui_request_snapshot(void)
 
 static void frame_tick(lv_timer_t *timer)
 {
-#if LV_USE_SNAPSHOT
+#if LV_USE_SNAPSHOT || CONFIG_MUSE_OBD_VTEC
     if (s_bench_page >= 0) {
-        bool settings = s_bench_page != 0;
+        int index = s_bench_page;
         s_bench_page = -1;
-        if (s_tv) lv_tileview_set_tile(s_tv, settings ? s_settings : s_face, LV_ANIM_OFF);
+        if (s_tv) lv_tileview_set_tile(s_tv, tile_at(index), LV_ANIM_OFF);
     }
 #endif
     update_control_hints(muse_state_mode(NULL));
@@ -2026,8 +2092,8 @@ static void frame_tick(lv_timer_t *timer)
         return;   /* the image covers the face */
     }
     if (s_tv && lv_obj_get_scroll_x(s_tv) != 0) {
-        /* Off screen, or sliding to or from settings: hold still so the
-         * slide gets the whole frame time. */
+        /* Off screen, or sliding to or from settings (or the car data
+         * cards): hold still so the slide gets the whole frame time. */
         return;
     }
 
@@ -2104,6 +2170,11 @@ esp_err_t muse_ui_start(void)
     if (s_face) {
         build_volume(s_face);   /* over everything else on the face */
     }
+#if CONFIG_MUSE_OBD_VTEC
+    if (s_tv) {
+        muse_obd_cards_build(s_cards);
+    }
+#endif
     if (s_settings) {
         muse_settings_ui_build(s_settings);
     } else {

@@ -67,3 +67,10 @@ void muse_ui_bench_page(bool settings);
 /* Display-only demo name for privacy-safe screenshots; no provisioning changes. */
 void muse_ui_bench_demo(bool enabled);
 #endif
+#if CONFIG_MUSE_OBD_VTEC
+/* The touch tiles: the face, the car data cards, settings (1 without touch). */
+int muse_ui_tile_count(void);
+/* Bench, from any task: slide to tile `index` (0 the face, 1..3 the cards,
+ * the last settings) on the next frame. False if there is no such tile. */
+bool muse_ui_bench_tile(int index);
+#endif

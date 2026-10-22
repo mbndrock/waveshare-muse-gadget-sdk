@@ -815,13 +815,31 @@ static void print_obd(void)
     muse_obd_status(&st);
     char rpm[16], rpm_age[16], coolant[16], coolant_age[16];
     printf("@obd {\"state\":\"%s\",\"adapter_found\":%s,\"connected\":%s,\"subscribed\":%s,"
-           "\"polling\":%s,\"rpm\":%s,\"rpm_age_ms\":%s,\"coolant_c\":%s,\"coolant_age_ms\":%s}\n",
+           "\"polling\":%s,\"rpm\":%s,\"rpm_age_ms\":%s,\"coolant_c\":%s,\"coolant_age_ms\":%s",
            st.state, st.adapter_found ? "true" : "false", st.connected ? "true" : "false",
            st.subscribed ? "true" : "false", st.polling ? "true" : "false",
            obd_number(rpm, sizeof(rpm), st.rpm_valid, st.rpm),
            obd_number(rpm_age, sizeof(rpm_age), st.rpm_valid, st.rpm_age_ms),
            obd_number(coolant, sizeof(coolant), st.coolant_valid, st.coolant_c),
            obd_number(coolant_age, sizeof(coolant_age), st.coolant_valid, st.coolant_age_ms));
+    for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
+        const muse_obd_reading_t *r = &st.extra[i];
+        printf(",\"%s\":%s,\"%s\":%s", MUSE_OBD_EXTRA[i].key, obd_number(rpm, sizeof(rpm), r->valid, r->value),
+               MUSE_OBD_EXTRA[i].age_key, obd_number(rpm_age, sizeof(rpm_age), r->valid, r->age_ms));
+    }
+    if (st.protocol > 0) {
+        printf(",\"protocol\":\"%s\"", st.protocol_name);
+    } else {
+        printf(",\"protocol\":null");
+    }
+    for (int i = 0; i < MUSE_OBD_SUPPORT_RANGES; i++) {
+        if (st.support_valid[i]) {
+            printf(",\"supported_%02X\":\"%08lX\"", 0x20 * i, (unsigned long)st.support[i]);
+        } else {
+            printf(",\"supported_%02X\":null", 0x20 * i);
+        }
+    }
+    printf("}\n");
     fflush(stdout);
 }
 #endif
@@ -914,6 +932,16 @@ static bool console_command(char *line, bool whole)
         print_obd();
         return true;
     }
+    if (!strncmp(line, "card ", 5)) {
+        /* "card <n>": 0 the face, 1..3 the car data cards, 4 settings. */
+        char *end;
+        long n = strtol(line + 5, &end, 10);
+        if (end == line + 5 || *end || !muse_ui_bench_tile((int)n)) {
+            printf("@card.error tiles are 0..%d\n", muse_ui_tile_count() - 1);
+            fflush(stdout);
+        }
+        return true;
+    }
 #endif
     if (!strncmp(line, "face=", 5)) {
         set_face(line + 5);
@@ -953,9 +981,10 @@ static bool console_command(char *line, bool whole)
  * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and with CONFIG_MUSE_OBD_VTEC "vtec" / "coolant" /
  * "warmup" play the car reactions without a car or adapter
- * (muse_obd_fire_vtec / _coolant / _warmup) and "obd" prints the OBD
- * link's state and latest RPM / coolant, as the obd.read Link command does
- * (muse_obd_status).
+ * (muse_obd_fire_vtec / _coolant / _warmup), "obd" prints the OBD
+ * link's state and latest readings, as the obd.read Link command does
+ * (muse_obd_status), and "card <n>" slides the touch screen to tile n (0 the
+ * face, 1..3 the car data cards, the last one settings).
  */
 static void serial_task(void *arg)
 {
