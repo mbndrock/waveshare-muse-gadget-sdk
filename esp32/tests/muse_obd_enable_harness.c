@@ -31,6 +31,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "vtec_did_frames.h"
+
 /* ---- The fakes' plumbing: one lock for everything, a virtual clock ---- */
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -210,7 +212,7 @@ size_t xStreamBufferReceive(StreamBufferHandle_t s, void *data, size_t len, Tick
 
 /* ---- The rest of the firmware muse_obd.c calls ---- */
 
-static int g_vtec_fired, g_coolant_fired, g_warmup_fired;
+static int g_coolant_fired, g_warmup_fired;
 
 bool muse_link_ble_started(void) { return true; }
 
@@ -221,9 +223,9 @@ static bool g_trip_open;
 
 void muse_obd_log_start(void) {}
 
-void muse_obd_log_trip_start(const muse_obd_status_t *st, uint32_t now_ms)
+void muse_obd_log_trip_start(const muse_obd_status_t *st, uint8_t did_2612, uint32_t now_ms)
 {
-    (void)st, (void)now_ms;
+    (void)st, (void)did_2612, (void)now_ms;
     pthread_mutex_lock(&g_log_mu);
     g_trip_starts++;
     g_trip_open = true;
@@ -260,7 +262,6 @@ static int log_count(int *n)
     pthread_mutex_unlock(&g_log_mu);
     return v;
 }
-void muse_state_start_vtec(void) { g_vtec_fired++; }
 void muse_state_start_coolant(void) { g_coolant_fired++; }
 void muse_state_start_warmup(void) { g_warmup_fired++; }
 
@@ -426,12 +427,56 @@ int ble_gattc_disc_all_dscs(uint16_t conn, uint16_t start, uint16_t end, ble_gat
     return 0;
 }
 
+/* The car behind it: its protocol and how its engine ECU takes DID 0x2612.
+ * The adapter keeps the ELM state the DID exchange changes, and answers
+ * Mode 01 only in the state Mode 01 expects (the functional header, no
+ * receive filter), so a state left behind shows as RPM going missing. */
+typedef enum { DID_ON, DID_OFF, DID_REFUSE, DID_NO_DATA, DID_GARBAGE, DID_HANG } did_mode_t;
+static struct {
+    const char *dpn;            /* ATDPN's answer */
+    did_mode_t did;
+    bool physical;              /* ATSH DA10F1 is in force */
+    bool filter;                /* ATCRA 18DAF110 is in force */
+    int did_reqs;               /* 222612s sent */
+    int bad_state_rpm;          /* 010Cs that found the DID's state left behind */
+    char log[512][16];          /* every command, in order */
+    int logged;
+} g_car = { .dpn = "A6" };
+
+static char g_did_reply[512];
+
 /* The adapter's answer to one ELM command. */
 static const char *answer(const char *cmd)
 {
-    if (!strcmp(cmd, "ATZ")) return "\r\rELM327 v1.5\r\r>";
-    if (!strcmp(cmd, "ATDPN")) return "A6\r\r>";
+    if (g_car.logged < 512) {
+        strcpy(g_car.log[g_car.logged++], cmd);
+    }
+    if (!strcmp(cmd, "ATZ")) {
+        g_car.physical = g_car.filter = false;
+        return "\r\rELM327 v1.5\r\r>";
+    }
+    if (!strcmp(cmd, "ATDPN")) return !strcmp(g_car.dpn, "A6") ? "A6\r\r>" : "A7\r\r>";
+    if (!strcmp(cmd, "ATSHDA10F1")) g_car.physical = true;
+    if (!strcmp(cmd, "ATSHDB33F1")) g_car.physical = false;
+    if (!strcmp(cmd, "ATCRA18DAF110")) g_car.filter = true;
+    if (!strcmp(cmd, "ATAR")) g_car.filter = false;
     if (!strncmp(cmd, "AT", 2)) return "OK\r\r>";
+    if (!strcmp(cmd, "222612")) {
+        g_car.did_reqs++;
+        if (!g_car.physical || !g_car.filter) return "NO DATA\r\r>";
+        switch (g_car.did) {
+        case DID_ON: return elm_from_frames(g_did_reply, sizeof(g_did_reply), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+        case DID_OFF: return elm_from_frames(g_did_reply, sizeof(g_did_reply), S2000_2007_OFF, S2000_FRAMES, false);
+        case DID_REFUSE: return "7F2231\r\r>";
+        case DID_NO_DATA: return "NO DATA\r\r>";
+        case DID_GARBAGE: return "039\r0:622612FFFFC0\r2:001E00\r\r>";
+        case DID_HANG: return NULL;   /* no prompt at all */
+        }
+    }
+    if (g_car.physical || g_car.filter) {
+        if (!strcmp(cmd, "010C")) g_car.bad_state_rpm++;
+        return "NO DATA\r\r>";
+    }
     if (!strcmp(cmd, "0100")) return "41 00 BE 1F A8 12\r\r>";   /* no PID 20: the scan stops here */
     if (!strcmp(cmd, "010C")) return "41 0C 1A F8\r\r>";         /* 1726 rpm */
     if (!strcmp(cmd, "0105")) return "41 05 5A\r\r>";            /* 50 C */
@@ -618,6 +663,7 @@ static void check_quiet(const char *when)
     CHECK(is_off(), "%s: left off", when);
 }
 
+#ifndef MUSE_OBD_HARNESS_DID
 int main(void)
 {
     /* Linked: subscribed or polling, and never while turned off. */
@@ -663,11 +709,13 @@ int main(void)
     st = status();
     CHECK(st.log_flash && st.log_pending == 2 && !st.log_active, "off: the log's status is gone");
 
-    /* The reactions don't play while off. */
-    muse_obd_fire_vtec();
+    /* The reactions don't play while off, and the bench can't hold VTEC up. */
     muse_obd_fire_coolant();
     muse_obd_fire_warmup();
-    CHECK(!g_vtec_fired && !g_coolant_fired && !g_warmup_fired, "a reaction played while off");
+    CHECK(!g_coolant_fired && !g_warmup_fired, "a reaction played while off");
+    muse_obd_bench_vtec_sol(true);
+    st = status();
+    CHECK(!st.vtec_sol.valid && !muse_obd_vtec_on(&st), "the bench's VTEC while off");
 
     /* Off while scanning: the scan is cancelled. */
     muse_obd_set_enabled(true);
@@ -714,8 +762,15 @@ int main(void)
     link_up(CONN);
     st = status();
     CHECK(!strcmp(st.state, "polling") && st.enabled, "back on: %s", st.state);
-    muse_obd_fire_vtec();
-    CHECK(g_vtec_fired == 1, "back on: no reaction");
+    muse_obd_fire_coolant();
+    CHECK(g_coolant_fired == 1, "back on: no reaction");
+    /* ">vtecsol 1" holds VTEC up, fresh however long, until ">vtecsol 0". */
+    muse_obd_bench_vtec_sol(true);
+    st = status();
+    CHECK(st.vtec_sol.valid && st.vtec_sol.value == 1 && muse_obd_vtec_on(&st), "bench: not held");
+    muse_obd_bench_vtec_sol(false);
+    st = status();
+    CHECK(st.vtec_sol.valid && st.vtec_sol.value == 0 && !muse_obd_vtec_on(&st), "bench: not let go");
 
     if (s_fail) {
         fprintf(stderr, "%d failed\n", s_fail);
@@ -724,3 +779,219 @@ int main(void)
     printf("PASS muse_obd_enable\n");
     return 0;
 }
+#else   /* MUSE_OBD_HARNESS_DID */
+
+/*
+ * DID 0x2612 against the real task: the exchange is state-safe (Mode 01's
+ * header and receive filter are back for every RPM request, whatever the DID
+ * did), it takes one slot at the start of each secondary rotation, a failed
+ * or hung exchange neither drops the link nor upsets RPM, the probe runs once
+ * per connection and only on CAN 29-bit, and the VTEC level follows the
+ * solenoid: held while fresh "on", down on "off" or stale, never from RPM.
+ */
+
+static int car(int *n)
+{
+    ble_lock();
+    int v = *n;
+    ble_unlock();
+    return v;
+}
+
+static void set_car(did_mode_t did, const char *dpn)
+{
+    ble_lock();
+    g_car.did = did;
+    g_car.dpn = dpn;
+    ble_unlock();
+}
+
+static int s_want;   /* await()'s threshold for the predicates below */
+static bool did_reqs_reach(void) { return car(&g_car.did_reqs) >= s_want; }
+static bool log_reach(void) { return car(&g_car.logged) >= s_want; }
+static bool sol_is_on(void) { muse_obd_status_t st = status(); return st.vtec_sol.valid && st.vtec_sol.value == 1; }
+static bool sol_is_off(void) { muse_obd_status_t st = status(); return st.vtec_sol.valid && st.vtec_sol.value == 0; }
+static bool vtec_down(void) { muse_obd_status_t st = status(); return !muse_obd_vtec_on(&st); }
+
+/* The commands since the log was cleared: every 222612 inside the whole
+ * choreography, Mode 01's RPM straight after it, and between two DID reads
+ * exactly one rotation: 9 RPMs and the 8 secondaries the scan left. */
+static void check_cadence(const char *when)
+{
+    ble_lock();
+    int n = g_car.logged, prev = -1, dids = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(g_car.log[i], "222612")) {
+            continue;
+        }
+        dids++;
+        if (i >= 2) {
+            CHECK(!strcmp(g_car.log[i - 2], "ATSHDA10F1") && !strcmp(g_car.log[i - 1], "ATCRA18DAF110"),
+                  "%s: request %d without its header and filter", when, i);
+        }
+        if (i + 3 < n) {
+            CHECK(!strcmp(g_car.log[i + 1], "ATAR") && !strcmp(g_car.log[i + 2], "ATSHDB33F1")
+                  && !strcmp(g_car.log[i + 3], "010C"), "%s: request %d not put back before RPM", when, i);
+        }
+        if (prev >= 0) {
+            int rpm = 0, sec = 0, coolant = 0;
+            for (int k = prev + 3; k < i - 2; k++) {
+                rpm += !strcmp(g_car.log[k], "010C");
+                sec += !strncmp(g_car.log[k], "01", 2) && strcmp(g_car.log[k], "010C");
+                coolant += !strcmp(g_car.log[k], "0105");
+            }
+            CHECK(rpm == 9 && sec == 8 && coolant == 1, "%s: rotation %d..%d has %d RPM, %d secondaries", when,
+                  prev, i, rpm, sec);
+            CHECK(!strcmp(g_car.log[prev + 4], "0105"), "%s: coolant isn't the DID's next slot", when);
+        }
+        prev = i;
+    }
+    ble_unlock();
+    CHECK(dids >= 2, "%s: only %d DID reads", when, dids);
+}
+
+static void clear_log(void)
+{
+    ble_lock();
+    g_car.logged = 0;
+    ble_unlock();
+}
+
+int main(void)
+{
+    /* The level: a fresh "on" solenoid only, and only while OBD is on. RPM
+     * plays no part, at any value. */
+    muse_obd_status_t st = { .enabled = true, .rpm_valid = true, .rpm = 9000, .rpm_age_ms = 10 };
+    CHECK(!muse_obd_vtec_on(&st), "9000 rpm, no solenoid reading");
+    st.vtec_sol = (muse_obd_reading_t){ true, 0, 10 };
+    CHECK(!muse_obd_vtec_on(&st), "9000 rpm, solenoid off");
+    st.vtec_sol = (muse_obd_reading_t){ true, 1, MUSE_VTEC_FRESH_MS + 1 };
+    CHECK(!muse_obd_vtec_on(&st), "9000 rpm, solenoid on but stale");
+    st.vtec_sol = (muse_obd_reading_t){ true, 1, 10 };
+    CHECK(muse_obd_vtec_on(&st), "solenoid on, fresh");
+    st.enabled = false;
+    CHECK(!muse_obd_vtec_on(&st), "OBD turned off");
+    st = (muse_obd_status_t){ .enabled = true, .vtec_sol = { true, 1, 10 } };
+    CHECK(muse_obd_vtec_on(&st), "solenoid on with no RPM at all");
+
+    /* CAN 29-bit and an ECU that answers: probed, then read every rotation. */
+    set_car(DID_ON, "A7");
+    muse_obd_start();
+    link_up(CONN);
+    CHECK(await(sol_is_on, 2000), "no solenoid reading");
+    st = status();
+    CHECK(st.did_2612, "did_2612 false");
+    CHECK(st.vtec_sol.value == 1 && st.vtec_psw.valid && st.vtec_psw.value == 0, "flags %d/%d", st.vtec_sol.value,
+          st.vtec_psw.value);
+    CHECK(st.did_2612_b23.valid && st.did_2612_b23.value == 1, "byte 23");
+    CHECK(muse_obd_vtec_on(&st), "the solenoid is on, VTEC isn't");
+    CHECK(st.rpm_valid && st.rpm == 1726, "RPM after the probe: %d", st.rpm);
+    clear_log();
+    s_want = car(&g_car.did_reqs) + 4;
+    CHECK(await(did_reqs_reach, 5000), "the DID isn't read every rotation");
+    check_cadence("answering");
+    CHECK(car(&g_car.bad_state_rpm) == 0, "Mode 01 found the DID's state %d times", car(&g_car.bad_state_rpm));
+
+    /* Off, and straight back on: the level follows, no cooldown. */
+    set_car(DID_OFF, "A7");
+    CHECK(await(sol_is_off, 2000), "the solenoid didn't go off");
+    CHECK(vtec_down(), "VTEC still up with the solenoid off");
+    set_car(DID_ON, "A7");
+    CHECK(await(sol_is_on, 2000), "the solenoid didn't come back on");
+    st = status();
+    CHECK(muse_obd_vtec_on(&st), "VTEC didn't come straight back");
+
+    /* A garbled reply mid-connection: no reading, RPM carries on, no drop. */
+    int terms = ble(&g_ble.terminate);
+    set_car(DID_GARBAGE, "A7");
+    s_want = car(&g_car.did_reqs) + 3;
+    CHECK(await(did_reqs_reach, 5000), "garbage: stopped asking");
+    st = status();
+    CHECK(st.polling && st.rpm_valid && st.rpm == 1726, "garbage: RPM gone");
+    CHECK(st.did_2612, "garbage mid-connection unsupported the DID");
+    CHECK(ble(&g_ble.terminate) == terms, "garbage dropped the link");
+
+    /* No prompt at all: each read times out, the state is put back, and
+     * polling goes on; the last "on" ages out instead of sticking. */
+    set_car(DID_ON, "A7");
+    CHECK(await(sol_is_on, 2000), "on again");
+    set_car(DID_HANG, "A7");
+    CHECK(await(vtec_down, 20000), "a hung DID left VTEC up (a stale on)");
+    st = status();
+    CHECK(st.vtec_sol.valid && st.vtec_sol.age_ms > MUSE_VTEC_FRESH_MS, "the reading didn't age");
+    clear_log();
+    s_want = car(&g_car.did_reqs) + 2;
+    CHECK(await(did_reqs_reach, 20000), "hang: stopped asking");
+    st = status();
+    CHECK(st.polling && st.rpm_valid && st.rpm == 1726, "hang: RPM gone");
+    CHECK(ble(&g_ble.terminate) == terms, "a hung DID dropped the link");
+    CHECK(car(&g_car.bad_state_rpm) == 0, "hang: Mode 01 found the DID's state");
+
+    /* The link drops: the readings go, whether the car answers stays. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "not off");
+    st = status();
+    CHECK(st.did_2612 && !st.vtec_sol.valid && !st.vtec_psw.valid && !st.did_2612_b23.valid,
+          "after the drop: did_2612 %d, sol %d", st.did_2612, st.vtec_sol.valid);
+    CHECK(!muse_obd_vtec_on(&st), "VTEC up after the drop");
+    check_off("DID drop");
+    check_quiet("DID drop");
+    CHECK(has_samples(), "the DID's link logged nothing");
+
+    /* A new connection to an ECU that refuses it: asked once, never again. */
+    set_car(DID_REFUSE, "A7");
+    ble_lock();
+    g_car.did_reqs = 0;
+    ble_unlock();
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    clear_log();
+    s_want = 300;
+    CHECK(await(log_reach, 5000), "refused: not polling");
+    CHECK(car(&g_car.did_reqs) == 1, "refused: asked %d times", car(&g_car.did_reqs));
+    st = status();
+    CHECK(!st.did_2612 && !st.vtec_sol.valid && !muse_obd_vtec_on(&st), "refused: still supported");
+    CHECK(st.rpm_valid && car(&g_car.bad_state_rpm) == 0, "refused: RPM");
+
+    /* Silent (NO DATA): the same. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "not off");
+    set_car(DID_NO_DATA, "A7");
+    ble_lock();
+    g_car.did_reqs = 0;
+    ble_unlock();
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    clear_log();
+    CHECK(await(log_reach, 5000), "silent: not polling");
+    CHECK(car(&g_car.did_reqs) == 1 && !status().did_2612, "silent: asked %d times", car(&g_car.did_reqs));
+
+    /* CAN 11-bit: never asked at all, and no AT change. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "not off");
+    set_car(DID_ON, "A6");
+    ble_lock();
+    g_car.did_reqs = 0;
+    ble_unlock();
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    clear_log();
+    CHECK(await(log_reach, 5000), "CAN 11: not polling");
+    CHECK(car(&g_car.did_reqs) == 0, "CAN 11-bit: asked the DID");
+    ble_lock();
+    for (int i = 0; i < g_car.logged; i++) {
+        CHECK(strncmp(g_car.log[i], "ATSH", 4) && strncmp(g_car.log[i], "ATCRA", 5), "CAN 11-bit: %s",
+              g_car.log[i]);
+    }
+    ble_unlock();
+    st = status();
+    CHECK(!muse_obd_vtec_on(&st) && st.rpm_valid, "CAN 11-bit");
+
+    if (s_fail) {
+        fprintf(stderr, "%d failed\n", s_fail);
+        return 1;
+    }
+    printf("PASS muse_obd_did\n");
+    return 0;
+}
+#endif

@@ -77,8 +77,8 @@ static void test_row(void)
     muse_log_sample_t s = { .ms = 1234 };
     char row[MUSE_LOG_ROW_MAX];
     size_t n = muse_log_format_row(row, sizeof(row), &s);
-    CHECK(n == strlen("1234,,,,,,,,,,,\n"));
-    CHECK(!memcmp(row, "1234,,,,,,,,,,,\n", n));
+    CHECK(n == strlen("1234,,,,,,,,,,,,,\n"));
+    CHECK(!memcmp(row, "1234,,,,,,,,,,,,,\n", n));
 
     s.ms = 0;
     for (int c = 0; c < MUSE_LOG_CHANNELS; c++) {
@@ -86,8 +86,10 @@ static void test_row(void)
         s.value[c] = c * 10 - 20;
     }
     s.has[MUSE_LOG_AMBIENT] = false;
+    s.value[MUSE_LOG_VTEC_SOL] = 1;
+    s.value[MUSE_LOG_VTEC_PSW] = 0;
     n = muse_log_format_row(row, sizeof(row), &s);
-    const char *want = "0,-20,-10,0,10,20,30,40,50,60,70,\n";
+    const char *want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0\n";
     CHECK(n == strlen(want) && !memcmp(row, want, n));
 
     /* The widest row there can be fits MUSE_LOG_ROW_MAX. */
@@ -101,10 +103,11 @@ static void test_row(void)
     CHECK(muse_log_format_row(row, n - 1, &s) == 0);   /* one short: refused, not cut */
     CHECK(muse_log_format_row(row, n, &s) == n);
 
-    CHECK(MUSE_LOG_CHANNELS == 11);
+    CHECK(MUSE_LOG_CHANNELS == 13);
     static const char *const NAMES[] = {
         "rpm", "coolant_c", "iat_c", "timing_deg", "map_kpa", "load_pct",
         "throttle_pct", "speed_kmh", "stft_pct", "ltft_pct", "ambient_c",
+        "vtec_sol", "vtec_psw",   /* OBD-VTEC-DID-TASK: the two trailing columns */
     };
     for (int c = 0; c < MUSE_LOG_CHANNELS; c++) {
         CHECK(!strcmp(MUSE_LOG_COLUMN[c], NAMES[c]));
@@ -116,7 +119,7 @@ static void test_header(void)
     muse_log_meta_t m = {
         .id = 12, .firmware = "1a2b3c4", .protocol = "CAN 29/500",
         .support_valid = { true, true, false }, .support = { 0xBE1FA813u, 0x80018001u, 0 },
-        .started = 1729700000, .boot_ms = 81234,
+        .started = 1729700000, .boot_ms = 81234, .did_2612 = MUSE_LOG_DID_YES,
     };
     char h[MUSE_LOG_HEADER_MAX + 1];
     size_t n = muse_log_format_header(h, MUSE_LOG_HEADER_MAX, &m);
@@ -129,7 +132,9 @@ static void test_header(void)
         "# protocol=CAN 29/500\n"
         "# supported_00=BE1FA813 supported_20=80018001 supported_40=unknown\n"
         "# start=2024-10-23T16:13:20Z\n"
-        "ms,rpm,coolant_c,iat_c,timing_deg,map_kpa,load_pct,throttle_pct,speed_kmh,stft_pct,ltft_pct,ambient_c\n";
+        "# did_2612=yes\n"
+        "ms,rpm,coolant_c,iat_c,timing_deg,map_kpa,load_pct,throttle_pct,speed_kmh,stft_pct,ltft_pct,ambient_c,"
+        "vtec_sol,vtec_psw\n";
     CHECK(!strcmp(h, want));
     if (strcmp(h, want)) {
         fprintf(stderr, "got:\n%s", h);
@@ -143,6 +148,12 @@ static void test_header(void)
     CHECK(strstr(h, "# start=") == NULL);
     CHECK(strstr(h, "# firmware=unknown\n# trip=1\n# protocol=unknown\n") != NULL);
     CHECK(strstr(h, "supported_00=unknown supported_20=unknown supported_40=unknown") != NULL);
+    CHECK(strstr(h, "did_2612") == NULL);   /* not asked: no line */
+    m.did_2612 = MUSE_LOG_DID_NO;
+    n = muse_log_format_header(h, MUSE_LOG_HEADER_MAX, &m);
+    h[n] = '\0';
+    CHECK(strstr(h, "\n# did_2612=no\nms,") != NULL);
+    m.did_2612 = MUSE_LOG_DID_UNKNOWN;
     CHECK(muse_log_format_header(h, 40, &m) == 0);
 
     /* A leap day and the year 2038's far side. */
@@ -329,7 +340,7 @@ static void test_store(void)
     char *text = (char *)back;
     text[s_expect_len] = '\0';
     CHECK(!strncmp(text, "# muse obd trip log v1\n", 23));
-    CHECK(strstr(text, "\n0,800,,,,,,,,,,\n") != NULL);
+    CHECK(strstr(text, "\n0,800,,,,,,,,,,,,\n") != NULL);
     CHECK(strstr(text, "\n# end samples=500 dropped=0\n") != NULL);
 
     /* Reads at the start, the middle, the exact end and past it. */

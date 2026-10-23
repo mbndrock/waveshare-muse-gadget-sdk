@@ -94,12 +94,15 @@ class LinkObdTest(unittest.TestCase):
         swap the reaction face for the speaking pose."""
         source = (ROOT / "components/muse/muse_obd.c").read_text()
         self.assertNotIn("muse_hatch_say", source)
-        for name in ("vtec", "coolant", "warmup"):
+        for name in ("coolant", "warmup"):
             start = source.index(f"void muse_obd_fire_{name}(void)")
             body = source[start:source.index("\n}\n", start)]
             self.assertIn(f"muse_state_start_{name}();", body)
         header = (ROOT / "components/muse/muse_obd.h").read_text()
         self.assertIn("void muse_obd_fire_warmup(void);", header)
+        # VTEC (OBD-VTEC-DID-TASK) is held, not fired: no fire, no speech either.
+        self.assertNotIn("muse_obd_fire_vtec", header)
+        self.assertNotIn("muse_obd_fire_vtec", source)
 
     def test_warmup_trigger_is_fed_and_reset(self):
         source = (ROOT / "components/muse/muse_obd.c").read_text()
@@ -112,14 +115,16 @@ class LinkObdTest(unittest.TestCase):
 
     def test_poll_cycle_alternates_rpm_with_the_secondaries(self):
         """OBD-CARDS-TASK: RPM, secondary, RPM, ...; coolant still feeds the
-        triggers through got_coolant(), the VTEC trigger still reads RPM."""
+        triggers through got_coolant(). OBD-VTEC-DID-TASK: the secondary
+        slots start each rotation with the DID read, and nothing fires on
+        RPM any more."""
         source = (ROOT / "components/muse/muse_obd.c").read_text()
         self.assertNotIn("COOLANT_EVERY", source)
         body = function_body(source, "static bool poll_rpm(void)")
-        self.assertIn("n % 2 ? muse_elm_next_secondary(&s_support, &s_cursor) : RPM", body)
+        self.assertIn("n % 2 ? muse_elm_next_slot(&s_support, &s_cursor, s_did == DID_YES) : RPM", body)
         self.assertIn("if (pid == 0x05) {\n            got_coolant();", body)
         self.assertIn("got_extra(pid);", body)
-        self.assertIn("muse_vtec_update(&s_trigger, rpm, now_ms())", body)
+        self.assertNotIn("muse_vtec_update", body)
         self.assertIn("vTaskDelay(pdMS_TO_TICKS(NO_RPM_PAUSE_MS));", body)
         body = function_body(source, "static void got_coolant(void)")
         self.assertIn("muse_coolant_update(&s_coolant, coolant_c, s_rpm, now_ms())", body)
@@ -340,9 +345,13 @@ class LinkObdTest(unittest.TestCase):
         self.assertLess(off, task.index("scan(&addr)"))
         self.assertIn("ulTaskNotifyTake(pdTRUE, portMAX_DELAY);", task)
         self.assertNotIn("vTaskDelay", task)   # naps that end once turned off
-        for name in ("vtec", "coolant", "warmup"):
+        for name in ("coolant", "warmup"):
             body = function_body(obd, f"void muse_obd_fire_{name}(void)")
             self.assertIn(f"if (s_enabled) {{\n        muse_state_start_{name}();", body)
+        # VTEC's level and its bench input are off with the switch too.
+        self.assertIn("return st->enabled && muse_vtec_engaged(",
+                      function_body(obd, "bool muse_obd_vtec_on(const muse_obd_status_t *st)"))
+        self.assertIn("if (s_enabled) {", function_body(obd, "void muse_obd_bench_vtec_sol(bool on)"))
 
     def test_obd_read_reports_enabled_and_off(self):
         app = (ROOT / "main/app.c").read_text()

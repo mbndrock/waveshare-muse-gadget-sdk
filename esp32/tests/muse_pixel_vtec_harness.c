@@ -246,6 +246,42 @@ int main(int argc, char **argv)
           (double)centre[0], (double)centre[1], (double)idle_spread);
     CHECK(flips > 3 * steady, "the buzz doesn't alternate (%d moves, %d holds)", flips, steady);
 
+    /* Held (the solenoid stays on): progress waits at MUSE_VTEC_HOLD while
+     * the clock runs, for longer than the whole reaction. He must stay
+     * alive, buzzing and changing frame to frame, with the banner up: a
+     * frozen last frame would fail. */
+    t = warm_up(800.0f);
+    int held_frames = (int)(2.0f * MUSE_VTEC_S / DT + 0.5f), changed = 0;
+    float held_centre[2] = { 999, -1 };
+    flips = steady = 0;
+    prev = -1;
+    static uint8_t last[W * H];
+    for (int i = 0; i < held_frames; i++, t += DT) {
+        render(t, MUSE_VTEC_HOLD);
+        char when[32];
+        snprintf(when, sizeof(when), "held frame %d", i);
+        check_edges(when);
+        if (i % 25 == 0) {
+            check_banner_whole(2, when);
+        }
+        if (i > 0) {
+            changed += memcmp(last, s_fb, sizeof(last)) != 0;
+        }
+        memcpy(last, s_fb, sizeof(last));
+        float c = body_centre();
+        held_centre[0] = fminf(c, held_centre[0]);
+        held_centre[1] = fmaxf(c, held_centre[1]);
+        if (prev >= 0) {
+            flips += fabsf(c - prev) > 0.5f;
+            steady += fabsf(c - prev) <= 0.5f;
+        }
+        prev = c;
+    }
+    CHECK(changed > held_frames * 3 / 4, "held: only %d of %d frames change", changed, held_frames);
+    CHECK(held_centre[1] - held_centre[0] >= 0.8f, "held: not buzzing");
+    CHECK(flips > 3 * steady, "held: the buzz stops (%d moves, %d holds)", flips, steady);
+    CHECK(MUSE_VTEC_HOLD > 0.16f && MUSE_VTEC_HOLD < 0.8f, "the hold isn't on the plateau");
+
     if (s_fail) {
         fprintf(stderr, "%d checks failed\n", s_fail);
         return 1;

@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-/* The OBD reactions' ELM327 parser and triggers (muse_obd_elm.c: VTEC on RPM,
- * the coolant warning and the warm-up thumbs-up on PID 05), and the car data
+/* The OBD reactions' ELM327 parser and triggers (muse_obd_elm.c: DID 0x2612's
+ * VTEC flags against real S2000 replies and the held VTEC level, the coolant
+ * warning and the warm-up thumbs-up on PID 05), and the car data
  * cards' side (the PID support scan, the cards' PIDs, the secondary poll
  * cycle and ATDPN), fed the way the LELink^2 adapter's FFE1 notifications cut
  * its replies. */
@@ -24,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "muse_obd_elm.h"
+#include "vtec_did_frames.h"
 
 static int s_fail;
 
@@ -137,64 +139,184 @@ static void test_overflow(void)
     CHECK(strcmp(rx.resp, "OK") == 0);
 }
 
-static void test_trigger(void)
+/* A reply through the byte feed, as it arrives: '\r' to '\n', no '>'. */
+static const char *fed(const char *text)
 {
-    muse_vtec_trigger_t t;
-    muse_vtec_init(&t);
-    uint32_t ms = 1000;
+    static muse_elm_rx_t rx;
+    muse_elm_rx_reset(&rx);
+    for (size_t i = 0; text[i]; i++) {
+        muse_elm_feed(&rx, (uint8_t)text[i]);
+    }
+    return rx.resp;
+}
 
-    /* Connected mid-pull: not armed yet, so no fire. */
-    CHECK(!muse_vtec_update(&t, 6500, ms += 100));
-    CHECK(!muse_vtec_update(&t, 7000, ms += 100));
-    /* 5501..5999 doesn't arm. */
-    CHECK(!muse_vtec_update(&t, 5800, ms += 100));
-    CHECK(!muse_vtec_update(&t, 6100, ms += 100));
-    /* Arms at 5500, fires once at 6000. */
-    CHECK(!muse_vtec_update(&t, 5500, ms += 100));
-    CHECK(!muse_vtec_update(&t, 5999, ms += 100));
-    CHECK(muse_vtec_update(&t, 6000, ms += 100));
-    uint32_t fired_at = ms;
-    CHECK(!muse_vtec_update(&t, 7500, ms += 100));
-    CHECK(!muse_vtec_update(&t, 6200, ms += 100));
-    /* Hovering between the thresholds doesn't re-arm. */
-    CHECK(!muse_vtec_update(&t, 5700, ms += 100));
-    CHECK(!muse_vtec_update(&t, 6300, ms += 100));
+static void test_vtec_did(void)
+{
+    char text[512];
+    muse_vtec_did_t v;
 
-    /* Re-armed inside the cooldown: the crossing is swallowed... */
-    CHECK(!muse_vtec_update(&t, 3000, ms += 100));
-    CHECK(!muse_vtec_update(&t, 6400, ms = fired_at + 10000));
-    /* ...and it doesn't fire late when the cooldown runs out mid-pull. */
-    CHECK(!muse_vtec_update(&t, 6800, ms = fired_at + 31000));
-    /* After the cooldown, a fresh drop and crossing fires. */
-    CHECK(!muse_vtec_update(&t, 2500, ms += 100));
-    CHECK(muse_vtec_update(&t, 6050, ms += 100));
-    fired_at = ms;
+    /* The research report's 2007 "VTEC on" sample: byte 21 = 0x01. */
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    CHECK(!strncmp(text, "039\r0:622612FFFFC0\r1:001E00C25F4419\r", 36));
+    CHECK(strlen(fed(text)) < MUSE_ELM_RESP_MAX - 1);   /* fits, nothing cut */
+    memset(&v, 0xAA, sizeof(v));
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_VTEC_DID);
+    CHECK(v.sol && !v.psw && v.b23 == 0x01);
 
-    /* Exactly at the cooldown edge, it fires. */
-    CHECK(!muse_vtec_update(&t, 4000, ms = fired_at + MUSE_VTEC_COOLDOWN_MS - 1));
-    CHECK(!muse_vtec_update(&t, 6000, ms));
-    CHECK(!muse_vtec_update(&t, 4000, ms += 1));
-    CHECK(muse_vtec_update(&t, 6000, ms));
+    /* Another "on" sample, and a typical "off" one: byte 21 = 0x02. */
+    elm_from_frames(text, sizeof(text), S2000_2007_ON, S2000_FRAMES, false);
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_VTEC_DID && v.sol && !v.psw && v.b23 == 1);
+    elm_from_frames(text, sizeof(text), S2000_2007_OFF, S2000_FRAMES, false);
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_VTEC_DID && !v.sol && v.psw && v.b23 == 0);
 
-    /* A dropped link disarms; the cooldown carries over. */
-    muse_vtec_disarm(&t);
-    CHECK(!muse_vtec_update(&t, 6500, ms += 40000));
-    CHECK(!muse_vtec_update(&t, 1000, ms += 100));
-    CHECK(muse_vtec_update(&t, 6500, ms += 100));
+    /* With spaces (ATS1) it reads the same, and still fits. */
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, true);
+    CHECK(strlen(fed(text)) < MUSE_ELM_RESP_MAX - 1);
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_VTEC_DID && v.sol && !v.psw);
 
-    /* A bad reading changes nothing. */
-    CHECK(!muse_vtec_update(&t, 1000, ms += 100));
-    CHECK(!muse_vtec_update(&t, -1, ms += 40000));
-    CHECK(t.armed);
+    /* In every notification size the adapter might cut it into. */
+    elm_from_frames(text, sizeof(text), S2000_2007_OFF, S2000_FRAMES, false);
+    for (size_t chunk = 1; chunk <= 40; chunk++) {
+        muse_elm_rx_t rx;
+        muse_elm_rx_reset(&rx);
+        char out[2][MUSE_ELM_RESP_MAX];
+        CHECK(feed_chunks(&rx, text, strlen(text), chunk, out, 2) == 1);
+        CHECK(muse_elm_parse_vtec_did(out[0], &v) == MUSE_ELM_VTEC_DID && !v.sol && v.psw);
+    }
 
-    /* The millisecond clock wrapping doesn't break the cooldown. */
-    muse_vtec_init(&t);
-    CHECK(!muse_vtec_update(&t, 1000, 0xFFFFF000u));
-    CHECK(muse_vtec_update(&t, 6000, 0xFFFFF100u));
-    CHECK(!muse_vtec_update(&t, 1000, 0x00000100u));
-    CHECK(!muse_vtec_update(&t, 6000, 0x00000200u));   /* ~4.3 s later: cooling down */
-    CHECK(!muse_vtec_update(&t, 1000, 0x00008000u));
-    CHECK(muse_vtec_update(&t, 6000, 0x00008000u));    /* ~36 s later */
+    /* Truncated: frames missing, so fewer bytes than the length line says. */
+    muse_vtec_did_t keep = { .sol = true, .psw = true, .b23 = 0x5A };
+    for (int frames = 1; frames < S2000_FRAMES; frames++) {
+        elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, frames, false);
+        v = keep;
+        CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_NONE);
+        CHECK(v.sol && v.psw && v.b23 == 0x5A);   /* untouched: never a stale "on" */
+    }
+    /* Cut mid-frame. */
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    char *last = strstr(text, "8:");
+    strcpy(last + 2, "00\r\r>");
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_NONE);
+
+    /* Wrong prefix: another DID's reply, or a positive reply to another service. */
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    text[9] = '1';   /* 0:622611... */
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_NONE);
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    text[6] = '5';   /* 0:522612... */
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_NONE);
+    /* Another length (a different block layout): not trusted. */
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    text[2] = '8';   /* 038 */
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_NONE);
+    /* Frames out of order, or no length line. */
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    char *two = strstr(text, "\r2:");
+    two[1] = '3';
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_NONE);
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    CHECK(muse_elm_parse_vtec_did(fed(text + 4), &v) == MUSE_ELM_NONE);
+    /* A short single frame that starts right. */
+    CHECK(muse_elm_parse_vtec_did("622612FFFF\n", &v) == MUSE_ELM_NONE);
+
+    /* Refused, silent, broken. */
+    CHECK(muse_elm_parse_vtec_did("7F2231\n", &v) == MUSE_ELM_NEGATIVE);   /* requestOutOfRange */
+    CHECK(muse_elm_parse_vtec_did("7F 22 11\n", &v) == MUSE_ELM_NEGATIVE);
+    CHECK(muse_elm_parse_vtec_did("NO DATA\n", &v) == MUSE_ELM_NO_DATA);
+    CHECK(muse_elm_parse_vtec_did("CAN ERROR\n", &v) == MUSE_ELM_ERROR);
+    CHECK(muse_elm_parse_vtec_did("?\n", &v) == MUSE_ELM_ERROR);
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    strcpy(strstr(text, "8:"), "<RX ERROR\r\r>");
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_ERROR);
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    strcpy(strstr(text, "8:"), "BUFFER FULL\r\r>");
+    CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_ERROR);
+    CHECK(muse_elm_parse_vtec_did("", &v) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_vtec_did("OK\n", &v) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_vtec_did("41 0C 1A F8\n", &v) == MUSE_ELM_NONE);
+    /* The DID reply is nobody else's either. */
+    int rpm = -1;
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    CHECK(muse_elm_parse_rpm(fed(text), &rpm) == MUSE_ELM_NONE && rpm == -1);
+}
+
+static void test_vtec_engaged(void)
+{
+    /* Held exactly while the solenoid reads on, freshly. */
+    CHECK(muse_vtec_engaged(true, true, 0));
+    CHECK(muse_vtec_engaged(true, true, MUSE_VTEC_FRESH_MS));
+    CHECK(!muse_vtec_engaged(true, true, MUSE_VTEC_FRESH_MS + 1));   /* stale */
+    CHECK(!muse_vtec_engaged(true, false, 0));                       /* a fresh "off" */
+    CHECK(!muse_vtec_engaged(false, true, 0));                       /* no reading */
+    CHECK(!muse_vtec_engaged(false, false, UINT32_MAX));
+    CHECK(MUSE_VTEC_FRESH_MS == 3000u);
+
+    /* Ticks through a pull: held across every on tick, not a one-shot; off
+     * the tick an "off" lands; on again at once (no cooldown). */
+    static const struct { bool valid, sol; uint32_t age; bool held; } TICKS[] = {
+        { false, false, UINT32_MAX, false },
+        { true, false, 100, false },
+        { true, true, 50, true }, { true, true, 300, true }, { true, true, 2200, true },
+        { true, true, 60, true }, { true, true, 2900, true },
+        { true, false, 40, false },                      /* off */
+        { true, true, 30, true },                        /* straight back on */
+        { true, true, 3001, false },                     /* went stale: down */
+        { true, true, 10, true },
+        { false, false, UINT32_MAX, false },             /* the link dropped */
+    };
+    for (size_t i = 0; i < sizeof(TICKS) / sizeof(TICKS[0]); i++) {
+        CHECK(muse_vtec_engaged(TICKS[i].valid, TICKS[i].sol, TICKS[i].age) == TICKS[i].held);
+    }
+}
+
+static void test_next_slot(void)
+{
+    /* Without the DID: the old cycle, coolant first. */
+    muse_elm_support_t s = { 0 };
+    unsigned cursor = 0;
+    for (int round = 0; round < 3; round++) {
+        for (int i = 0; i < MUSE_ELM_SECONDARIES; i++) {
+            CHECK(muse_elm_next_slot(&s, &cursor, false) == MUSE_ELM_SECONDARY[i]);
+        }
+    }
+    /* With it: one DID read at the start of each rotation, then the PIDs. */
+    cursor = 0;
+    for (int round = 0; round < 3; round++) {
+        CHECK(muse_elm_next_slot(&s, &cursor, true) == MUSE_ELM_SLOT_DID);
+        for (int i = 0; i < MUSE_ELM_SECONDARIES; i++) {
+            CHECK(muse_elm_next_slot(&s, &cursor, true) == MUSE_ELM_SECONDARY[i]);
+        }
+    }
+    /* The poll loop: RPM on every even request, unchanged. */
+    cursor = 0;
+    int dids = 0, rpms = 0;
+    for (unsigned n = 0; n < 2 * 33; n++) {
+        int slot = n % 2 ? muse_elm_next_slot(&s, &cursor, true) : 0x0C;
+        if (n % 2 == 0) {
+            rpms += slot == 0x0C;
+        }
+        dids += slot == MUSE_ELM_SLOT_DID;
+        if (n % 22 == 1) {
+            CHECK(slot == MUSE_ELM_SLOT_DID);   /* the rotation's first slot */
+        }
+    }
+    CHECK(rpms == 33 && dids == 3);
+    /* Scanned (no MAP, nothing past 20): the DID still leads the shorter rotation. */
+    s.valid[0] = true;
+    s.masks[0] = 0xBE1FA812u;
+    static const int scanned[] = { MUSE_ELM_SLOT_DID, 0x05, 0x0F, 0x0E, 0x04, 0x11, 0x0D, 0x06, 0x07 };
+    cursor = 0;
+    for (int round = 0; round < 2; round++) {
+        for (size_t i = 0; i < sizeof(scanned) / sizeof(scanned[0]); i++) {
+            CHECK(muse_elm_next_slot(&s, &cursor, true) == scanned[i]);
+        }
+    }
+    /* Only RPM supported: the DID alone, or nothing. */
+    s.masks[0] = 1u << (31 - (0x0C - 1));
+    cursor = 5;
+    CHECK(muse_elm_next_slot(&s, &cursor, true) == MUSE_ELM_SLOT_DID);
+    CHECK(muse_elm_next_slot(&s, &cursor, true) == MUSE_ELM_SLOT_DID);
+    CHECK(muse_elm_next_slot(&s, &cursor, false) == -1);
 }
 
 static void test_coolant_frames(void)
@@ -805,7 +927,9 @@ int main(void)
     test_searching_then_frames();
     test_parse_cases();
     test_overflow();
-    test_trigger();
+    test_vtec_did();
+    test_vtec_engaged();
+    test_next_slot();
     test_coolant_frames();
     test_coolant_parse_cases();
     test_coolant_trigger();

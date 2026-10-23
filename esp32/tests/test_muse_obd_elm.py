@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The OBD reactions' ELM327 parser and triggers (muse_obd_elm.c): RPM and
-the VTEC trigger, coolant (PID 05), the coolant warning and the warm-up
-thumbs-up; and the car data cards' PIDs, the supported-PID scan, the
-secondary poll cycle and ATDPN."""
+"""The OBD reactions' ELM327 parser and triggers (muse_obd_elm.c): RPM, DID
+0x2612's VTEC flags against real 2007 S2000 replies and the held VTEC level,
+coolant (PID 05), the coolant warning and the warm-up thumbs-up; and the car
+data cards' PIDs, the supported-PID scan, the secondary poll cycle (with the
+DID slot) and ATDPN."""
 from pathlib import Path
 import os
 import shlex
