@@ -44,6 +44,18 @@ Advertise and handle in the usual two places (build_register_json in main/noise_
 - OBD switch off (obd_on = 0): no logging, an open trip is flushed and closed when the link drops from the disable, and the commands above still answer (trips can be pulled while OBD is off; the data already exists). `obd.trips` must work with the switch off.
 - Cards/helmet/reactions: untouched. Logging adds no UI.
 
+## Part 5: card layout pass for the small screen (Derek's in-car photo, 2026-10-22)
+
+Derek's photo of the Temps card in the car shows the problem plainly: the rows are 54 px pills (LIST layout copied from Settings) clustered in the middle band of the 368x448 screen, leaving the top and bottom thirds black; values render at Montserrat 28, small at arm's length; and the filled pills read as a settings list rather than a gauge cluster. Rework `muse_obd_cards.c` only (plus font enablement below). Data, sources, stale rules, and the state takeover do not change.
+
+1. **Fill the tile.** The card content spans the tile's safe area (under the title, above the page dots; use the existing tile content-rect helpers for the vertical safe insets). Rows divide the available height equally via a full-height flex column with grow, replacing the content-sized centered list. Near-full tile width with the existing side padding.
+2. **Open cells, no pills.** No filled row backgrounds. Cells separated by a 1 px hairline (about 0x2a2440), none under the last visible row. In each cell the label sits ABOVE the value (small, dim, uppercase), so the eye lands on the number.
+3. **Bigger type.** Values: Montserrat 48 for hero cells, 40 for normal cells (fall back to the largest enabled size if a height cannot fit, and say so in Results). Labels and units stay 16. If Montserrat 40/48 are not enabled in the LVGL font config, enable them in the Muse defaults chain in the narrowest place that covers the display boards, and state in Results exactly what was enabled where.
+4. **Heroes and bars.** Engine: the RPM cell grows 2x, value in the accent at 48, with a thin bar under the value (LVGL bar, 0 to 8000 RPM, accent fill, dark track, about 10 px). Drive: MPH becomes the hero (grow 2x, 48) with km/h demoted to a small dim unit line; Throttle gets the same thin bar treatment (0 to 100). STFT and LTFT share one row as two half-width cells.
+5. **Hide proven-unsupported rows.** Once the support scan is known, a row whose PID is proven unsupported is hidden entirely and the card reflows around it (on Derek's car Ambient disappears and Temps becomes two tall cells). Before the scan is known, today's "..." behavior stands; "--" now only appears transiently before the first scan completes. Put the visible/hidden decision where the existing card contract tests can reach it if the tree's structure allows.
+6. **Glance colors.** Coolant value: amber at 100 C or above, red at 105 C or above (the reaction thresholds), fresh values only; stale dimming still wins over every color except it never applies to a value that is not valid anyway. Trims (STFT/LTFT) amber when the absolute value reaches 10%. Everything else keeps today's colors.
+7. Unchanged: titles, the not-polling state text, page dots, swipe-anywhere behavior (cells stay non-clickable), update-only-on-change, bench `>card <n>`. Results must summarize the final layout per card and the fonts enabled, and note that visual sign-off is Derek's post-flash look (there is no host renderer for these tiles).
+
 ## Tests (host, from esp32/: python3 -m unittest discover -s tests -p "test_*.py")
 
 Baseline is 673 tests, 0 failures, 6 known cJSON-environment errors, 10 skipped.
