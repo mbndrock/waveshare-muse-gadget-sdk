@@ -385,7 +385,7 @@ int ble_gap_conn_cancel(void)
     return 0;
 }
 
-int ble_gap_update_params(uint16_t conn, const struct ble_gap_conn_params *params)
+int ble_gap_update_params(uint16_t conn, const struct ble_gap_upd_params *params)
 {
     (void)conn;
     ble_lock();

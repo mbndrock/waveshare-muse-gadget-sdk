@@ -115,8 +115,8 @@ struct ble_gap_event {
         struct { int status; uint16_t conn_handle; } conn_update;
     };
 };
-struct ble_gap_conn_params { uint16_t itvl_min, itvl_max, latency, supervision_timeout, min_ce, max_ce; };
-int ble_gap_update_params(uint16_t conn, const struct ble_gap_conn_params *params);
+struct ble_gap_upd_params { uint16_t itvl_min, itvl_max, latency, supervision_timeout, min_ce_events, max_ce_events; };
+int ble_gap_update_params(uint16_t conn, const struct ble_gap_upd_params *params);
 struct ble_gap_disc_params { uint16_t itvl, window; uint8_t filter_policy, limited, passive, filter_duplicates; };
 typedef int ble_gap_event_fn(struct ble_gap_event *event, void *arg);
 int ble_gap_disc(uint8_t own, int32_t ms, const struct ble_gap_disc_params *params, ble_gap_event_fn *cb, void *arg);
