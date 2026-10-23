@@ -213,6 +213,53 @@ size_t xStreamBufferReceive(StreamBufferHandle_t s, void *data, size_t len, Tick
 static int g_vtec_fired, g_coolant_fired, g_warmup_fired;
 
 bool muse_link_ble_started(void) { return true; }
+
+/* The trip log: counts what the OBD task asks of it. */
+static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_trip_starts, g_trip_ends, g_samples;
+static bool g_trip_open;
+
+void muse_obd_log_start(void) {}
+
+void muse_obd_log_trip_start(const muse_obd_status_t *st, uint32_t now_ms)
+{
+    (void)st, (void)now_ms;
+    pthread_mutex_lock(&g_log_mu);
+    g_trip_starts++;
+    g_trip_open = true;
+    pthread_mutex_unlock(&g_log_mu);
+}
+
+void muse_obd_log_sample(const muse_obd_status_t *st, uint32_t now_ms)
+{
+    (void)now_ms;
+    pthread_mutex_lock(&g_log_mu);
+    g_samples += g_trip_open && st->polling;
+    pthread_mutex_unlock(&g_log_mu);
+}
+
+void muse_obd_log_trip_end(void)
+{
+    pthread_mutex_lock(&g_log_mu);
+    g_trip_ends += g_trip_open;
+    g_trip_open = false;
+    pthread_mutex_unlock(&g_log_mu);
+}
+
+void muse_obd_log_status(muse_obd_log_status_t *out)
+{
+    pthread_mutex_lock(&g_log_mu);
+    *out = (muse_obd_log_status_t){ .flash = true, .store = "flash", .active = g_trip_open, .pending = 2 };
+    pthread_mutex_unlock(&g_log_mu);
+}
+
+static int log_count(int *n)
+{
+    pthread_mutex_lock(&g_log_mu);
+    int v = *n;
+    pthread_mutex_unlock(&g_log_mu);
+    return v;
+}
 void muse_state_start_vtec(void) { g_vtec_fired++; }
 void muse_state_start_coolant(void) { g_coolant_fired++; }
 void muse_state_start_warmup(void) { g_warmup_fired++; }
@@ -521,6 +568,7 @@ static bool is_scanning(void) { ble_lock(); bool b = g_ble.scanning; ble_unlock(
 static bool is_connecting(void) { ble_lock(); bool b = g_ble.connecting; ble_unlock(); return b; }
 static bool is_polling(void) { muse_obd_status_t st = status(); return st.polling && st.rpm_valid; }
 static bool is_off(void) { return !strcmp(status().state, "off"); }
+static bool has_samples(void) { return log_count(&g_samples) > 0; }
 
 static void found_adapter(void)
 {
@@ -592,15 +640,28 @@ int main(void)
     muse_obd_status_t st = status();
     CHECK(st.enabled && muse_obd_linked(&st), "on and polling, but not linked");
     CHECK(st.rpm == 1726, "rpm %d", st.rpm);
+    /* Polling started a trip, and its samples are going in. */
+    CHECK(log_count(&g_trip_starts) == 1, "trips started: %d", log_count(&g_trip_starts));
+    CHECK(await(has_samples, 1000), "no samples logged");
+    CHECK(st.log_flash && st.log_active && st.log_pending == 2 && !strcmp(st.log_store, "flash"),
+          "the snapshot lacks the log's status");
 
-    /* Off while polling: dropped at once, with the BLE link terminated. */
+    /* Off while polling: dropped at once, with the BLE link terminated, and
+     * the trip flushed and closed with it. */
     int terms = ble(&g_ble.terminate);
     muse_obd_set_enabled(false);
     CHECK(await(is_off, 200), "polling: not off: %s", status().state);
     CHECK(ble(&g_ble.terminate) == terms + 1, "polling: link not terminated");
     CHECK(g_ble.terminated == CONN, "polling: terminated %u", g_ble.terminated);
     check_off("polling");
+    CHECK(log_count(&g_trip_ends) == 1, "the trip wasn't closed when OBD went off");
+    int samples = log_count(&g_samples);
     check_quiet("polling");
+    CHECK(log_count(&g_samples) == samples, "logged while off");
+    CHECK(log_count(&g_trip_starts) == 1, "a trip started while off");
+    /* Off, the log still reports (its trips can be pulled). */
+    st = status();
+    CHECK(st.log_flash && st.log_pending == 2 && !st.log_active, "off: the log's status is gone");
 
     /* The reactions don't play while off. */
     muse_obd_fire_vtec();
