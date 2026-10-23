@@ -42,6 +42,10 @@
 #if CONFIG_MUSE_OBD_VTEC
 #include "muse_obd_doorbell.h"
 #include "muse_obd_log.h"
+#if CONFIG_MUSE_USB_DRIVE
+#include "muse_usb_drive.h"
+#include "esp_system.h"
+#endif
 #endif
 #if CONFIG_MUSE_VIDEO
 #include "muse_video.h"
@@ -89,6 +93,15 @@ static lv_obj_t *s_home_camera;
 #endif
 #if CONFIG_MUSE_OBD_VTEC
 static lv_obj_t *s_home_obd;
+#if CONFIG_MUSE_USB_DRIVE
+static lv_obj_t *s_home_usb_drive;
+static void on_usb_drive_sw(lv_event_t *e)
+{
+    bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    muse_usb_drive_set(on);
+    esp_restart(); /* the USB PHY changes hands across a reboot (muse_usb_drive.h) */
+}
+#endif
 static lv_obj_t *s_home_doorbell;   /* the Send logs row's value */
 static char s_doorbell_note[24];   /* brief feedback after a tap */
 static int64_t s_doorbell_note_until_us;
@@ -1424,6 +1437,9 @@ static void build_home(lv_obj_t *tile)
 #if CONFIG_MUSE_OBD_VTEC
     s_home_obd = switch_row_icon(list, LV_SYMBOL_GPS, "OBD", muse_settings_obd_on(), on_obd_sw);
     row(list, LV_SYMBOL_UPLOAD, "Send logs to Muse", &s_home_doorbell, on_doorbell, NULL);
+#if CONFIG_MUSE_USB_DRIVE
+    s_home_usb_drive = switch_row_icon(list, LV_SYMBOL_USB, "USB drive mode", muse_usb_drive_active(), on_usb_drive_sw);
+#endif
 #endif
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     /* Brightness, which e-paper has none of. */

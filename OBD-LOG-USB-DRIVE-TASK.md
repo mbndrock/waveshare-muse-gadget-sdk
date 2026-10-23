@@ -81,3 +81,44 @@ LittleFS log store.
 - Fix causes, not workarounds. If the design constraints above conflict with
   the platform as built, stop and say so in Results rather than improvising
   around them.
+
+## Results
+
+Implemented by Muse Code (VM session, 2026-10-23) against tip 5bfb2a4. That
+session ended before writing this section or committing; the Results below
+were compiled and the commit made by Muse from an independent QA pass over
+its working tree.
+
+- **FAT layer (new, host-tested):** `muse_msc_fat.c` / `.h` fabricates the
+  filesystem in the MSC block layer exactly as specced: generated boot
+  sector (volume label `MUSE LOGS`), FAT tables, and root directory; file
+  data served from the log store. 8.3 names (`TRIP0005.CSV`, ids over 9999
+  handled per the in-code note), directory entries carry the read-only
+  attribute, and a generated `INDEX.TXT` (served from memory in
+  `muse_usb_drive.c`) lists the snapshot's trips. No partition changes.
+- **Drive mode (new):** `muse_usb_drive.c` / `.h` installs TinyUSB MSC with
+  read-only callbacks (the write callback returns write-protected). Entry
+  and exit use the spec's sanctioned reboot path: the Settings toggle
+  (`USB drive mode`, OBD section) writes an NVS flag via
+  `muse_usb_drive_set()` and calls `esp_restart()`; the USB PHY changes
+  hands across the reboot, and the on-device UI stays live in drive mode so
+  the mode can be toggled back off on the gadget itself. The snapshot is the
+  closed-trip set at mode entry; the open trip is never listed.
+- **sdkconfig (s18 overlay, in scope):** exactly three lines added:
+  `CONFIG_MUSE_USB_DRIVE=y`, `CONFIG_TINYUSB_MSC_ENABLED=y`,
+  `CONFIG_TINYUSB_MSC_BUFSIZE=4096`. A matching Kconfig option and
+  CMakeLists entries wire the two new files in.
+- **Invariants (Muse QA):** partitions.csv, `secrets/`, the log store and
+  writer (`muse_obd_log*.c`, store), `muse_obd.c`, and the trip commands are
+  all untouched by the diff; `muse_hatch_say` count in `muse_obd.c` is
+  still 0; no existing test file was modified.
+- **Tests:** new `tests/test_muse_msc_fat.py` + `muse_msc_fat_harness.c`.
+  Full host suite from `esp32/`, run independently by Muse:
+  **729 tests, 0 failures, 6 errors, 10 skipped** (baseline after the
+  doorbell task was 727 with the same 6 known cJSON-environment errors and
+  10 skips; +2 net new test methods, no assertions weakened).
+- **Still needs the owner's Mac:** the real build
+  (`tools/muse/board.sh build s18`; no ESP-IDF exists on the VM), a Finder
+  mount check of the `MUSE LOGS` drive, copying a CSV off it and diffing
+  against a link-pulled copy, and confirmation that ROM download-mode
+  flashing behaves exactly as before with the mode off and on.

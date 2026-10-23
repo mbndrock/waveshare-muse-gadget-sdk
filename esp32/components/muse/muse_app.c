@@ -28,6 +28,9 @@
 #include "muse_input.h"
 #if CONFIG_MUSE_OBD_VTEC
 #include "muse_obd.h"
+#if CONFIG_MUSE_USB_DRIVE
+#include "muse_usb_drive.h"
+#endif
 #endif
 #include "muse_settings.h"
 #include "muse_state.h"
@@ -78,6 +81,9 @@ void muse_app_run(const muse_board_t *board)
     ESP_ERROR_CHECK(board->init());
     ESP_ERROR_CHECK(muse_settings_init());
     muse_settings_set_listener(on_setting);
+#if CONFIG_MUSE_USB_DRIVE
+    if (muse_usb_drive_requested()) { muse_usb_drive_start(); }
+#endif
     muse_state_init();
     muse_battery_init();
     muse_state_set_caption("WAKING UP...");

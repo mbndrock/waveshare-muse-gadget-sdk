@@ -448,4 +448,17 @@ menu "Muse"
             roles and a second connection (BT_NIMBLE_MAX_CONNECTIONS=2); the
             AMOLED-1.8's overlay turns them on with this.
 
+    config MUSE_USB_DRIVE
+        bool "USB drive mode for the OBD trip logs (TinyUSB MSC)"
+        depends on MUSE_OBD_VTEC
+        default n
+        help
+            Settings gains a "USB drive mode" toggle (s18 only): it sets
+            the NVS flag "usb_drv" and reboots into a read-only TinyUSB
+            mass-storage device whose files are the closed trip logs, on a
+            FAT16 volume fabricated in the MSC block layer (muse_msc_fat.c)
+            with no partition change. The reboot is required because the
+            USB Serial/JTAG console and TinyUSB share the one USB PHY.
+            Toggling off reboots back to the normal personality.
+
 endmenu

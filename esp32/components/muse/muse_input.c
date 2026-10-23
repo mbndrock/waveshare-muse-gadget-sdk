@@ -37,6 +37,9 @@
 #include "muse_board.h"
 #include "muse_chat.h"
 #include "muse_console.h"
+#if CONFIG_MUSE_USB_DRIVE
+#include "muse_usb_drive.h"
+#endif
 #include "muse_imu.h"
 #include "muse_link.h"
 #include "muse_mem.h"
@@ -1066,6 +1069,9 @@ static bool console_command(char *line, bool whole)
  */
 static void serial_task(void *arg)
 {
+#if CONFIG_MUSE_USB_DRIVE
+    if (muse_usb_drive_active()) { vTaskDelete(NULL); } /* TinyUSB owns the PHY */
+#endif
     if (muse_console_install(SERIAL_RX) != ESP_OK) {
         vTaskDelete(NULL);
     }

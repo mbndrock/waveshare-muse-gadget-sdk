@@ -56,7 +56,10 @@ if(CONFIG_MUSE_ENABLED)
         # VTEC reaction from the car's OBD adapter, the car data cards, and
         # the trip log (flash and microSD stores, pulled over Link)
         list(APPEND srcs "muse_obd.c" "muse_obd_elm.c" "muse_obd_cards.c" "muse_obd_log.c"
-             "muse_obd_log_store.c" "muse_obd_doorbell.c" "muse_obd_doorbell_task.c")
+             "muse_obd_log_store.c" "muse_obd_doorbell.c" "muse_obd_doorbell_task.c" "muse_msc_fat.c")
+    if(CONFIG_MUSE_USB_DRIVE)
+        list(APPEND srcs "muse_usb_drive.c")
+    endif()
     endif()
     if(CONFIG_MUSE_CJK_FONT)
         list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
@@ -159,7 +162,7 @@ set(muse_priv_requires
     # The Sticky's microSD (CONFIG_MUSE_STICKY_SD) and the OBD trip log's
     # flash store (CONFIG_MUSE_OBD_VTEC). Requirements are resolved before
     # Kconfig values exist, so these can't depend on it; only the code does.
-    fatfs esp_driver_sdspi sdmmc esp_partition wear_levelling)
+    fatfs esp_driver_sdspi sdmmc esp_partition wear_levelling tinyusb)
 list(APPEND muse_priv_requires camera)
 
 idf_component_register(
