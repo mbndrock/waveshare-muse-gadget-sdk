@@ -816,8 +816,15 @@ static const char *obd_fixed(char *buf, size_t cap, bool valid, int value, int d
     if (!valid || decimals <= 0 || decimals > 3) {
         return obd_number(buf, cap, valid, value);
     }
-    long long v = value, whole = (v < 0 ? -v : v) / SCALE[decimals], part = (v < 0 ? -v : v) % SCALE[decimals];
-    snprintf(buf, cap, "%s%lld.%0*lld", v < 0 ? "-" : "", whole, decimals, part);
+    long long v = value, whole = (v < 0 ? -v : v) / SCALE[decimals];
+    int part = (int)((v < 0 ? -v : v) % SCALE[decimals]);
+    if (part > 999) {
+        part = 999; /* already < SCALE[decimals] <= 1000; lets the compiler prove the 16-byte fit */
+    }
+    if (whole > 999999999LL) {
+        whole = 999999999LL; /* already <= 214748364 (value is int, SCALE >= 10); same proof for whole */
+    }
+    snprintf(buf, cap, "%s%lld.%0*d", v < 0 ? "-" : "", whole, decimals, part);
     return buf;
 }
 
@@ -826,7 +833,7 @@ static void print_obd(void)
 {
     muse_obd_status_t st;
     muse_obd_status(&st);
-    char rpm[16], rpm_age[16], coolant[16], coolant_age[16];
+    char rpm[32], rpm_age[16], coolant[16], coolant_age[16]; /* rpm also holds obd_fixed's output */
     printf("@obd {\"state\":\"%s\",\"enabled\":%s,\"adapter_found\":%s,\"connected\":%s,\"subscribed\":%s,"
            "\"polling\":%s,\"rpm\":%s,\"rpm_age_ms\":%s,\"coolant_c\":%s,\"coolant_age_ms\":%s",
            st.state, st.enabled ? "true" : "false", st.adapter_found ? "true" : "false", st.connected ? "true" : "false",

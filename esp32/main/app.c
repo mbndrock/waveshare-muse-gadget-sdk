@@ -1928,9 +1928,9 @@ static cJSON *obd_read_command(void) {
     // Honda's DID 0x2612: the VTEC solenoid and pressure switch (1/0), whether
     // the engine ECU answers it, and its unexplained byte 23, raw.
     add_obd_reading(payload, "vtec_sol", "vtec_sol_age_ms", st.vtec_sol.valid, st.vtec_sol.value,
-                    st.vtec_sol.age_ms);
+                    st.vtec_sol.age_ms, 0);
     add_obd_reading(payload, "vtec_psw", "vtec_psw_age_ms", st.vtec_psw.valid, st.vtec_psw.value,
-                    st.vtec_psw.age_ms);
+                    st.vtec_psw.age_ms, 0);
     cJSON_AddBoolToObject(payload, "did_2612", st.did_2612);
     if (st.did_2612_b23.valid) {
         cJSON_AddNumberToObject(payload, "did_2612_b23", st.did_2612_b23.value);
