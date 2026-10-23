@@ -104,7 +104,7 @@ int os_mbuf_copydata(const struct os_mbuf *om, int off, int len, void *dst);
 struct ble_gap_disc_desc { ble_addr_t addr; const uint8_t *data; uint8_t length_data; };
 struct ble_gap_conn_desc { uint16_t conn_handle; };
 enum { BLE_GAP_EVENT_CONNECT, BLE_GAP_EVENT_DISCONNECT, BLE_GAP_EVENT_DISC, BLE_GAP_EVENT_DISC_COMPLETE,
-       BLE_GAP_EVENT_NOTIFY_RX };
+       BLE_GAP_EVENT_NOTIFY_RX, BLE_GAP_EVENT_CONN_UPDATE };
 struct ble_gap_event {
     int type;
     union {
@@ -112,8 +112,11 @@ struct ble_gap_event {
         struct { int status; uint16_t conn_handle; } connect;
         struct { int reason; struct ble_gap_conn_desc conn; } disconnect;
         struct { uint16_t conn_handle; uint16_t attr_handle; struct os_mbuf *om; } notify_rx;
+        struct { int status; uint16_t conn_handle; } conn_update;
     };
 };
+struct ble_gap_conn_params { uint16_t itvl_min, itvl_max, latency, supervision_timeout, min_ce, max_ce; };
+int ble_gap_update_params(uint16_t conn, const struct ble_gap_conn_params *params);
 struct ble_gap_disc_params { uint16_t itvl, window; uint8_t filter_policy, limited, passive, filter_duplicates; };
 typedef int ble_gap_event_fn(struct ble_gap_event *event, void *arg);
 int ble_gap_disc(uint8_t own, int32_t ms, const struct ble_gap_disc_params *params, ble_gap_event_fn *cb, void *arg);

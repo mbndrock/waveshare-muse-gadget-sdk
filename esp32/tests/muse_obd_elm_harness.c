@@ -17,8 +17,9 @@
 /* The OBD reactions' ELM327 parser and triggers (muse_obd_elm.c: DID 0x2612's
  * VTEC flags against real S2000 replies and the held VTEC level, the coolant
  * warning and the warm-up thumbs-up on PID 05), and the car data
- * cards' side (the PID support scan, the cards' PIDs, the secondary poll
- * cycle and ATDPN), fed the way the LELink^2 adapter's FFE1 notifications cut
+ * cards' side (the PID support scan, the cards' PIDs, the poll pipeline:
+ * the scheduler, the batch parser, the link stats and the ATST policy, and
+ * ATDPN), fed the way the LELink^2 adapter's FFE1 notifications cut
  * its replies. */
 
 #include <stdio.h>
@@ -267,56 +268,6 @@ static void test_vtec_engaged(void)
     for (size_t i = 0; i < sizeof(TICKS) / sizeof(TICKS[0]); i++) {
         CHECK(muse_vtec_engaged(TICKS[i].valid, TICKS[i].sol, TICKS[i].age) == TICKS[i].held);
     }
-}
-
-static void test_next_slot(void)
-{
-    /* Without the DID: the old cycle, coolant first. */
-    muse_elm_support_t s = { 0 };
-    unsigned cursor = 0;
-    for (int round = 0; round < 3; round++) {
-        for (int i = 0; i < MUSE_ELM_SECONDARIES; i++) {
-            CHECK(muse_elm_next_slot(&s, &cursor, false) == MUSE_ELM_SECONDARY[i]);
-        }
-    }
-    /* With it: one DID read at the start of each rotation, then the PIDs. */
-    cursor = 0;
-    for (int round = 0; round < 3; round++) {
-        CHECK(muse_elm_next_slot(&s, &cursor, true) == MUSE_ELM_SLOT_DID);
-        for (int i = 0; i < MUSE_ELM_SECONDARIES; i++) {
-            CHECK(muse_elm_next_slot(&s, &cursor, true) == MUSE_ELM_SECONDARY[i]);
-        }
-    }
-    /* The poll loop: RPM on every even request, unchanged. */
-    cursor = 0;
-    int dids = 0, rpms = 0;
-    for (unsigned n = 0; n < 2 * 33; n++) {
-        int slot = n % 2 ? muse_elm_next_slot(&s, &cursor, true) : 0x0C;
-        if (n % 2 == 0) {
-            rpms += slot == 0x0C;
-        }
-        dids += slot == MUSE_ELM_SLOT_DID;
-        if (n % 22 == 1) {
-            CHECK(slot == MUSE_ELM_SLOT_DID);   /* the rotation's first slot */
-        }
-    }
-    CHECK(rpms == 33 && dids == 3);
-    /* Scanned (no MAP, nothing past 20): the DID still leads the shorter rotation. */
-    s.valid[0] = true;
-    s.masks[0] = 0xBE1FA812u;
-    static const int scanned[] = { MUSE_ELM_SLOT_DID, 0x05, 0x0F, 0x0E, 0x04, 0x11, 0x0D, 0x06, 0x07 };
-    cursor = 0;
-    for (int round = 0; round < 2; round++) {
-        for (size_t i = 0; i < sizeof(scanned) / sizeof(scanned[0]); i++) {
-            CHECK(muse_elm_next_slot(&s, &cursor, true) == scanned[i]);
-        }
-    }
-    /* Only RPM supported: the DID alone, or nothing. */
-    s.masks[0] = 1u << (31 - (0x0C - 1));
-    cursor = 5;
-    CHECK(muse_elm_next_slot(&s, &cursor, true) == MUSE_ELM_SLOT_DID);
-    CHECK(muse_elm_next_slot(&s, &cursor, true) == MUSE_ELM_SLOT_DID);
-    CHECK(muse_elm_next_slot(&s, &cursor, false) == -1);
 }
 
 static void test_coolant_frames(void)
@@ -818,65 +769,243 @@ static void test_pid_support(void)
     CHECK(muse_elm_pid_support(&s, 0x46) == MUSE_ELM_PID_UNSUPPORTED);
 }
 
-static void test_secondary_cycle(void)
+
+static void test_batch_parse(void)
 {
-    static const int ORDER[MUSE_ELM_SECONDARIES] = { 0x05, 0x0F, 0x0E, 0x0B, 0x04, 0x11, 0x0D, 0x06, 0x07, 0x46 };
-    for (int i = 0; i < MUSE_ELM_SECONDARIES; i++) {
-        CHECK(MUSE_ELM_SECONDARY[i] == ORDER[i]);
+    /* A full six-PID reply, as the feed hands it over (\n between
+     * lines): every value, converted like the single parsers. */
+    static const uint8_t pids[6] = { 0x0C, 0x0B, 0x11, 0x04, 0x0D, 0x06 };
+    static const char *full =
+        "41 0C 1A F8\n41 0B 62\n41 11 33\n41 04 66\n41 0D 3C\n41 06 90\n\n>";
+    int values[6];
+    bool got[6];
+    CHECK(muse_elm_parse_batch(full, pids, 6, values, got) == MUSE_ELM_BATCH);
+    for (int i = 0; i < 6; i++) {
+        CHECK(got[i]);
     }
+    CHECK(values[0] == 1726);         /* (0x1A * 256 + 0xF8) / 4 */
+    CHECK(values[1] == 0x62);         /* MAP, kPa as read */
+    CHECK(values[2] == 0x33 * 100 / 255);
+    CHECK(values[3] == 0x66 * 100 / 255);
+    CHECK(values[4] == 0x3C);
+    CHECK(values[5] == (0x90 - 128) * 100 / 128);
+    /* The batch values agree with the single-PID parsers on the same reply. */
+    int one;
+    CHECK(muse_elm_parse_rpm(full, &one) == MUSE_ELM_RPM && one == values[0]);
+    CHECK(muse_elm_parse_map(full, &one) == MUSE_ELM_MAP && one == values[1]);
+    CHECK(muse_elm_parse_stft(full, &one) == MUSE_ELM_STFT && one == values[5]);
 
-    /* Support unknown: all ten in order, coolant first, round and round. */
-    muse_elm_support_t s = { 0 };
-    unsigned cursor = 0;
-    for (int round = 0; round < 3; round++) {
-        for (int i = 0; i < MUSE_ELM_SECONDARIES; i++) {
-            CHECK(muse_elm_next_secondary(&s, &cursor) == ORDER[i]);
+    /* A partial reply: speed's line is missing, the rest still read. */
+    static const char *partial = "41 0C 1A F8\n41 0B 62\n41 11 33\n41 04 66\n41 06 90\n\n>";
+    CHECK(muse_elm_parse_batch(partial, pids, 6, values, got) == MUSE_ELM_BATCH);
+    CHECK(got[0] && got[1] && got[2] && got[3] && !got[4] && got[5]);
+
+    /* A malformed line is a miss for its PID only. */
+    static const char *garbled = "41 0C 1A F8\n41 0B ZZ\n41 11 33\n41 04 66\n41 0D 3C\n41 06 90\n\n>";
+    CHECK(muse_elm_parse_batch(garbled, pids, 6, values, got) == MUSE_ELM_BATCH);
+    CHECK(got[0] && !got[1] && got[2] && got[3] && got[4] && got[5]);
+
+    /* The whole batch refused: NO DATA, or the ELM's "?", nothing read. */
+    CHECK(muse_elm_parse_batch("NO DATA\r\r>", pids, 6, values, got) == MUSE_ELM_NO_DATA);
+    for (int i = 0; i < 6; i++) {
+        CHECK(!got[i]);
+    }
+    CHECK(muse_elm_parse_batch("?\r\r>", pids, 6, values, got) == MUSE_ELM_ERROR);
+    /* Nothing that answers and nothing that refuses: NONE. */
+    CHECK(muse_elm_parse_batch("GARBAGE\r\r>", pids, 6, values, got) == MUSE_ELM_NONE);
+}
+
+static bool req_has(const muse_sched_req_t *r, int pid)
+{
+    for (int i = 0; i < r->n; i++) {
+        if (r->pids[i] == pid) {
+            return true;
         }
     }
+    return false;
+}
 
-    /* The poll loop: RPM on every even request, a secondary on every odd one. */
-    cursor = 0;
-    int seq[40];
-    for (unsigned n = 0; n < 40; n++) {
-        seq[n] = n % 2 ? muse_elm_next_secondary(&s, &cursor) : 0x0C;
+/* Serves one pick at t: every PID in it read a value. */
+static void serve(muse_sched_t *s, const muse_sched_req_t *r, uint32_t t)
+{
+    for (int i = 0; i < r->n; i++) {
+        muse_sched_done_pid(s, r->pids[i], true, true, t);
     }
-    for (int n = 0; n < 40; n++) {
-        CHECK(seq[n] == (n % 2 ? ORDER[(n / 2) % MUSE_ELM_SECONDARIES] : 0x0C));
-    }
+}
 
-    /* Scanned: BE1FA812 has no MAP (0B), and nothing past 20 (no 46). */
-    s.valid[0] = true;
-    s.masks[0] = 0xBE1FA812u;
-    static const int scanned[] = { 0x05, 0x0F, 0x0E, 0x04, 0x11, 0x0D, 0x06, 0x07 };
-    cursor = 0;
-    for (int round = 0; round < 3; round++) {
-        for (size_t i = 0; i < sizeof(scanned) / sizeof(scanned[0]); i++) {
-            CHECK(muse_elm_next_secondary(&s, &cursor) == scanned[i]);
+static void test_scheduler(void)
+{
+    muse_elm_support_t sup = { 0 };   /* nothing scanned: everything unknown, all kept */
+    muse_sched_t s;
+    muse_sched_req_t r;
+
+    /* A new connection sweeps: RPM leads a full batch of what's due, then
+     * the rest, each signal asked once at the same instant (dedupe), until
+     * only the filler is left. */
+    muse_sched_init(&s, &sup, true, 1000);
+    int asks[256] = { 0 };
+    for (int k = 0; k < 3; k++) {
+        muse_sched_pick(&s, 1000, &r);
+        CHECK(!r.did);
+        if (k == 0) {
+            CHECK(r.n == MUSE_ELM_BATCH_MAX && r.pids[0] == 0x0C);
+            CHECK(req_has(&r, 0x0B) && req_has(&r, 0x11));   /* the fast tier rides first */
         }
+        for (int i = 0; i < r.n; i++) {
+            for (int j = i + 1; j < r.n; j++) {
+                CHECK(r.pids[i] != r.pids[j]);   /* never twice in one request */
+            }
+            asks[r.pids[i]]++;
+        }
+        serve(&s, &r, 1000);
+    }
+    CHECK(r.n == 1 && r.pids[0] == 0x0C);   /* the last of the sweep: RPM alone */
+    for (int pid = 0x04; pid <= 0x46; pid++) {
+        if (pid == 0x0C) {
+            continue;
+        }
+        CHECK(asks[pid] <= 1);   /* no secondary asked twice in the sweep */
     }
 
-    /* No coolant either: the cycle starts at intake air. */
-    s.masks[0] &= ~(1u << (31 - (0x05 - 1)));
-    cursor = 0;
-    CHECK(muse_elm_next_secondary(&s, &cursor) == 0x0F);
+    /* The DID's floor: never inside 1 s of the probe, however overdue;
+     * eligible after it, picked once it is the most overdue, and the floor
+     * runs from that read too. */
+    for (uint32_t t = 1100; t < 2000; t += 100) {
+        muse_sched_pick(&s, t, &r);
+        CHECK(!r.did);
+        serve(&s, &r, t);
+    }
+    bool saw_did = false;
+    for (uint32_t t = 2000; t <= 2400 && !saw_did; t += 50) {
+        muse_sched_pick(&s, t, &r);
+        if (r.did) {
+            saw_did = true;
+            muse_sched_done_did(&s, t);
+            break;
+        }
+        serve(&s, &r, t);
+    }
+    CHECK(saw_did);
+    muse_sched_pick(&s, 2500, &r);
+    CHECK(!r.did);
 
-    /* 21-40 and 41-60 read, with 46: ambient joins at the end. */
-    s.masks[0] = 0xBE1FA813u;
-    s.valid[1] = true;
-    s.masks[1] = 0x00000001u;
-    s.valid[2] = true;
-    s.masks[2] = 0x04000000u;
-    cursor = 9;
-    CHECK(muse_elm_next_secondary(&s, &cursor) == 0x46);
-    CHECK(muse_elm_next_secondary(&s, &cursor) == 0x05);
+    /* Tiers by target: at +1500 ms only the fast tier is due again. */
+    muse_sched_init(&s, &sup, false, 0);
+    for (int k = 0; k < 3; k++) {
+        muse_sched_pick(&s, 0, &r);
+        serve(&s, &r, 0);
+    }
+    muse_sched_pick(&s, 1500, &r);
+    CHECK(req_has(&r, 0x0B) && !req_has(&r, 0x06) && !req_has(&r, 0x05));
+    serve(&s, &r, 1500);
+    /* At +3600 ms the mid tier is the most overdue, the slow tier next. */
+    muse_sched_pick(&s, 3600, &r);
+    CHECK(req_has(&r, 0x06) && !req_has(&r, 0x05));
+    serve(&s, &r, 3600);
+    muse_sched_pick(&s, 3600, &r);
+    CHECK(req_has(&r, 0x05));
 
-    /* Nothing supported: -1, so the loop polls RPM alone. */
-    s = (muse_elm_support_t){ 0 };
-    s.valid[0] = true;
-    s.masks[0] = 1u << (31 - (0x0C - 1));   /* only RPM */
-    cursor = 3;
-    CHECK(muse_elm_next_secondary(&s, &cursor) == -1);
-    CHECK(muse_elm_next_secondary(&s, &cursor) == -1);
+    /* Misses: twice against a live ECU and a PID leaves the schedule;
+     * against a silent one it stays. RPM never leaves. */
+    muse_sched_init(&s, &sup, false, 0);
+    muse_sched_done_pid(&s, 0x0B, false, true, 0);
+    muse_sched_done_pid(&s, 0x0B, false, true, 0);
+    bool map_asked = false;
+    for (int k = 0; k < 40 && !map_asked; k++) {
+        muse_sched_pick(&s, 10000, &r);
+        map_asked = req_has(&r, 0x0B);
+        serve(&s, &r, 10000);
+    }
+    CHECK(!map_asked);
+    muse_sched_done_pid(&s, 0x11, false, false, 0);   /* a silent ECU proves nothing */
+    muse_sched_done_pid(&s, 0x11, false, false, 0);
+    bool throttle_asked = false;
+    for (int k = 0; k < 40 && !throttle_asked; k++) {
+        muse_sched_pick(&s, 20000, &r);
+        throttle_asked = req_has(&r, 0x11);
+        serve(&s, &r, 20000);
+    }
+    CHECK(throttle_asked);
+    muse_sched_done_pid(&s, 0x0C, false, true, 0);
+    muse_sched_done_pid(&s, 0x0C, false, true, 0);
+    muse_sched_pick(&s, 30000, &r);
+    CHECK(req_has(&r, 0x0C));
+
+    /* The latch: single-PID picks, however much is due. */
+    muse_sched_init(&s, &sup, false, 0);
+    muse_sched_latch_batch_off(&s);
+    muse_sched_pick(&s, 0, &r);
+    CHECK(!r.did && r.n == 1 && r.pids[0] == 0x0C);
+
+    /* A scan-proven unsupported PID is never picked. */
+    sup.valid[0] = true;
+    sup.masks[0] = 0xBE1FA812u;   /* no MAP; the chain bit ends the ranges */
+    muse_sched_init(&s, &sup, false, 0);
+    for (int k = 0; k < 12; k++) {
+        muse_sched_pick(&s, (uint32_t)k * 1000, &r);
+        CHECK(!req_has(&r, 0x0B) && !req_has(&r, 0x46));
+        serve(&s, &r, (uint32_t)k * 1000);
+    }
+}
+
+static void test_link_stats(void)
+{
+    muse_link_stats_t st;
+    muse_link_stats_reset(&st);
+    CHECK(st.exchanges == 0 && muse_link_stats_rate_x100(&st) == 0 && muse_link_stats_batch_pct(&st) == -1);
+    /* Four exchanges 100 ms apart, two of them batches of two readings. */
+    muse_link_stats_exchange(&st, 1000, 40, 2, true);
+    muse_link_stats_exchange(&st, 1100, 50, 2, true);
+    muse_link_stats_exchange(&st, 1200, 60, 1, false);
+    muse_link_stats_exchange(&st, 1300, 70, 1, false);
+    CHECK(st.exchanges == 4 && st.last_rtt_ms == 70);
+    CHECK(st.readings == 6 && st.batch_readings == 4);
+    CHECK(muse_link_stats_batch_pct(&st) == 66);   /* 4 of 6 readings */
+    CHECK(muse_link_stats_rate_x100(&st) == 1000); /* 3 spans of 100 ms: 10.00/s */
+    muse_link_stats_timeout(&st);
+    muse_link_stats_timeout(&st);
+    CHECK(st.timeouts == 2 && st.exchanges == 4);
+    /* The ring wraps: 20 exchanges 10 ms apart read as 100.00/s. */
+    muse_link_stats_reset(&st);
+    for (int i = 0; i < 20; i++) {
+        muse_link_stats_exchange(&st, (uint32_t)i * 10, 5, 0, false);
+    }
+    CHECK(st.exchanges == 20 && muse_link_stats_rate_x100(&st) == 10000);
+}
+
+static void test_tune(void)
+{
+    muse_tune_t t;
+    muse_tune_init(&t);
+    CHECK(t.atst == MUSE_TUNE_ATST_MAX);
+    /* The trim lands after MUSE_TUNE_MEASURE valued exchanges: twice the
+     * mean round trip (40 ms of it is 80 ms, ATST 0x14). */
+    for (int i = 0; i < MUSE_TUNE_MEASURE - 1; i++) {
+        CHECK(muse_tune_observe_value(&t, 40) == -1);
+    }
+    CHECK(muse_tune_observe_value(&t, 40) == 0x14);
+    CHECK(t.atst == 0x14);
+    CHECK(muse_tune_observe_value(&t, 40) == -1);   /* the trim happens once */
+    /* Three answerless in a row step it back a notch; a value resets the run. */
+    CHECK(muse_tune_observe_timeout(&t) == -1);
+    CHECK(muse_tune_observe_timeout(&t) == -1);
+    CHECK(muse_tune_observe_value(&t, 40) == -1);
+    CHECK(muse_tune_observe_timeout(&t) == -1);
+    CHECK(muse_tune_observe_timeout(&t) == -1);
+    CHECK(muse_tune_observe_timeout(&t) == 0x14 + MUSE_TUNE_ATST_STEP);
+    /* The steps stop at the ELM's default: bounded. */
+    for (int i = 0; i < 40; i++) {
+        muse_tune_observe_timeout(&t);
+    }
+    CHECK(t.atst == MUSE_TUNE_ATST_MAX);
+    CHECK(muse_tune_observe_timeout(&t) == -1);
+    /* A slow car trims to nothing: the default stands. */
+    muse_tune_init(&t);
+    for (int i = 0; i < MUSE_TUNE_MEASURE - 1; i++) {
+        CHECK(muse_tune_observe_value(&t, 300) == -1);
+    }
+    CHECK(muse_tune_observe_value(&t, 300) == -1);
+    CHECK(t.atst == MUSE_TUNE_ATST_MAX);
 }
 
 static void test_protocol(void)
@@ -929,7 +1058,6 @@ int main(void)
     test_overflow();
     test_vtec_did();
     test_vtec_engaged();
-    test_next_slot();
     test_coolant_frames();
     test_coolant_parse_cases();
     test_coolant_trigger();
@@ -938,7 +1066,10 @@ int main(void)
     test_extra_frames();
     test_support_parse();
     test_pid_support();
-    test_secondary_cycle();
+    test_batch_parse();
+    test_scheduler();
+    test_link_stats();
+    test_tune();
     test_protocol();
     if (s_fail) {
         fprintf(stderr, "%d checks failed\n", s_fail);

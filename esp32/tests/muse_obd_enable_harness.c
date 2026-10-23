@@ -273,6 +273,8 @@ void muse_state_start_warmup(void) { g_warmup_fired++; }
 
 static struct {
     int disc, disc_cancel, connect, conn_cancel, terminate;   /* calls */
+    int param_updates;            /* ble_gap_update_params calls */
+    uint16_t itvl_min, itvl_max;  /* the last connection parameters asked for */
     uint16_t terminated;          /* the handle of the last terminate */
     bool scanning, connecting;
     bool beat_cancel;             /* the next connection completes as it is cancelled */
@@ -383,6 +385,17 @@ int ble_gap_conn_cancel(void)
     return 0;
 }
 
+int ble_gap_update_params(uint16_t conn, const struct ble_gap_conn_params *params)
+{
+    (void)conn;
+    ble_lock();
+    g_ble.param_updates++;
+    g_ble.itvl_min = params->itvl_min;
+    g_ble.itvl_max = params->itvl_max;
+    ble_unlock();
+    return 0;
+}
+
 int ble_gap_terminate(uint16_t conn, uint8_t reason)
 {
     (void)reason;
@@ -439,16 +452,94 @@ static struct {
     bool filter;                /* ATCRA 18DAF110 is in force */
     int did_reqs;               /* 222612s sent */
     int bad_state_rpm;          /* 010Cs that found the DID's state left behind */
-    char log[512][16];          /* every command, in order */
+    char log[8192][16];         /* every command, in order */
     int logged;
 } g_car = { .dpn = "A6" };
 
 static char g_did_reply[512];
 
+static int hex_byte(const char *p)
+{
+    int v = 0;
+    for (int i = 0; i < 2; i++) {
+        char c = p[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') {
+            v |= c - '0';
+        } else if (c >= 'A' && c <= 'F') {
+            v |= c - 'A' + 10;
+        } else {
+            return -1;
+        }
+    }
+    return v;
+}
+
+/* Does a Mode 01 request (one PID, or a batch) ask for `pid`? */
+static bool mode01_has(const char *cmd, int pid)
+{
+    if (strncmp(cmd, "01", 2)) {
+        return false;
+    }
+    for (int i = 2; cmd[i] && cmd[i + 1]; i += 2) {
+        if (hex_byte(cmd + i) == pid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* One Mode 01 PID's reply line, or NULL when this car doesn't answer it.
+ * What it answers is its scan mask (BE 1F A8 12): 04, 05, 06, 07, 0C, 0D,
+ * 0E, 0F and 11 — not 0B (MAP), and 46 is past the mask's chain bit. */
+static const char *pid_line(int pid)
+{
+    switch (pid) {
+    case 0x00: return "41 00 BE 1F A8 12";   /* no PID 20: the scan stops here */
+    case 0x0C: return "41 0C 1A F8";         /* 1726 rpm */
+    case 0x05: return "41 05 5A";            /* 50 C */
+    case 0x04: return "41 04 66";            /* 40% */
+    case 0x06: return "41 06 80";            /* 0% */
+    case 0x07: return "41 07 80";            /* 0% */
+    case 0x0D: return "41 0D 00";            /* parked */
+    case 0x0E: return "41 0E 80";            /* 0 deg */
+    case 0x0F: return "41 0F 4B";            /* 35 C */
+    case 0x11: return "41 11 00";            /* throttle closed */
+    default: return NULL;
+    }
+}
+
+/* A Mode 01 request, one PID or a batch of up to six: a line per PID this
+ * car answers, in the order asked; NO DATA when it answers none of them. A
+ * single-PID reply is byte for byte what the car always answered. */
+static const char *answer_mode01(const char *cmd)
+{
+    static char reply[256];
+    size_t at = 0;
+    reply[0] = '\0';
+    for (int i = 2; cmd[i] && cmd[i + 1]; i += 2) {
+        const char *line = pid_line(hex_byte(cmd + i));
+        if (!line || at + strlen(line) + 3 >= sizeof(reply)) {
+            continue;
+        }
+        strcpy(reply + at, line);
+        at += strlen(line);
+        reply[at++] = '\r';
+        reply[at] = '\0';
+    }
+    if (!at) {
+        return "NO DATA\r\r>";
+    }
+    reply[at++] = '\r';
+    reply[at++] = '>';
+    reply[at] = '\0';
+    return reply;
+}
+
 /* The adapter's answer to one ELM command. */
 static const char *answer(const char *cmd)
 {
-    if (g_car.logged < 512) {
+    if (g_car.logged < 8192) {
         strcpy(g_car.log[g_car.logged++], cmd);
     }
     if (!strcmp(cmd, "ATZ")) {
@@ -474,12 +565,10 @@ static const char *answer(const char *cmd)
         }
     }
     if (g_car.physical || g_car.filter) {
-        if (!strcmp(cmd, "010C")) g_car.bad_state_rpm++;
+        if (mode01_has(cmd, 0x0C)) g_car.bad_state_rpm++;
         return "NO DATA\r\r>";
     }
-    if (!strcmp(cmd, "0100")) return "41 00 BE 1F A8 12\r\r>";   /* no PID 20: the scan stops here */
-    if (!strcmp(cmd, "010C")) return "41 0C 1A F8\r\r>";         /* 1726 rpm */
-    if (!strcmp(cmd, "0105")) return "41 05 5A\r\r>";            /* 50 C */
+    if (!strncmp(cmd, "01", 2)) return answer_mode01(cmd);
     return "NO DATA\r\r>";
 }
 
@@ -494,6 +583,9 @@ static void deliver_reply(void)
     const char *reply = g_reply;
     uint16_t conn = g_reply_conn;
     g_reply = NULL;
+    if (reply) {
+        g_now += 5;   /* an answer takes a little time, like over the air */
+    }
     ble_unlock();
     if (!reply) {
         return;
@@ -686,6 +778,13 @@ int main(void)
     muse_obd_status_t st = status();
     CHECK(st.enabled && muse_obd_linked(&st), "on and polling, but not linked");
     CHECK(st.rpm == 1726, "rpm %d", st.rpm);
+    /* The connection asked for the fast parameters (7.5-15 ms). */
+    CHECK(ble(&g_ble.param_updates) == 1 && g_ble.itvl_min == 6 && g_ble.itvl_max == 12,
+          "connection parameters: %d updates, %u-%u", ble(&g_ble.param_updates), g_ble.itvl_min, g_ble.itvl_max);
+    /* And the link's numbers are moving: exchanges, a rate, batched readings. */
+    CHECK(st.link_exchanges > 0 && st.link_last_rtt_ms > 0 && st.link_batch_pct > 0 && !st.link_batch_off,
+          "link stats: %u exchanges, rtt %u, batch %d%%", (unsigned)st.link_exchanges,
+          (unsigned)st.link_last_rtt_ms, st.link_batch_pct);
     /* Polling started a trip, and its samples are going in. */
     CHECK(log_count(&g_trip_starts) == 1, "trips started: %d", log_count(&g_trip_starts));
     CHECK(await(has_samples, 1000), "no samples logged");
@@ -784,10 +883,11 @@ int main(void)
 /*
  * DID 0x2612 against the real task: the exchange is state-safe (Mode 01's
  * header and receive filter are back for every RPM request, whatever the DID
- * did), it takes one slot at the start of each secondary rotation, a failed
- * or hung exchange neither drops the link nor upsets RPM, the probe runs once
- * per connection and only on CAN 29-bit, and the VTEC level follows the
- * solenoid: held while fresh "on", down on "off" or stale, never from RPM.
+ * did), the scheduler reads it about once a second between Mode 01 batches,
+ * a failed or hung exchange neither drops the link nor upsets RPM, the probe
+ * runs once per connection and only on CAN 29-bit, and the VTEC level
+ * follows the solenoid: held while fresh "on", down on "off" or stale,
+ * never from RPM.
  */
 
 static int car(int *n)
@@ -814,13 +914,32 @@ static bool sol_is_off(void) { muse_obd_status_t st = status(); return st.vtec_s
 static bool vtec_down(void) { muse_obd_status_t st = status(); return !muse_obd_vtec_on(&st); }
 
 /* The commands since the log was cleared: every 222612 inside the whole
- * choreography, Mode 01's RPM straight after it, and between two DID reads
- * exactly one rotation: 9 RPMs and the 8 secondaries the scan left. */
+ * choreography (the header and filter set before it, Mode 01's state put
+ * back straight after), Mode 01 requests throughout, RPM in most of them,
+ * and, over the whole span (four DID windows at least: every tier's target
+ * expires inside it), each secondary the scan left asked at least once,
+ * coolant among them. A single window is only about a second of link time,
+ * shorter than the slow tier's target, so coverage is judged on the span. */
 static void check_cadence(const char *when)
 {
+    static const int WANT[] = { 0x04, 0x05, 0x06, 0x07, 0x0D, 0x0E, 0x0F, 0x11 };
     ble_lock();
-    int n = g_car.logged, prev = -1, dids = 0;
+    int n = g_car.logged, prev = -1, dids = 0, reqs = 0, rpm_reqs = 0;
+    bool seen[256] = { 0 };
     for (int i = 0; i < n; i++) {
+        if (!strncmp(g_car.log[i], "01", 2)) {
+            reqs++;
+            bool has_rpm = false;
+            for (int j = 2; g_car.log[i][j] && g_car.log[i][j + 1]; j += 2) {
+                int pid = hex_byte(g_car.log[i] + j);
+                if (pid == 0x0C) {
+                    has_rpm = true;
+                } else if (pid > 0) {
+                    seen[pid] = true;
+                }
+            }
+            rpm_reqs += has_rpm;
+        }
         if (strcmp(g_car.log[i], "222612")) {
             continue;
         }
@@ -829,25 +948,25 @@ static void check_cadence(const char *when)
             CHECK(!strcmp(g_car.log[i - 2], "ATSHDA10F1") && !strcmp(g_car.log[i - 1], "ATCRA18DAF110"),
                   "%s: request %d without its header and filter", when, i);
         }
-        if (i + 3 < n) {
-            CHECK(!strcmp(g_car.log[i + 1], "ATAR") && !strcmp(g_car.log[i + 2], "ATSHDB33F1")
-                  && !strcmp(g_car.log[i + 3], "010C"), "%s: request %d not put back before RPM", when, i);
+        if (i + 2 < n) {
+            CHECK(!strcmp(g_car.log[i + 1], "ATAR") && !strcmp(g_car.log[i + 2], "ATSHDB33F1"),
+                  "%s: request %d not put back", when, i);
         }
         if (prev >= 0) {
-            int rpm = 0, sec = 0, coolant = 0;
+            int wreqs = 0;
             for (int k = prev + 3; k < i - 2; k++) {
-                rpm += !strcmp(g_car.log[k], "010C");
-                sec += !strncmp(g_car.log[k], "01", 2) && strcmp(g_car.log[k], "010C");
-                coolant += !strcmp(g_car.log[k], "0105");
+                wreqs += !strncmp(g_car.log[k], "01", 2);
             }
-            CHECK(rpm == 9 && sec == 8 && coolant == 1, "%s: rotation %d..%d has %d RPM, %d secondaries", when,
-                  prev, i, rpm, sec);
-            CHECK(!strcmp(g_car.log[prev + 4], "0105"), "%s: coolant isn't the DID's next slot", when);
+            CHECK(wreqs >= 4, "%s: window %d..%d has %d Mode 01 requests", when, prev, i, wreqs);
         }
         prev = i;
     }
     ble_unlock();
     CHECK(dids >= 2, "%s: only %d DID reads", when, dids);
+    CHECK(reqs >= 8 && rpm_reqs >= reqs / 2, "%s: %d Mode 01 requests, %d with RPM", when, reqs, rpm_reqs);
+    for (size_t w = 0; w < sizeof(WANT) / sizeof(WANT[0]); w++) {
+        CHECK(seen[WANT[w]], "%s: the span never asked PID %02X", when, WANT[w]);
+    }
 }
 
 static void clear_log(void)

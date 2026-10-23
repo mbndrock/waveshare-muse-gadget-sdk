@@ -90,8 +90,9 @@ class MuseObdDidContractTest(unittest.TestCase):
         header = (MUSE / "muse_obd_elm.h").read_text()
         self.assertIn("#define MUSE_VTEC_FRESH_MS 3000u", header)
         self.assertIn("#define MUSE_OBD_CARD_STALE_MS 3000u", (MUSE / "muse_obd_cards.h").read_text())
-        # RPM polling itself is untouched: still every other request.
-        self.assertIn(": RPM;", poll)
+        # RPM polling itself is untouched: the scheduler keeps it coming
+        # and its single-PID path still lands in set_rpm.
+        self.assertIn("muse_sched_pick(&s_sched, now_ms(), &req);", poll)
         self.assertIn("set_rpm(locked, rpm);", poll)
 
     def test_the_level_is_fed_every_chrome_tick(self):
@@ -127,7 +128,12 @@ class MuseObdDidContractTest(unittest.TestCase):
         # Every command the task sends: ELM setup, Mode 01 PIDs, and the one
         # 0x22 read. Nothing that writes to, resets or unlocks the car.
         sent = set(re.findall(r'elm_cmd\("([^"]+)"', obd))
-        self.assertEqual(sent, {"ATDPN", "ATAR", "ATSHDB33F1", "ATSHDA10F1", "ATCRA18DAF110"})
+        self.assertEqual(sent, {"ATDPN", "ATAR", "ATSHDB33F1", "ATSHDA10F1", "ATCRA18DAF110", "ATAT2"})
+        # ATST's byte varies, so the command is built into a buffer by
+        # apply_atst(), never sent as a literal; the batch's Mode 01 string
+        # is built the same way in the poll loop.
+        self.assertNotIn('elm_cmd("ATST', obd)
+        self.assertIn("static void apply_atst(int byte)", obd)
         init = re.search(r'static const char \*const CMDS\[\] = \{([^}]*)\}', obd).group(1)
         self.assertEqual(re.findall(r'"([^"]+)"', init), ["ATZ", "ATE0", "ATL0", "ATH0", "ATS0", "ATSP0"])
         for line in obd.splitlines():
@@ -149,7 +155,9 @@ class MuseObdDidContractTest(unittest.TestCase):
         down = function_body(obd, "static void set_link_down(void)")
         for field in ("vtec_sol", "vtec_psw", "did_2612_b23"):
             self.assertIn(f"s_status.{field}.valid = false;", down)
-        self.assertIn("muse_elm_next_slot(&s_support, &s_cursor, s_did == DID_YES)",
+        # The poll loop's scheduler starts from the probe's answer (and
+        # re-reads it if the protocol only turned up late).
+        self.assertIn("muse_sched_init(&s_sched, &s_support, s_did == DID_YES, now_ms());",
                       function_body(obd, "static bool poll_rpm(void)"))
 
     def test_obd_read_and_console_carry_the_did_fields(self):

@@ -106,30 +106,40 @@ class LinkObdTest(unittest.TestCase):
 
     def test_warmup_trigger_is_fed_and_reset(self):
         source = (ROOT / "components/muse/muse_obd.c").read_text()
-        start = source.index("static void got_coolant(void)")
+        # Both poll paths (the single PID 05 and a batch carrying it) land
+        # in coolant_reading(), which feeds the two triggers.
+        start = source.index("static void coolant_reading(int coolant_c)")
         body = source[start:source.index("\n}\n", start)]
         self.assertIn("muse_warmup_update(&s_warmup, coolant_c)", body)
         start = source.index("static void drop(void)")
         body = source[start:source.index("\n}\n", start)]
         self.assertIn("muse_warmup_init(&s_warmup);", body)
 
-    def test_poll_cycle_alternates_rpm_with_the_secondaries(self):
-        """OBD-CARDS-TASK: RPM, secondary, RPM, ...; coolant still feeds the
-        triggers through got_coolant(). OBD-VTEC-DID-TASK: the secondary
-        slots start each rotation with the DID read, and nothing fires on
-        RPM any more."""
+    def test_poll_cycle_is_the_schedulers(self):
+        """OBD-PIPELINE-TASK: the poll loop is response-driven. The scheduler
+        picks each request (RPM the standing filler, the DID on its ~1 s
+        floor, the rest in freshness tiers, up to six PIDs per Mode 01
+        request); nothing in the poll path waits, a refused batch latches
+        batching off, and coolant still feeds the triggers through
+        coolant_reading(). The fixed RPM/secondary rotation and its cursor
+        are gone, and nothing fires on RPM."""
         source = (ROOT / "components/muse/muse_obd.c").read_text()
         self.assertNotIn("COOLANT_EVERY", source)
+        self.assertNotIn("muse_elm_next_slot", source)
+        self.assertNotIn("s_cursor", source)
         body = function_body(source, "static bool poll_rpm(void)")
-        self.assertIn("n % 2 ? muse_elm_next_slot(&s_support, &s_cursor, s_did == DID_YES) : RPM", body)
-        self.assertIn("if (pid == 0x05) {\n            got_coolant();", body)
-        self.assertIn("got_extra(pid);", body)
+        self.assertIn("muse_sched_init(&s_sched, &s_support, s_did == DID_YES, now_ms());", body)
+        self.assertIn("muse_sched_pick(&s_sched, now_ms(), &req);", body)
+        self.assertIn("muse_elm_parse_batch(s_rx.resp, req.pids, req.n, values, got);", body)
+        self.assertIn("muse_sched_latch_batch_off(&s_sched);", body)
+        self.assertIn("got = got_coolant();", body)
+        self.assertIn("got = got_extra(pid);", body)
         self.assertNotIn("muse_vtec_update", body)
-        self.assertIn("vTaskDelay(pdMS_TO_TICKS(NO_RPM_PAUSE_MS));", body)
-        body = function_body(source, "static void got_coolant(void)")
+        self.assertNotIn("vTaskDelay", body)
+        body = function_body(source, "static void coolant_reading(int coolant_c)")
         self.assertIn("muse_coolant_update(&s_coolant, coolant_c, s_rpm, now_ms())", body)
         elm = (ROOT / "components/muse/muse_obd_elm.c").read_text()
-        self.assertIn("0x05, 0x0F, 0x0E, 0x0B, 0x04, 0x11, 0x0D, 0x06, 0x07, 0x46,", elm)
+        self.assertIn("{ 0x0C, 0, 0 },", elm)   # the schedule's RPM row: target 0
 
     def test_support_scan_and_protocol_run_before_polling(self):
         source = (ROOT / "components/muse/muse_obd.c").read_text()
