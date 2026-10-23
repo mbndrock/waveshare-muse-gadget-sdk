@@ -54,3 +54,54 @@ No other enhanced DIDs (2611 AFR, 2662 knock/VTC, 2663 misfires are a future rou
 ## Results (Claude fills in)
 
 Commits, files touched, test counts, the AT choreography chosen for state safety, the exact cadence as built, deviations, and the one line Derek needs: after his next flash and drive, obd.read's `did_2612` field is the verdict on whether the 2008 answers.
+
+### Results
+
+**The one line for Derek:** after your next flash and drive, `obd.read`'s `did_2612` is the verdict on whether the 2008 answers DID 0x2612. `true` means the Engine card's VTEC line will read ON/OFF and the reaction works off the solenoid. `false` means it doesn't answer at DA10, and the reaction will never show, by design.
+
+- **The log module existed when I got here.** It was built and committed earlier in this session (OBD-LOG-TASK), so Part 3 extends it.
+- **Commits on obd-vtec-reaction:**
+  - 5ee5b5b OBD: VTEC from the solenoid (Honda DID 0x2612), held while it's on; RPM fire path deleted
+  - 5b54f48 Jollybot: VTEC animates on the clock, so the held pose keeps buzzing (its own commit, under Jollybot's notice)
+  - c874282 Link and cards: DID 0x2612 fields in obd.read, VTEC status on the Engine card
+  - 30f449c Tests: DID 0x2612 on real S2000 frames, exchange safety, the held pose
+  - the commit adding these Results and the README / CLAUDE.md docs
+- **Files touched:**
+  - `esp32/components/muse/`: `muse_obd_elm.[ch]`, `muse_obd.[ch]`, `muse_state.[ch]`, `muse_pixel.h`, `muse_ui.c`, `muse_input.c`, `muse_obd_cards.c`, `muse_obd_log.[ch]`, `muse_obd_log_store.[ch]`.
+  - `esp32/avatar/muse_pixel.c` (one line).
+  - `esp32/main/app.c`, `esp32/main/noise_control.cpp`.
+  - Tests: new `test_muse_obd_did.py`, `vtec_did_frames.h`, `muse_state_vtec_harness.c` and `state_fakes/`; changed `muse_obd_elm_harness.c`, `muse_obd_enable_harness.c` (now also built with `-DMUSE_OBD_HARNESS_DID`), `muse_obd_log_harness.c`, `muse_pixel_vtec_harness.c`, `test_link_obd.py`, `test_muse_obd_elm.py`, `test_muse_obd_log.py`.
+  - Docs: `README.md`, `CLAUDE.md`, this file.
+- **Tests:** 706 tests, 0 failures, the 6 known cJSON-environment errors, 10 skipped. That's the post-log baseline of 695 / 0 / 6 / 10 plus 11 new. Three `test_link_obd.py` contracts encoded the RPM trigger (`muse_vtec_update` in `poll_rpm`, `muse_obd_fire_vtec`) and now assert the new contract. Two harness checks were mutation-tested:
+  - Dropping `ATAR` from the restore makes the exchange-safety scenario fail: RPM goes missing, and 21 Mode 01 requests hit the DID's state.
+  - Putting VTEC's animation back on progress makes the held-renderer check fail ("0 moves, 149 holds").
+  - As in the log round, there was no ESP-IDF here. I type-checked the touched firmware files against stand-in IDF/LVGL/cJSON headers with `-Wall -Wextra -Werror -Wformat-truncation=2`, and the Mac build is the gate. The only new `snprintf` is in the test helper; the firmware's DID logging uses `ESP_LOG`.
+- **Real frames:** the research report quotes only part of one reply. I fetched the fixture it cites, OBDb `Honda-S2000/tests/test_cases/2007/commands/DA10.10.222612.yaml`, and took three complete 9-frame replies:
+  - case 15: the report's exact "VTEC on" sample, `00 1E 00 C2 5F 44 19...`, byte 21 = 0x01;
+  - case 1: another "on";
+  - case 0: an "off", byte 21 = 0x02.
+  - All three decode as the report says, with byte 23 = 1 in both "on" samples. The frames are in `tests/vtec_did_frames.h`. A helper renders them the way the ELM prints them with `ATH0` and CAN formatting (`039`, `0:622612FFFFC0`, `1:...`), so the parser sees exactly what the adapter would send. `MUSE_ELM_RESP_MAX` went from 160 to 320: the 57-byte reply is ~155 characters, ~190 with spaces.
+- **AT choreography (state safety):** every exchange is `ATSHDA10F1` -> `ATCRA18DAF110` -> `222612`, then always `did_restore()`: `ATAR` (automatic receive, no CRA filter) and `ATSHDB33F1` (the functional 18 DB 33 F1 header, the ELM's own default on protocol 7, which Mode 01 used before because nothing ever set a header).
+  - The restore runs whatever happened before it: setup failed, a refusal, NO DATA, garbage, or a request that never got its prompt (1.5 s timeout).
+  - It's tried twice, because a late reply to a hung request can take the first try's prompt. Each step must see `OK`.
+  - If both tries fail, `did_read` reports the link lost, `poll_rpm` returns, and `drop()` plus the normal reconnect and ELM init take over. That's the existing machinery; there's no second recovery path.
+  - A garbled or hung read mid-connection does not drop the link. It leaves the last reading to age out (never a stale "on") and keeps the DID marked supported. The harness checks no drop, RPM still 1726, and no Mode 01 request sees the DID's state.
+  - Nothing is written to the car. A test pins every command the task can send to the ELM setup set, the Mode 01 PIDs and `222612`.
+- **Probe:** once per connection, only when this connection's ATDPN said 7. It runs right after the support scan and `read_protocol()`, before polling starts, so the trip header knows. If the protocol only turned up at the first RPM reply (engine off at init), it runs after those retries. Refused (`7F 22 xx`), NO DATA, no prompt or garbage means `DID_NO` for the connection; the harness checks there is never a second `222612`. The probe is reset in `drop()`. `did_2612` is kept across drops, like the protocol, and replaced by the next probe. The live bits clear on drop.
+- **Cadence as built:** a rotation is the DID read followed by `MUSE_ELM_SECONDARY` less unsupported PIDs (`muse_elm_next_slot()`), so the poll sequence is `010C, [DID], 010C, 0105, 010C, 010F, ...`. With the S2000-style scan in the harness (8 secondaries) one rotation is 9 RPM + 8 PIDs + 1 DID slot, checked command by command. The DID slot costs 5 ELM round trips (2 setup, the request, 2 restore) against 1 for a PID.
+  - Freshness caveat: the DID is read once per rotation, ~1.5-2.5 s apart at typical BLE round trips. That's under the 3 s staleness rule, but not by a wide margin. If Derek's adapter is slow enough that a rotation takes over 3 s, the held pose would drop to the settle between readings and restart on the next one. `vtec_sol_age_ms` in `obd.read` shows the real spacing.
+- **Trigger, solenoid only and held:** `muse_obd_vtec_on(st)` is `enabled && muse_vtec_engaged(valid, sol, age <= 3000)`, and RPM isn't an input. `muse_ui.c` calls `muse_state_set_vtec()` with it every 0.25 s chrome tick.
+  - `muse_state.c` follows the tickle pattern: progress runs in, waits at `MUSE_VTEC_HOLD` (0.5: banner up, buzzing) for as long as the level stays on, and repeated "on" ticks never restart it.
+  - On the tick the level goes off (a fresh "off", or the reading going stale), the hold ends and the short settle plays from `MUSE_VTEC_SETTLE` (0.82 -> 1, ~0.5 s). I read "clearing within one tick" as the hold ending on that tick, with the existing wind-down after it as tickle does, rather than an abrupt cut.
+  - There's no cooldown: off then on starts afresh on the next tick.
+  - To keep the hold animated, Jollybot's `RE_VTEC` takes `ts` from `pose.t`, as `RE_TICKLE` does, instead of from progress. The renderer harness holds progress at 0.5 for 6 s and checks he keeps buzzing, frames keep changing, and the banner stays whole. No visual changed otherwise.
+  - Idle only (another mode hides it, and it's back after). Starting pokes like the old fire, holding doesn't keep poking, and a poke never wakes the screen. Sleep clears it, and a solenoid still on when the screen wakes starts it again.
+  - Momentary reactions: the coolant warning shows over a held VTEC (the renderer ranks coolant first), and VTEC resumes when the warning ends; the state harness checks this. The warm-up ranks below VTEC in the existing renderer, so while VTEC is held the warm-up doesn't visibly interrupt it, and its 3 s run out underneath. Making it interrupt would have meant changing the renderer's priority order, which the spec rules out ("no change to the reaction's visuals").
+  - RPM fire path deleted: `muse_vtec_trigger_t`, `muse_vtec_init/disarm/update`, `MUSE_VTEC_ARM_RPM/FIRE_RPM/COOLDOWN_MS`, `fire(rpm)` and `muse_obd_fire_vtec()` are gone, and a test scans the firmware for all of them. RPM polling is unchanged.
+- **obd.read / >obd:** `vtec_sol`, `vtec_sol_age_ms`, `vtec_psw`, `vtec_psw_age_ms` (null without a reading), `did_2612` (bool), `did_2612_b23` (raw byte or null).
+- **Bench:** `>vtec` is **removed**; it only exercised the deleted RPM path. `>vtecsol 1` / `>vtecsol 0` set a solenoid reading that stays fresh until `>vtecsol 0`/`1`, the car's next real reading, or a dropped link. It drives the same input as the car (snapshot -> `muse_obd_vtec_on` -> the held pose, the card and `obd.read`). It answers `@obd.off` while OBD is off; other arguments get `@vtecsol.error`.
+- **Engine card (Part 4):** the VTEC status line sits inside the RPM hero cell, directly under the RPM bar: `VTEC` (16, dim) then the word (20). It reads ON in the accent for a fresh "on", OFF dim for a fresh "off", and `--` dim when there's no fresh reading (DID unsupported, not yet read, or older than 3 s). The spec asks for both "dims with staleness" and "-- when no fresh value exists"; I folded staleness into `--`, which is also when the trigger lets go. It updates only on change, and the not-polling takeover still replaces the whole card. `fit_font()` reserves the line's height when sizing the RPM value.
+- **Trip log (Part 3):** two trailing columns, `vtec_sol,vtec_psw` (1/0, empty when unknown), from the same snapshot. The header gains `# did_2612=yes` or `# did_2612=no` after this connection's probe, and no line when the protocol never said 7.
+- **Deviations:**
+  - A reply of any length other than 57 counts as garbage: unsupported for the connection, with the raw reply in the warning log. This follows "validate the total length". If the 2008 answers with a different block size, `did_2612` will read false and the console log line shows what came back.
+  - The `ATCRA`/`ATSH` commands are sent without spaces (`ATCRA18DAF110`) to fit `elm_cmd`'s 16-byte line; the ELM accepts both forms.
