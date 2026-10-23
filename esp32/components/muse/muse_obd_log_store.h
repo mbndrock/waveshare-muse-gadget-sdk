@@ -78,6 +78,13 @@ typedef enum {
     MUSE_LOG_PEDAL_E,         /* accelerator pedal E, % */
     MUSE_LOG_MODULE_V,        /* control module voltage, in mV (written "13.845") */
     MUSE_LOG_BARO,            /* barometric pressure, kPa */
+    /* OBD-DID-CARDS-TASK: appended the same way. */
+    MUSE_LOG_MISFIRE_1,       /* DID 0x2663's misfire count, cylinder 1 */
+    MUSE_LOG_MISFIRE_2,
+    MUSE_LOG_MISFIRE_3,
+    MUSE_LOG_MISFIRE_4,
+    MUSE_LOG_AC_CLUTCH,       /* DID 0x2610's A/C clutch, 1/0 */
+    MUSE_LOG_GENERATOR,       /* and its generator duty, % */
     MUSE_LOG_CHANNELS,
 } muse_log_channel_t;
 

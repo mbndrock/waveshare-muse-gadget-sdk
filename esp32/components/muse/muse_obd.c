@@ -123,10 +123,15 @@ static bool s_tuned;                  /* this connection has had its ATAT2 */
 static uint32_t s_elm_rtt_ms;         /* the last elm_cmd exchange's round trip */
 static bool s_have_protocol;          /* this connection has read ATDPN */
 static int s_protocol = -1;           /* and found this protocol (7: CAN 29/500) */
-/* DID 0x2612 on this connection: not asked yet, answered, or not (refused,
- * silent, garbled, or not a CAN 29-bit link: then never asked again). */
-static enum { DID_UNPROBED, DID_YES, DID_NO } s_did;
+/* Each DID (MUSE_DID_INFO) on this connection: not asked yet, answered, or
+ * not (refused, silent, garbled, or not a CAN 29-bit link: then never asked
+ * again on it). */
+typedef enum { DID_UNPROBED, DID_YES, DID_NO } did_state_t;
+static did_state_t s_did[MUSE_DIDS];
 static const uint8_t LOG_DID[] = { MUSE_LOG_DID_UNKNOWN, MUSE_LOG_DID_YES, MUSE_LOG_DID_NO };
+static muse_misfire_trigger_t s_misfire;   /* this task's and the bench's: under s_status_lock */
+
+_Static_assert(MUSE_OBD_MISFIRE_CYLS == MUSE_MISFIRE_CYLS, "the snapshot holds every cylinder 0x2663 counts");
 
 /* muse_obd_status()'s snapshot: written by this task, read from any task. */
 static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -134,6 +139,7 @@ static muse_obd_status_t s_status = { .state = "off", .enabled = true, .protocol
 static uint32_t s_rpm_at, s_coolant_at;   /* now_ms() of each reading */
 static uint32_t s_extra_at[MUSE_OBD_EXTRAS];
 static uint32_t s_vtec_at;                /* now_ms() of the last DID 0x2612 reading */
+static uint32_t s_2610_at, s_2663_at;     /* and of the last 0x2610 and 0x2663 ones */
 static bool s_vtec_bench;                 /* ">vtecsol": the reading is the bench's, always fresh */
 
 const muse_obd_extra_info_t MUSE_OBD_EXTRA[MUSE_OBD_EXTRAS] = {
@@ -439,6 +445,12 @@ static void set_link_down(void)
     s_status.vtec_psw.valid = false;
     s_status.did_2612_b23.valid = false;
     s_vtec_bench = false;
+    for (int c = 0; c < MUSE_OBD_MISFIRE_CYLS; c++) {
+        s_status.misfire[c].valid = false;
+    }
+    s_status.misfire_rose = 0;
+    s_status.ac_clutch.valid = false;
+    s_status.generator_pct.valid = false;
     /* The link's numbers were that connection's; the next one starts over. */
     s_status.link_exchanges = 0;
     s_status.link_timeouts = 0;
@@ -462,10 +474,44 @@ static void set_vtec(const muse_vtec_did_t *v, bool bench)
     taskEXIT_CRITICAL(&s_status_lock);
 }
 
-static void set_did_supported(bool yes)
+/* A DID 0x2610 reading, into the snapshot. */
+static void set_2610(const muse_did_2610_t *v)
+{
+    uint32_t at = now_ms();
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.ac_clutch = (muse_obd_reading_t){ .valid = true, .value = v->ac };
+    s_status.generator_pct = (muse_obd_reading_t){ .valid = true, .value = v->generator_pct };
+    s_2610_at = at;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+/* A DID 0x2663 reading: into the snapshot and through the misfire trigger,
+ * whose rose bits the card shows. True when the trigger fires. */
+static bool set_2663(const muse_did_2663_t *v, int rpm)
+{
+    uint32_t at = now_ms();
+    taskENTER_CRITICAL(&s_status_lock);
+    for (int c = 0; c < MUSE_OBD_MISFIRE_CYLS; c++) {
+        s_status.misfire[c] = (muse_obd_reading_t){ .valid = true, .value = v->count[c] };
+    }
+    bool fire = muse_misfire_update(&s_misfire, v->count, rpm, at);
+    s_status.misfire_rose = s_misfire.rose;
+    s_2663_at = at;
+    taskEXIT_CRITICAL(&s_status_lock);
+    return fire;
+}
+
+/* Whether the engine ECU answers a DID; like the protocol it stays after
+ * the link drops. */
+static void set_did_supported(muse_did_t d, bool yes)
 {
     taskENTER_CRITICAL(&s_status_lock);
-    s_status.did_2612 = yes;
+    switch (d) {
+    case MUSE_DID_2612: s_status.did_2612 = yes; break;
+    case MUSE_DID_2610: s_status.did_2610 = yes; break;
+    case MUSE_DID_2663: s_status.did_2663 = yes; break;
+    default: break;
+    }
     taskEXIT_CRITICAL(&s_status_lock);
 }
 
@@ -498,12 +544,14 @@ void muse_obd_status(muse_obd_status_t *out)
         return;
     }
     uint32_t now = now_ms();
-    uint32_t rpm_at, coolant_at, extra_at[MUSE_OBD_EXTRAS], vtec_at;
+    uint32_t rpm_at, coolant_at, extra_at[MUSE_OBD_EXTRAS], vtec_at, at_2610, at_2663;
     bool bench;
     muse_link_stats_t link;
     taskENTER_CRITICAL(&s_status_lock);
     *out = s_status;
     vtec_at = s_vtec_at;
+    at_2610 = s_2610_at;
+    at_2663 = s_2663_at;
     bench = s_vtec_bench;
     rpm_at = s_rpm_at;
     coolant_at = s_coolant_at;
@@ -535,6 +583,11 @@ void muse_obd_status(muse_obd_status_t *out)
     out->vtec_sol.age_ms = out->vtec_sol.valid ? vtec_age : UINT32_MAX;
     out->vtec_psw.age_ms = out->vtec_psw.valid ? vtec_age : UINT32_MAX;
     out->did_2612_b23.age_ms = out->did_2612_b23.valid ? vtec_age : UINT32_MAX;
+    for (int c = 0; c < MUSE_OBD_MISFIRE_CYLS; c++) {
+        out->misfire[c].age_ms = out->misfire[c].valid ? now - at_2663 : UINT32_MAX;
+    }
+    out->ac_clutch.age_ms = out->ac_clutch.valid ? now - at_2610 : UINT32_MAX;
+    out->generator_pct.age_ms = out->generator_pct.valid ? now - at_2610 : UINT32_MAX;
 }
 
 bool muse_obd_vtec_on(const muse_obd_status_t *st)
@@ -854,6 +907,46 @@ void muse_obd_fire_warmup(void)
     }
 }
 
+void muse_obd_fire_misfire(void)
+{
+    if (s_enabled) {
+        muse_state_start_coolant();   /* the warning family's pose and plumbing */
+    }
+}
+
+int muse_obd_bench_misfire(void)
+{
+    if (!s_enabled) {
+        return -1;
+    }
+    uint32_t now = now_ms();
+    taskENTER_CRITICAL(&s_status_lock);
+    /* The car's baseline goes back afterwards: the injection is the
+     * trigger's decision (cooldown and all), never a count the next real
+     * read is measured against. */
+    muse_misfire_trigger_t real = s_misfire;
+    if (!s_misfire.have) {
+        static const uint16_t ZERO[MUSE_MISFIRE_CYLS] = { 0 };
+        muse_misfire_update(&s_misfire, ZERO, MUSE_COOLANT_RUNNING_RPM, now);   /* a baseline to rise from */
+    }
+    if (s_misfire.base[0] == UINT16_MAX) {
+        s_misfire.base[0] = UINT16_MAX - 1;   /* at the top: rise from one below it */
+    }
+    uint16_t up[MUSE_MISFIRE_CYLS];
+    memcpy(up, s_misfire.base, sizeof(up));
+    up[0]++;
+    bool fire = muse_misfire_update(&s_misfire, up, MUSE_COOLANT_RUNNING_RPM, now);
+    s_misfire.have = real.have;
+    s_misfire.rose = real.rose;
+    memcpy(s_misfire.base, real.base, sizeof(real.base));
+    taskEXIT_CRITICAL(&s_status_lock);
+    if (fire) {
+        ESP_LOGW(TAG, "misfire (bench)");
+        muse_obd_fire_misfire();
+    }
+    return fire ? 1 : 0;
+}
+
 static void fire_coolant(int coolant_c)
 {
     ESP_LOGW(TAG, "coolant hot: %d C at %d rpm", coolant_c, s_rpm);
@@ -928,60 +1021,122 @@ static bool did_restore(void)
     return false;
 }
 
+/* One DID's reading, whichever it was. */
+typedef union {
+    muse_vtec_did_t vtec;     /* 0x2612 */
+    muse_did_2610_t ac;       /* 0x2610 */
+    muse_did_2663_t misfire;  /* 0x2663 */
+} did_reading_t;
+
+/* The parse result that means DID d read. */
+static const muse_elm_result_t DID_OK[MUSE_DIDS] = {
+    [MUSE_DID_2612] = MUSE_ELM_VTEC_DID,
+    [MUSE_DID_2610] = MUSE_ELM_DID_2610,
+    [MUSE_DID_2663] = MUSE_ELM_DID_2663,
+};
+
 /*
- * One read of DID 0x2612, state-safe: the header and the receive filter
- * point at the engine ECU (ATSH DA10F1, ATCRA 18DAF110) for the request
- * only, and did_restore() puts Mode 01's back afterwards, whatever happened
- * in between. Read only: service 0x22 in the default session, nothing is
- * written to the car. *link is false once the link is gone (or the ELM's
- * state couldn't be put back, so it must be dropped and initialised again).
+ * One read of DID d (MUSE_DID_INFO), state-safe: the header and the receive
+ * filter point at the engine ECU (ATSH DA10F1, ATCRA 18DAF110) for the
+ * request only, and did_restore() puts Mode 01's back afterwards, whatever
+ * happened in between. Read only: service 0x22 in the default session,
+ * nothing is written to the car. One DID at a time, and never inside a Mode
+ * 01 exchange: the poll loop has one request outstanding, and this is it.
+ * *link is false once the link is gone (or the ELM's state couldn't be put
+ * back, so it must be dropped and initialised again).
  */
-static muse_elm_result_t did_read(muse_vtec_did_t *out, bool *link)
+static muse_elm_result_t did_read(muse_did_t d, did_reading_t *out, bool *link)
 {
     muse_elm_result_t res = MUSE_ELM_NONE;
     if (elm_cmd("ATSHDA10F1", CMD_MS) && elm_ok() && elm_cmd("ATCRA18DAF110", CMD_MS) && elm_ok()
-        && elm_cmd(MUSE_VTEC_DID_REQ, CMD_MS)) {
-        res = muse_elm_parse_vtec_did(s_rx.resp, out);
+        && elm_cmd(MUSE_DID_INFO[d].req, CMD_MS)) {
+        switch (d) {
+        case MUSE_DID_2612: res = muse_elm_parse_vtec_did(s_rx.resp, &out->vtec); break;
+        case MUSE_DID_2610: res = muse_elm_parse_did_2610(s_rx.resp, &out->ac); break;
+        case MUSE_DID_2663: res = muse_elm_parse_did_2663(s_rx.resp, &out->misfire); break;
+        default: break;
+        }
         if (res == MUSE_ELM_NONE) {
-            ESP_LOGW(TAG, "DID 2612: unexpected reply: %s", s_rx.resp);
+            ESP_LOGW(TAG, "DID %04X: unexpected reply: %s", MUSE_DID_INFO[d].did, s_rx.resp);
         }
     }
     *link = did_restore();
     return res;
 }
 
-/* A good DID 0x2612 reading: the VTEC flags into the snapshot. */
-static void got_did(const muse_vtec_did_t *v)
+/* A good DID reading: into the snapshot. A 0x2663 one goes through the
+ * misfire trigger too (the latest RPM says whether the engine is running). */
+static void got_did(muse_did_t d, const did_reading_t *v)
 {
-    ESP_LOGD(TAG, "VTEC solenoid %s, pressure switch %s, byte 23 %02X", v->sol ? "on" : "off",
-             v->psw ? "on" : "off", v->b23);
-    set_vtec(v, false);
+    switch (d) {
+    case MUSE_DID_2612:
+        ESP_LOGD(TAG, "VTEC solenoid %s, pressure switch %s, byte 23 %02X", v->vtec.sol ? "on" : "off",
+                 v->vtec.psw ? "on" : "off", v->vtec.b23);
+        set_vtec(&v->vtec, false);
+        break;
+    case MUSE_DID_2610:
+        ESP_LOGD(TAG, "A/C clutch %s, generator %d%%", v->ac.ac ? "on" : "off", v->ac.generator_pct);
+        set_2610(&v->ac);
+        break;
+    case MUSE_DID_2663:
+        ESP_LOGD(TAG, "misfires %u %u %u %u", v->misfire.count[0], v->misfire.count[1], v->misfire.count[2],
+                 v->misfire.count[3]);
+        if (s_enabled && s_conn != BLE_HS_CONN_HANDLE_NONE && set_2663(&v->misfire, s_rpm)) {
+            ESP_LOGW(TAG, "misfire: %u %u %u %u at %d rpm", v->misfire.count[0], v->misfire.count[1],
+                     v->misfire.count[2], v->misfire.count[3], s_rpm);
+            muse_obd_fire_misfire();
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* The DIDs this connection reads, as muse_sched_init() takes them. */
+static unsigned did_mask(void)
+{
+    unsigned mask = 0;
+    for (int d = 0; d < MUSE_DIDS; d++) {
+        mask |= s_did[d] == DID_YES ? 1u << d : 0;
+    }
+    return mask;
 }
 
 /*
  * Once per connection, after the support scan, on a CAN 29-bit link only:
- * does the engine ECU answer DID 0x2612? Refused, silent or garbled, it is
- * never asked again on this connection. Nothing on any other protocol, and
- * nothing until the protocol is known. False only when the link went down.
+ * does the engine ECU answer each DID (0x2612, then 0x2610 and 0x2663)?
+ * One exchange at a time, each with did_read()'s choreography. Refused,
+ * silent or garbled, a DID is never asked again on this connection. Nothing
+ * on any other protocol, and nothing until the protocol is known. False
+ * only when the link went down.
  */
 static bool probe_did(void)
 {
-    if (s_did != DID_UNPROBED || s_protocol != 7) {
+    if (s_protocol != 7) {
         return true;
     }
-    muse_vtec_did_t v;
-    bool link;
-    muse_elm_result_t res = did_read(&v, &link);
-    s_did = res == MUSE_ELM_VTEC_DID ? DID_YES : DID_NO;
-    set_did_supported(s_did == DID_YES);
-    if (s_did == DID_YES) {
-        ESP_LOGI(TAG, "DID 2612 answers: reading the VTEC solenoid");
-        got_did(&v);
-    } else {
-        ESP_LOGI(TAG, "DID 2612 not answered (%s): no VTEC reading on this connection",
-                 res == MUSE_ELM_NEGATIVE ? "refused" : res == MUSE_ELM_NO_DATA ? "no data" : "no reply");
+    for (int i = 0; i < MUSE_DIDS; i++) {
+        muse_did_t d = (muse_did_t)i;
+        if (s_did[d] != DID_UNPROBED) {
+            continue;
+        }
+        did_reading_t v;
+        bool link;
+        muse_elm_result_t res = did_read(d, &v, &link);
+        s_did[d] = res == DID_OK[d] ? DID_YES : DID_NO;
+        set_did_supported(d, s_did[d] == DID_YES);
+        if (s_did[d] == DID_YES) {
+            ESP_LOGI(TAG, "DID %04X answers: reading it", MUSE_DID_INFO[d].did);
+            got_did(d, &v);
+        } else {
+            ESP_LOGI(TAG, "DID %04X not answered (%s): not read on this connection", MUSE_DID_INFO[d].did,
+                     res == MUSE_ELM_NEGATIVE ? "refused" : res == MUSE_ELM_NO_DATA ? "no data" : "no reply");
+        }
+        if (!link) {
+            return false;
+        }
     }
-    return link;
+    return true;
 }
 
 /* A coolant reading, from a single-PID reply or out of a batch: into the
@@ -1091,7 +1246,7 @@ static void log_sample(void)
 static bool poll_rpm(void)
 {
     bool answered = false, locked = false, retried = false;
-    muse_sched_init(&s_sched, &s_support, s_did == DID_YES, now_ms());
+    muse_sched_init(&s_sched, &s_support, did_mask(), now_ms());
     taskENTER_CRITICAL(&s_status_lock);
     muse_link_stats_reset(&s_link);
     taskEXIT_CRITICAL(&s_status_lock);
@@ -1099,14 +1254,15 @@ static bool poll_rpm(void)
         muse_sched_req_t req;
         muse_sched_pick(&s_sched, now_ms(), &req);
         if (req.did) {
-            /* One DID read. A failed one leaves the last reading to age
-             * out, never a stale "on". */
-            muse_vtec_did_t v;
+            /* One DID read. A failed or short one leaves the last reading
+             * to age out: never a stale "on", never a made-up count. */
+            muse_did_t d = (muse_did_t)req.which;
+            did_reading_t v;
             bool link;
             uint32_t t0 = now_ms();
-            muse_elm_result_t res = did_read(&v, &link);
-            if (res == MUSE_ELM_VTEC_DID) {
-                got_did(&v);
+            muse_elm_result_t res = did_read(d, &v, &link);
+            if (res == DID_OK[d]) {
+                got_did(d, &v);
                 answered = true;
             } else if (res == MUSE_ELM_NO_DATA) {
                 note_timeout();
@@ -1114,7 +1270,7 @@ static bool poll_rpm(void)
             if (link) {
                 note_exchange(now_ms() - t0, 0, false);
             }
-            muse_sched_done_did(&s_sched, now_ms());
+            muse_sched_done_did(&s_sched, d, now_ms());
             if (!link) {
                 return answered;
             }
@@ -1232,8 +1388,10 @@ static bool poll_rpm(void)
             if (!probe_did()) {   /* if the protocol only turned up now */
                 return answered;
             }
-            if (s_did == DID_YES) {
-                muse_sched_set_did(&s_sched, true, now_ms());
+            for (int d = 0; d < MUSE_DIDS; d++) {
+                if (s_did[d] == DID_YES) {
+                    muse_sched_set_did(&s_sched, (muse_did_t)d, true, now_ms());
+                }
             }
         }
     }
@@ -1256,7 +1414,12 @@ static void drop(void)
     s_tuned = false;   /* the next connection tunes its link again */
     s_have_protocol = false;
     s_protocol = -1;
-    s_did = DID_UNPROBED;   /* the next connection asks again; did_2612 keeps this one's answer */
+    for (int d = 0; d < MUSE_DIDS; d++) {
+        s_did[d] = DID_UNPROBED;   /* the next connection asks again; did_26xx keep this one's answers */
+    }
+    taskENTER_CRITICAL(&s_status_lock);
+    muse_misfire_reset(&s_misfire);   /* the next connection's first read is a baseline */
+    taskEXIT_CRITICAL(&s_status_lock);
     set_link_down();
 }
 
@@ -1274,6 +1437,9 @@ static void obd_task(void *arg)
     (void)arg;
     muse_coolant_init(&s_coolant);
     muse_warmup_init(&s_warmup);
+    taskENTER_CRITICAL(&s_status_lock);
+    muse_misfire_init(&s_misfire);
+    taskEXIT_CRITICAL(&s_status_lock);
     uint32_t backoff = BACKOFF_MIN_MS;
     for (;;) {
         /* Turned off in Settings: no scan and no connection, which leaves
@@ -1319,7 +1485,7 @@ static void obd_task(void *arg)
                             set_flag(&s_status.polling, true);
                             muse_obd_status_t st;
                             muse_obd_status(&st);
-                            muse_obd_log_trip_start(&st, LOG_DID[s_did], now_ms());   /* a trip per polling link */
+                            muse_obd_log_trip_start(&st, LOG_DID[s_did[MUSE_DID_2612]], now_ms());   /* a trip per polling link */
                             polled = poll_rpm();
                             set_flag(&s_status.polling, false);
                         }

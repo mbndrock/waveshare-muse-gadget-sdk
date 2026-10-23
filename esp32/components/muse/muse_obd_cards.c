@@ -53,6 +53,8 @@
 /* Where a row's reading comes from: an extra (muse_obd_extra_t), or these. */
 #define SRC_RPM MUSE_OBD_EXTRAS
 #define SRC_COOLANT (MUSE_OBD_EXTRAS + 1)
+#define SRC_AC (MUSE_OBD_EXTRAS + 2)        /* DID 0x2610's A/C clutch */
+#define SRC_MISFIRE (MUSE_OBD_EXTRAS + 3)   /* DID 0x2663's four counts */
 
 typedef enum { TONE_NONE, TONE_COOLANT, TONE_TRIM } tone_t;
 
@@ -68,6 +70,8 @@ typedef struct {
     int bar_max;        /* > 0: a thin bar under the value, 0..bar_max */
     uint8_t tone;
     bool vtec;          /* RPM: "VTEC ON / OFF / --" under the bar, from DID 0x2612 */
+    bool onoff;         /* a 1/0 reading: ON in the accent, OFF dim (the A/C clutch) */
+    bool misfire;       /* the four cylinders' counts side by side, labelled 1 to 4 */
 } row_def_t;
 
 #define ROW(c, n, u, s, ...) { .card = (c), .name = (n), .unit = (u), .src = (s), __VA_ARGS__ }
@@ -75,11 +79,13 @@ static const row_def_t ROWS[] = {
     ROW(0, "COOLANT", "C", SRC_COOLANT, .tone = TONE_COOLANT),
     ROW(0, "INTAKE AIR", "C", MUSE_OBD_IAT),
     ROW(0, "AMBIENT", "C", MUSE_OBD_AMBIENT),
+    ROW(0, "A/C", "", SRC_AC, .onoff = true),
     ROW(1, "RPM", "rpm", SRC_RPM, .hero = true, .bar_max = 8000, .vtec = true),
-    ROW(1, "TIMING", "deg", MUSE_OBD_TIMING),
+    ROW(1, "TIMING", "deg", MUSE_OBD_TIMING, .half = true),
+    ROW(1, "AFR", ":1", MUSE_OBD_AFR, .half = true),
     ROW(1, "LOAD", "%", MUSE_OBD_LOAD, .half = true),
     ROW(1, "MAP", "kPa", MUSE_OBD_MAP, .half = true),
-    ROW(1, "AFR", ":1", MUSE_OBD_AFR),
+    ROW(1, "MISFIRE", "", SRC_MISFIRE, .misfire = true),
     ROW(2, "SPEED", "mph", MUSE_OBD_SPEED, .hero = true, .mph = true),
     ROW(2, "THROTTLE", "%", MUSE_OBD_THROTTLE, .half = true, .bar_max = 100),
     ROW(2, "FUEL", "%", MUSE_OBD_FUEL, .half = true, .bar_max = 100),
@@ -95,6 +101,11 @@ typedef struct {
     lv_obj_t *slot;     /* what sits in the column: the cell, or the pair it shares */
     lv_obj_t *value, *sub, *bar;
     lv_obj_t *vtec;     /* the VTEC word, ON / OFF / -- */
+    lv_obj_t *cyl[MUSE_OBD_MISFIRE_CYLS];   /* the misfire row's counts */
+    lv_obj_t *cyl_num[MUSE_OBD_MISFIRE_CYLS];   /* and their cylinder numbers */
+    uint32_t cyl_color[MUSE_OBD_MISFIRE_CYLS];
+    const lv_font_t *cyl_font[MUSE_OBD_MISFIRE_CYLS];   /* each count's font as shown */
+    const lv_font_t *font;                  /* the value font the cell was built for */
     uint32_t color;     /* the value's colour as shown; 0 before the first tick */
     uint32_t vtec_color;
     uint32_t bar_color;
@@ -213,6 +224,31 @@ static void build_row(lv_obj_t *list, const row_def_t *def, row_t *row, lv_obj_t
 
     lv_obj_t *name = label(c, &lv_font_montserrat_16, COLOR_DIM, def->name);
     lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+    row->font = font;
+
+    if (def->misfire) {
+        /* Four counts across the cell, each after its cylinder's number. */
+        lv_obj_t *line = box(c);
+        lv_obj_set_size(line, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(line, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+        static const char *const CYL[MUSE_OBD_MISFIRE_CYLS] = { "1", "2", "3", "4" };
+        for (int k = 0; k < MUSE_OBD_MISFIRE_CYLS; k++) {
+            lv_obj_t *group = box(line);   /* a quarter of the width each */
+            lv_obj_set_height(group, LV_SIZE_CONTENT);
+            lv_obj_set_flex_grow(group, 1);
+            lv_obj_set_flex_flow(group, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(group, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+            lv_obj_set_style_pad_column(group, 4, 0);
+            row->cyl_num[k] = label(group, &lv_font_montserrat_16, COLOR_DIM, CYL[k]);
+            int drop = font->base_line - lv_font_montserrat_16.base_line;
+            lv_obj_set_style_pad_bottom(row->cyl_num[k], drop > 0 ? drop : 0, 0);
+            row->cyl[k] = label(group, font, COLOR_DIM, "--");
+            row->cyl_color[k] = COLOR_DIM;
+            row->cyl_font[k] = font;
+        }
+        return;
+    }
 
     /* The value with its unit beside it, on the value's baseline. */
     lv_obj_t *line = box(c);
@@ -378,6 +414,10 @@ static muse_obd_reading_t reading(const muse_obd_status_t *st, uint8_t src, int 
         *pid = 0x05;
         return (muse_obd_reading_t){ st->coolant_valid, st->coolant_c, st->coolant_age_ms };
     }
+    if (src == SRC_AC || src == SRC_MISFIRE) {
+        *pid = 0;   /* a DID, not a Mode 01 PID: the support scan never hides it */
+        return src == SRC_AC ? st->ac_clutch : st->misfire[0];
+    }
     *pid = MUSE_OBD_EXTRA[src].pid;
     return st->extra[src];
 }
@@ -408,6 +448,42 @@ static void tick_vtec(const muse_obd_status_t *st, row_t *row)
     if (color != row->vtec_color) {
         lv_obj_set_style_text_color(row->vtec, lv_color_hex(color), 0);
         row->vtec_color = color;
+    }
+}
+
+/* The misfire row: each cylinder's count, "--" until the first 0x2663
+ * read, amber while it went up on the latest read, dimmed once stale. Four
+ * share the cell's width, so a long count steps down a font: two digits
+ * keep the row's own (40), three take 28, four or five 20. */
+static void tick_misfire(const muse_obd_status_t *st, row_t *row)
+{
+    for (int k = 0; k < MUSE_OBD_MISFIRE_CYLS; k++) {
+        const muse_obd_reading_t *v = &st->misfire[k];
+        char text[8];   /* 0..65535: five digits and the NUL */
+        uint32_t color = COLOR_DIM;
+        if (v->valid) {
+            snprintf(text, sizeof(text), "%u", (unsigned)(v->value & 0xFFFF));
+            color = v->age_ms > MUSE_OBD_CARD_STALE_MS ? COLOR_STALE
+                  : st->misfire_rose & (1u << k) ? COLOR_AMBER : COLOR_TEXT;
+        } else {
+            snprintf(text, sizeof(text), "--");
+        }
+        size_t len = strlen(text);
+        const lv_font_t *font = len <= 2 ? row->font : len == 3 ? &lv_font_montserrat_28 : &lv_font_montserrat_20;
+        if (lv_font_get_line_height(font) > lv_font_get_line_height(row->font)) {
+            font = row->font;   /* never past what the cell was built for */
+        }
+        if (font != row->cyl_font[k]) {
+            lv_obj_set_style_text_font(row->cyl[k], font, 0);
+            row->cyl_font[k] = font;
+            int drop = font->base_line - lv_font_montserrat_16.base_line;
+            lv_obj_set_style_pad_bottom(row->cyl_num[k], drop > 0 ? drop : 0, 0);
+        }
+        set_text(row->cyl[k], text);
+        if (color != row->cyl_color[k]) {
+            lv_obj_set_style_text_color(row->cyl[k], lv_color_hex(color), 0);
+            row->cyl_color[k] = color;
+        }
     }
 }
 
@@ -455,10 +531,20 @@ void muse_obd_cards_tick(void)
             reflow[def->card] |= set_hidden(row->slot, both);
         }
 
+        if (def->misfire) {
+            tick_misfire(&st, row);
+            continue;
+        }
         char text[16], sub[24];
         uint32_t color;
         int bar = 0;
-        if (v.valid) {
+        if (def->onoff) {
+            /* ON in the accent, OFF dim, "--" until the first reading. */
+            bool stale = v.valid && v.age_ms > MUSE_OBD_CARD_STALE_MS;
+            snprintf(text, sizeof(text), "%s", !v.valid ? "--" : v.value ? "ON" : "OFF");
+            snprintf(sub, sizeof(sub), "%s", "");
+            color = !v.valid ? COLOR_DIM : stale ? COLOR_STALE : v.value ? COLOR_ACCENT : COLOR_DIM;
+        } else if (v.valid) {
             int shown = def->mph ? (v.value * 621 + 500) / 1000 : v.value;
             int decimals = def->src < MUSE_OBD_EXTRAS ? MUSE_OBD_EXTRA[def->src].decimals : 0;
             if (decimals == 1 && shown >= 0) {

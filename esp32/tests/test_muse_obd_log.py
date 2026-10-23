@@ -152,7 +152,7 @@ class MuseObdLogContractTest(unittest.TestCase):
         self.assertEqual(poll.count("elm_cmd("), 1)
         # A trip per polling link; drop() ends it, whatever dropped the link.
         task = function_body(obd, "static void obd_task(void *arg)")
-        self.assertLess(task.index("muse_obd_log_trip_start(&st, LOG_DID[s_did], now_ms());"), task.index("poll_rpm()"))
+        self.assertLess(task.index("muse_obd_log_trip_start(&st, LOG_DID[s_did[MUSE_DID_2612]], now_ms());"), task.index("poll_rpm()"))
         self.assertIn("muse_obd_log_trip_end();", function_body(obd, "static void drop(void)"))
         self.assertIn("muse_obd_log_start();", function_body(obd, "void muse_obd_start(void)"))
         # The writer has its own task, with an internal-RAM stack: it writes the flash.

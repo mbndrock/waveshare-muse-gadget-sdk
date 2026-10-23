@@ -44,6 +44,12 @@ const char *const MUSE_LOG_COLUMN[MUSE_LOG_CHANNELS] = {
     [MUSE_LOG_PEDAL_E] = "pedal_e_pct",
     [MUSE_LOG_MODULE_V] = "module_v",
     [MUSE_LOG_BARO] = "baro_kpa",
+    [MUSE_LOG_MISFIRE_1] = "misfire_1",
+    [MUSE_LOG_MISFIRE_2] = "misfire_2",
+    [MUSE_LOG_MISFIRE_3] = "misfire_3",
+    [MUSE_LOG_MISFIRE_4] = "misfire_4",
+    [MUSE_LOG_AC_CLUTCH] = "ac_clutch",
+    [MUSE_LOG_GENERATOR] = "generator_pct",
 };
 
 const uint8_t MUSE_LOG_DECIMALS[MUSE_LOG_CHANNELS] = {

@@ -119,8 +119,19 @@ class MuseObdDidContractTest(unittest.TestCase):
         read = function_body(obd, "static muse_elm_result_t did_read(")
         self.assertIn('elm_cmd("ATSHDA10F1", CMD_MS)', read)
         self.assertIn('elm_cmd("ATCRA18DAF110", CMD_MS)', read)
-        self.assertIn("elm_cmd(MUSE_VTEC_DID_REQ, CMD_MS)", read)
+        self.assertIn("elm_cmd(MUSE_DID_INFO[d].req, CMD_MS)", read)   # OBD-DID-CARDS-TASK: one table
         self.assertIn("*link = did_restore();", read)   # whatever happened before it
+        # Every DID the table asks is a UDS 0x22 read (ReadDataByIdentifier):
+        # 2612, 2610 and 2663, nothing else.
+        header = (MUSE / "muse_obd_elm.h").read_text()
+        reqs = dict(re.findall(r'#define (MUSE_\w+_REQ) "([0-9A-F]+)"', header))
+        self.assertEqual(reqs, {"MUSE_VTEC_DID_REQ": "222612", "MUSE_DID_2610_REQ": "222610",
+                                "MUSE_DID_2663_REQ": "222663"})
+        table = (MUSE / "muse_obd_elm.c").read_text()
+        table = table[table.index("const muse_did_info_t MUSE_DID_INFO[MUSE_DIDS] = {"):]
+        table = table[:table.index("};")]
+        self.assertEqual(re.findall(r"(MUSE_\w+_REQ)", table), ["MUSE_VTEC_DID_REQ", "MUSE_DID_2610_REQ",
+                                                               "MUSE_DID_2663_REQ"])
         restore = function_body(obd, "static bool did_restore(void)")
         self.assertIn('elm_cmd("ATAR", CMD_MS)', restore)
         self.assertIn('elm_cmd("ATSHDB33F1", CMD_MS)', restore)
@@ -143,21 +154,25 @@ class MuseObdDidContractTest(unittest.TestCase):
     def test_probe_once_per_connection_on_can_29_only(self):
         obd = (MUSE / "muse_obd.c").read_text()
         probe = function_body(obd, "static bool probe_did(void)")
-        self.assertIn("if (s_did != DID_UNPROBED || s_protocol != 7) {", probe)
-        self.assertIn("s_did = res == MUSE_ELM_VTEC_DID ? DID_YES : DID_NO;", probe)
+        # OBD-DID-CARDS-TASK: each DID in turn, each once per connection.
+        self.assertIn("if (s_protocol != 7) {", probe)
+        self.assertIn("if (s_did[d] != DID_UNPROBED) {", probe)
+        self.assertIn("s_did[d] = res == DID_OK[d] ? DID_YES : DID_NO;", probe)
         task = function_body(obd, "static void obd_task(void *arg)")
         self.assertLess(task.index("scan_support()"), task.index("probe_did()"))
         self.assertLess(task.index("probe_did()"), task.index("poll_rpm()"))
         drop = function_body(obd, "static void drop(void)")
-        self.assertIn("s_did = DID_UNPROBED;", drop)
+        self.assertIn("s_did[d] = DID_UNPROBED;", drop)
         self.assertNotIn("set_did_supported", drop)   # availability stays, like the protocol
         self.assertNotIn("s_status.did_2612 =", obd.replace("s_status.did_2612 = yes", ""))
+        self.assertNotIn("s_status.did_2610 =", obd.replace("s_status.did_2610 = yes", ""))
+        self.assertNotIn("s_status.did_2663 =", obd.replace("s_status.did_2663 = yes", ""))
         down = function_body(obd, "static void set_link_down(void)")
         for field in ("vtec_sol", "vtec_psw", "did_2612_b23"):
             self.assertIn(f"s_status.{field}.valid = false;", down)
         # The poll loop's scheduler starts from the probe's answer (and
         # re-reads it if the protocol only turned up late).
-        self.assertIn("muse_sched_init(&s_sched, &s_support, s_did == DID_YES, now_ms());",
+        self.assertIn("muse_sched_init(&s_sched, &s_support, did_mask(), now_ms());",
                       function_body(obd, "static bool poll_rpm(void)"))
 
     def test_obd_read_and_console_carry_the_did_fields(self):
@@ -186,7 +201,7 @@ class MuseObdDidContractTest(unittest.TestCase):
         self.assertNotIn("muse_obd_bench_vtec_sol", strip_gated(body))
         obd = (MUSE / "muse_obd.c").read_text()
         # A real reading replaces the bench's; the bench's is always fresh.
-        self.assertIn("set_vtec(v, false);", function_body(obd, "static void got_did("))
+        self.assertIn("set_vtec(&v->vtec, false);", function_body(obd, "static void got_did("))
         self.assertIn("uint32_t vtec_age = bench ? 0 : now - vtec_at;", obd)
 
     def test_engine_card_shows_vtec(self):

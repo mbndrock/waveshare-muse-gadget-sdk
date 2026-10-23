@@ -377,6 +377,9 @@ void muse_obd_log_start(void)
 
 /* ---- The OBD task's side ---- */
 
+_Static_assert(MUSE_LOG_MISFIRE_4 == MUSE_LOG_MISFIRE_1 + MUSE_OBD_MISFIRE_CYLS - 1,
+               "a log column per cylinder, in order");
+
 void muse_obd_log_sample_of(const muse_obd_status_t *st, uint32_t ms, muse_log_sample_t *out)
 {
     static const struct {
@@ -406,6 +409,14 @@ void muse_obd_log_sample_of(const muse_obd_status_t *st, uint32_t ms, muse_log_s
     out->value[MUSE_LOG_VTEC_SOL] = st->vtec_sol.value != 0;
     out->has[MUSE_LOG_VTEC_PSW] = st->vtec_psw.valid;
     out->value[MUSE_LOG_VTEC_PSW] = st->vtec_psw.value != 0;
+    for (int c = 0; c < MUSE_OBD_MISFIRE_CYLS; c++) {
+        out->has[MUSE_LOG_MISFIRE_1 + c] = st->misfire[c].valid;
+        out->value[MUSE_LOG_MISFIRE_1 + c] = st->misfire[c].value;
+    }
+    out->has[MUSE_LOG_AC_CLUTCH] = st->ac_clutch.valid;
+    out->value[MUSE_LOG_AC_CLUTCH] = st->ac_clutch.value != 0;
+    out->has[MUSE_LOG_GENERATOR] = st->generator_pct.valid;
+    out->value[MUSE_LOG_GENERATOR] = st->generator_pct.value;
 }
 
 void muse_obd_log_trip_start(const muse_obd_status_t *st, uint8_t did_2612, uint32_t now_ms)

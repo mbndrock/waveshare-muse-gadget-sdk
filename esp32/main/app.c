@@ -1937,6 +1937,23 @@ static cJSON *obd_read_command(void) {
     } else {
         cJSON_AddNullToObject(payload, "did_2612_b23");
     }
+    // OBD-DID-CARDS-TASK: DID 0x2663's misfire counts (cylinders 1-4) and
+    // 0x2610's A/C clutch (1/0) and generator duty, with whether the ECU
+    // answers each.
+    cJSON_AddBoolToObject(payload, "did_2610", st.did_2610);
+    cJSON_AddBoolToObject(payload, "did_2663", st.did_2663);
+    static const char *const MISFIRE[MUSE_OBD_MISFIRE_CYLS][2] = {
+        { "misfire_1", "misfire_1_age_ms" }, { "misfire_2", "misfire_2_age_ms" },
+        { "misfire_3", "misfire_3_age_ms" }, { "misfire_4", "misfire_4_age_ms" },
+    };
+    for (int c = 0; c < MUSE_OBD_MISFIRE_CYLS; c++) {
+        add_obd_reading(payload, MISFIRE[c][0], MISFIRE[c][1], st.misfire[c].valid, st.misfire[c].value,
+                        st.misfire[c].age_ms, 0);
+    }
+    add_obd_reading(payload, "ac_clutch", "ac_clutch_age_ms", st.ac_clutch.valid, st.ac_clutch.value,
+                    st.ac_clutch.age_ms, 0);
+    add_obd_reading(payload, "generator_pct", "generator_age_ms", st.generator_pct.valid,
+                    st.generator_pct.value, st.generator_pct.age_ms, 0);
     // The trip log: where trips go, and how many wait to be pulled
     // (log_pending is the doorbell Muse checks).
     cJSON_AddBoolToObject(payload, "log_card", st.log_card);

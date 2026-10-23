@@ -27,6 +27,7 @@
 #include <string.h>
 #include "muse_obd_elm.h"
 #include "vtec_did_frames.h"
+#include "did_cards_frames.h"
 
 static int s_fail;
 
@@ -1045,7 +1046,8 @@ static void test_scheduler(void)
         muse_sched_pick(&s, t, &r);
         if (r.did) {
             saw_did = true;
-            muse_sched_done_did(&s, t);
+            CHECK(r.which == MUSE_DID_2612);   /* the only one this connection reads */
+            muse_sched_done_did(&s, (muse_did_t)r.which, t);
             break;
         }
         serve(&s, &r, t);
@@ -1265,6 +1267,330 @@ static void test_protocol(void)
     }
 }
 
+/* ---- OBD-DID-CARDS-TASK: DIDs 0x2610 and 0x2663 ---- */
+
+/* A UDS reply's bytes as the ELM prints them with headers off: the length
+ * line, "0:" with six bytes, then seven a frame, the last padded with 55
+ * as the S2000's ECU pads. */
+static char *elm_bytes(char *out, size_t cap, const uint8_t *b, size_t n)
+{
+    /* At most 64 bytes: 10 frames, <= 17 chars each, length + prompt + NUL < 180. */
+    if (n > 64 || cap < 180) {
+        abort();
+    }
+    size_t at = 0;
+    at += (size_t)snprintf(out + at, cap - at, "%03X\r", (unsigned)n);
+    size_t i = 0;
+    for (int f = 0; i < n && at < cap; f++) {
+        at += (size_t)snprintf(out + at, cap - at, "%X:", (unsigned)(f & 0xF));
+        for (int k = 0; k < (f == 0 ? 6 : 7) && at < cap; k++, i++) {
+            at += (size_t)snprintf(out + at, cap - at, "%02X", i < n ? b[i] : 0x55);
+        }
+        at += (size_t)snprintf(out + at, cap - at, "\r");
+    }
+    if (at < cap) {
+        snprintf(out + at, cap - at, "\r>");
+    }
+    return out;
+}
+
+/* A 62 26 xx reply of n bytes in all, its data zeroed. */
+static void did_block(uint8_t *b, int did, size_t n)
+{
+    memset(b, 0, n);
+    b[0] = 0x62;
+    b[1] = (uint8_t)(did >> 8);
+    b[2] = (uint8_t)did;
+}
+
+static void test_did_cards_parse(void)
+{
+    char text[512];
+    muse_did_2610_t a;
+    muse_did_2663_t m;
+
+    /* The table: requests, the bytes each needs, the floors. */
+    CHECK(MUSE_DID_INFO[MUSE_DID_2612].did == 0x2612 && !strcmp(MUSE_DID_INFO[MUSE_DID_2612].req, "222612"));
+    CHECK(MUSE_DID_INFO[MUSE_DID_2610].did == 0x2610 && !strcmp(MUSE_DID_INFO[MUSE_DID_2610].req, "222610"));
+    CHECK(MUSE_DID_INFO[MUSE_DID_2663].did == 0x2663 && !strcmp(MUSE_DID_INFO[MUSE_DID_2663].req, "222663"));
+    CHECK(MUSE_DID_INFO[MUSE_DID_2612].min_data == 54 && MUSE_DID_INFO[MUSE_DID_2610].min_data == 33
+          && MUSE_DID_INFO[MUSE_DID_2663].min_data == 42);
+    CHECK(MUSE_DID_INFO[MUSE_DID_2612].min_ms == 1000 && MUSE_DID_INFO[MUSE_DID_2610].min_ms == 3000
+          && MUSE_DID_INFO[MUSE_DID_2663].min_ms == 3000);
+
+    /* OBDb's 2007 replies, byte for byte: the clutch off and on, the
+     * generator's duty (x 100 / 255, cut to whole percent). */
+    elm_from_frames(text, sizeof(text), S2000_2610_AC_OFF, S2000_DID_FRAMES, false);
+    CHECK(!strncmp(text, "039\r0:622610FFFDF0\r1:61E0000000003D\r", 36));
+    memset(&a, 0xAA, sizeof(a));
+    CHECK(muse_elm_parse_did_2610(fed(text), &a) == MUSE_ELM_DID_2610 && !a.ac && a.generator_pct == 23);
+    elm_from_frames(text, sizeof(text), S2000_2610_AC_ON, S2000_DID_FRAMES, false);
+    CHECK(muse_elm_parse_did_2610(fed(text), &a) == MUSE_ELM_DID_2610 && a.ac && a.generator_pct == 45);
+    elm_from_frames(text, sizeof(text), S2000_2610_AC_ON, S2000_DID_FRAMES, true);   /* ATS1's spaces */
+    CHECK(muse_elm_parse_did_2610(fed(text), &a) == MUSE_ELM_DID_2610 && a.ac && a.generator_pct == 45);
+
+    /* Each cylinder's count at its own two bytes, from OBDb's own cases. */
+    static const struct {
+        const char *const *raw;
+        uint16_t want[MUSE_MISFIRE_CYLS];
+    } MIS[] = {
+        { S2000_2663_NONE, { 0, 0, 0, 0 } }, { S2000_2663_CYL1, { 1, 0, 0, 0 } },
+        { S2000_2663_CYL2, { 0, 1, 0, 0 } }, { S2000_2663_CYL3, { 0, 0, 1, 0 } },
+        { S2000_2663_CYL4, { 0, 0, 0, 1 } },
+    };
+    for (size_t i = 0; i < sizeof(MIS) / sizeof(MIS[0]); i++) {
+        elm_from_frames(text, sizeof(text), MIS[i].raw, S2000_DID_FRAMES, i % 2 == 1);
+        memset(&m, 0xAA, sizeof(m));
+        CHECK(muse_elm_parse_did_2663(fed(text), &m) == MUSE_ELM_DID_2663);
+        CHECK(!memcmp(m.count, MIS[i].want, sizeof(m.count)));
+        /* and it is nobody else's */
+        muse_vtec_did_t v;
+        CHECK(muse_elm_parse_did_2610(fed(text), &a) == MUSE_ELM_NONE);
+        CHECK(muse_elm_parse_vtec_did(fed(text), &v) == MUSE_ELM_NONE);
+    }
+    elm_from_frames(text, sizeof(text), S2000_2007_ON_REPORT, S2000_FRAMES, false);
+    CHECK(muse_elm_parse_did_2610(fed(text), &a) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_did_2663(fed(text), &m) == MUSE_ELM_NONE);
+    elm_from_frames(text, sizeof(text), S2000_2610_AC_ON, S2000_DID_FRAMES, false);
+    CHECK(muse_elm_parse_did_2663(fed(text), &m) == MUSE_ELM_NONE);
+
+    /* Cut short (frames missing against the 039 length): no reading, and
+     * the caller's last one is left alone. */
+    a = (muse_did_2610_t){ .ac = true, .generator_pct = 77 };
+    elm_from_frames(text, sizeof(text), S2000_2610_AC_OFF, 5, false);
+    CHECK(muse_elm_parse_did_2610(fed(text), &a) == MUSE_ELM_NONE && a.ac && a.generator_pct == 77);
+    m = (muse_did_2663_t){ { 9, 9, 9, 9 } };
+    elm_from_frames(text, sizeof(text), S2000_2663_CYL1, 6, false);
+    CHECK(muse_elm_parse_did_2663(fed(text), &m) == MUSE_ELM_NONE && m.count[0] == 9 && m.count[3] == 9);
+
+    /* The clutch is data byte 32's 0x02, and only that bit. */
+    uint8_t b[64];
+    did_block(b, 0x2610, 57);
+    b[3 + 32] = 0x02;
+    CHECK(muse_elm_parse_did_2610(fed(elm_bytes(text, sizeof(text), b, 57)), &a) == MUSE_ELM_DID_2610 && a.ac);
+    b[3 + 32] = 0xFD;
+    b[3 + 31] = b[3 + 33] = 0x02;
+    CHECK(muse_elm_parse_did_2610(fed(elm_bytes(text, sizeof(text), b, 57)), &a) == MUSE_ELM_DID_2610 && !a.ac);
+    /* The generator is data byte 23, whole percent. */
+    static const struct { uint8_t raw; int pct; } GEN[] = { { 0x00, 0 }, { 0x80, 50 }, { 0xFF, 100 }, { 0x3C, 23 } };
+    for (size_t i = 0; i < sizeof(GEN) / sizeof(GEN[0]); i++) {
+        did_block(b, 0x2610, 57);
+        b[3 + 23] = GEN[i].raw;
+        CHECK(muse_elm_parse_did_2610(fed(elm_bytes(text, sizeof(text), b, 57)), &a) == MUSE_ELM_DID_2610
+              && a.generator_pct == GEN[i].pct);
+    }
+    /* Lengths: 33 data bytes are enough for 0x2610, 32 are not. */
+    did_block(b, 0x2610, 3 + 33);
+    b[3 + 32] = 0x02;
+    CHECK(muse_elm_parse_did_2610(fed(elm_bytes(text, sizeof(text), b, 3 + 33)), &a) == MUSE_ELM_DID_2610 && a.ac);
+    a.ac = false;
+    CHECK(muse_elm_parse_did_2610(fed(elm_bytes(text, sizeof(text), b, 3 + 32)), &a) == MUSE_ELM_NONE && !a.ac);
+
+    /* The counts: big-endian, cylinder n at data byte 34 + 2 (n - 1);
+     * the bytes either side play no part. */
+    did_block(b, 0x2663, 57);
+    static const uint8_t COUNTS[] = { 0x12, 0x34, 0x00, 0xFF, 0xAB, 0xCD, 0x00, 0x07 };
+    memcpy(b + 3 + 34, COUNTS, sizeof(COUNTS));
+    b[3 + 33] = b[3 + 42] = 0xEE;
+    CHECK(muse_elm_parse_did_2663(fed(elm_bytes(text, sizeof(text), b, 57)), &m) == MUSE_ELM_DID_2663);
+    CHECK(m.count[0] == 0x1234 && m.count[1] == 0x00FF && m.count[2] == 0xABCD && m.count[3] == 0x0007);
+    /* 42 data bytes are enough, 41 are not. */
+    CHECK(muse_elm_parse_did_2663(fed(elm_bytes(text, sizeof(text), b, 3 + 42)), &m) == MUSE_ELM_DID_2663
+          && m.count[3] == 7);
+    m.count[3] = 99;
+    CHECK(muse_elm_parse_did_2663(fed(elm_bytes(text, sizeof(text), b, 3 + 41)), &m) == MUSE_ELM_NONE
+          && m.count[3] == 99);
+
+    /* A garbled header: another DID, not a positive answer, frames out of
+     * order. */
+    did_block(b, 0x2611, 57);
+    CHECK(muse_elm_parse_did_2610(fed(elm_bytes(text, sizeof(text), b, 57)), &a) == MUSE_ELM_NONE);
+    did_block(b, 0x2610, 57);
+    b[0] = 0x63;
+    CHECK(muse_elm_parse_did_2610(fed(elm_bytes(text, sizeof(text), b, 57)), &a) == MUSE_ELM_NONE);
+    elm_from_frames(text, sizeof(text), S2000_2663_CYL2, S2000_DID_FRAMES, false);
+    char *two = strstr(text, "\r2:");
+    CHECK(two != NULL);
+    if (two) {
+        two[1] = '3';   /* frame 2 claims to be frame 3 */
+    }
+    CHECK(muse_elm_parse_did_2663(fed(text), &m) == MUSE_ELM_NONE);
+
+    /* Refused, silent, the ELM's errors. */
+    CHECK(muse_elm_parse_did_2610("7F2231\n", &a) == MUSE_ELM_NEGATIVE);
+    CHECK(muse_elm_parse_did_2663("7F 22 31\n", &m) == MUSE_ELM_NEGATIVE);
+    CHECK(muse_elm_parse_did_2610("NO DATA\n", &a) == MUSE_ELM_NO_DATA);
+    CHECK(muse_elm_parse_did_2663("NO DATA\n", &m) == MUSE_ELM_NO_DATA);
+    CHECK(muse_elm_parse_did_2663("CAN ERROR\n", &m) == MUSE_ELM_ERROR);
+    elm_from_frames(text, sizeof(text), S2000_2663_CYL1, S2000_DID_FRAMES, false);
+    char broken[600];
+    snprintf(broken, sizeof(broken), "<RX ERROR\r%s", text);
+    CHECK(muse_elm_parse_did_2663(fed(broken), &m) == MUSE_ELM_ERROR);
+    CHECK(muse_elm_parse_did_2610("", &a) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_did_2663("41 0C 1A F8\n", &m) == MUSE_ELM_NONE);
+}
+
+/* The misfire warning's trigger, read by read. */
+static void test_misfire_trigger(void)
+{
+    const uint32_t COOL = MUSE_MISFIRE_COOLDOWN_MS;
+    CHECK(COOL == MUSE_COOLANT_COOLDOWN_MS);
+    muse_misfire_trigger_t t;
+    muse_misfire_init(&t);
+    uint16_t c[MUSE_MISFIRE_CYLS] = { 3, 0, 0, 0 };
+
+    /* The first read is the baseline: it never fires, however high. */
+    CHECK(!muse_misfire_update(&t, c, 800, 0) && t.rose == 0);
+    CHECK(!muse_misfire_update(&t, c, 800, 3000) && t.rose == 0);   /* unchanged */
+    /* An increase with the engine running fires; the cylinder is marked. */
+    c[0] = 4;
+    CHECK(muse_misfire_update(&t, c, 800, 6000) && t.rose == 0x1);
+    /* Counted once: the next read without an increase is quiet and unmarks. */
+    CHECK(!muse_misfire_update(&t, c, 800, 9000) && t.rose == 0);
+    /* A second increase inside the cooldown is marked, not fired. */
+    c[2] = 1;
+    CHECK(!muse_misfire_update(&t, c, 800, 12000) && t.rose == 0x4);
+    CHECK(!muse_misfire_update(&t, c, 800, 6000 + COOL - 1) && t.rose == 0);
+    /* After it, a new increase fires again. */
+    c[3] = 1;
+    CHECK(muse_misfire_update(&t, c, 800, 6000 + COOL) && t.rose == 0x8);
+    uint32_t t0 = 6000 + 2 * COOL + 1000;   /* past that fire's cooldown */
+    /* With the engine off (under 400 rpm, or unknown) an increase is let go,
+     * and doesn't fire later either. */
+    c[1] = 5;
+    CHECK(!muse_misfire_update(&t, c, MUSE_COOLANT_RUNNING_RPM - 1, t0) && t.rose == 0x2);
+    CHECK(!muse_misfire_update(&t, c, 800, t0 + 3000));
+    c[1] = 6;
+    CHECK(!muse_misfire_update(&t, c, -1, t0 + 6000));
+    /* Exactly the running threshold counts as running. */
+    c[1] = 7;
+    CHECK(muse_misfire_update(&t, c, MUSE_COOLANT_RUNNING_RPM, t0 + 9000) && t.rose == 0x2);
+    uint32_t t1 = t0 + 9000 + COOL;   /* that fire's cooldown is over */
+    /* Cleared counters (any one going down) are a new baseline, never a
+     * fire, even with another one up in the same read. */
+    uint16_t z[MUSE_MISFIRE_CYLS] = { 0, 0, 0, 0 };
+    CHECK(!muse_misfire_update(&t, z, 800, t1) && t.rose == 0);
+    uint16_t mixed[MUSE_MISFIRE_CYLS] = { 0, 0, 0, 2 };
+    CHECK(muse_misfire_update(&t, mixed, 800, t1 + 3000) && t.rose == 0x8);   /* up from the new baseline */
+    uint32_t t2 = t1 + 3000 + COOL;
+    uint16_t down_up[MUSE_MISFIRE_CYLS] = { 5, 0, 0, 1 };   /* 1 up, 4 down */
+    CHECK(!muse_misfire_update(&t, down_up, 800, t2) && t.rose == 0);
+    /* A counter that wraps (65535 -> 0) is a decrease too. */
+    uint16_t top[MUSE_MISFIRE_CYLS] = { 5, 0, 0, UINT16_MAX };
+    CHECK(muse_misfire_update(&t, top, 800, t2 + 3000));   /* up from 1 */
+    uint32_t t3 = t2 + 3000 + COOL;
+    uint16_t wrapped[MUSE_MISFIRE_CYLS] = { 5, 0, 0, 0 };
+    CHECK(!muse_misfire_update(&t, wrapped, 800, t3) && t.rose == 0);
+    /* A dropped link: the next read is a baseline again, the cooldown holds. */
+    uint16_t more[MUSE_MISFIRE_CYLS] = { 9, 9, 9, 9 };
+    muse_misfire_reset(&t);
+    CHECK(!t.have && t.rose == 0);
+    CHECK(!muse_misfire_update(&t, more, 800, t3 + 1000) && t.rose == 0);   /* baseline, not an increase */
+    more[0] = 10;
+    CHECK(muse_misfire_update(&t, more, 800, t3 + 4000));
+    muse_misfire_reset(&t);
+    more[0] = 11;
+    CHECK(!muse_misfire_update(&t, more, 800, t3 + 7000));
+    more[0] = 12;
+    CHECK(!muse_misfire_update(&t, more, 800, t3 + 10000) && t.rose == 0x1);   /* the cooldown survived the drop */
+    /* The clock wraps like the others'. */
+    muse_misfire_init(&t);
+    uint16_t w[MUSE_MISFIRE_CYLS] = { 0, 0, 0, 0 };
+    CHECK(!muse_misfire_update(&t, w, 800, UINT32_MAX - 1000));
+    w[0] = 1;
+    CHECK(muse_misfire_update(&t, w, 800, UINT32_MAX - 500));
+    w[0] = 2;
+    CHECK(!muse_misfire_update(&t, w, 800, 1000));                  /* 1.5 s later, past the wrap */
+    w[0] = 3;
+    CHECK(muse_misfire_update(&t, w, 800, COOL - 500 + 1));        /* 120 s after the fire */
+}
+
+/* Each DID on its own floor in the schedule, over a minute of link time
+ * with DID exchanges four times a Mode 01 one: only answered DIDs are read,
+ * never inside their floors, never together, and 0x2612 is never starved by
+ * the 3 s pair. */
+static void test_did_schedule(void)
+{
+    muse_elm_support_t sup = { 0 };
+    muse_sched_t s;
+    muse_sched_req_t r;
+    const uint32_t MODE01_MS = 50, DID_MS = 200;
+
+    /* Only 0x2612 answered: the pair is never asked. */
+    muse_sched_init(&s, &sup, 1u << MUSE_DID_2612, 0);
+    int picks[MUSE_DIDS] = { 0 };
+    for (uint32_t t = 0; t < 20000;) {
+        muse_sched_pick(&s, t, &r);
+        if (r.did) {
+            CHECK(r.which < MUSE_DIDS && r.n == 0);
+            picks[r.which]++;
+            t += DID_MS;
+            muse_sched_done_did(&s, (muse_did_t)r.which, t);
+        } else {
+            t += MODE01_MS;
+            serve(&s, &r, t);
+        }
+    }
+    CHECK(picks[MUSE_DID_2612] >= 15 && picks[MUSE_DID_2610] == 0 && picks[MUSE_DID_2663] == 0);
+
+    /* All three: each at its floor, 0x2612 still about once a second. */
+    muse_sched_init(&s, &sup, 1u << MUSE_DID_2612 | 1u << MUSE_DID_2610 | 1u << MUSE_DID_2663, 0);
+    uint32_t done[MUSE_DIDS] = { 0, 0, 0 }, worst[MUSE_DIDS] = { 0 };
+    int n[MUSE_DIDS] = { 0 };
+    for (uint32_t t = 0; t < 60000;) {
+        muse_sched_pick(&s, t, &r);
+        if (!r.did) {
+            t += MODE01_MS;
+            serve(&s, &r, t);
+            continue;
+        }
+        muse_did_t d = (muse_did_t)r.which;
+        uint32_t since = t - done[d];   /* from the last exchange's end */
+        CHECK(since >= MUSE_DID_INFO[d].min_ms);   /* the floor holds */
+        if (since > worst[d]) {
+            worst[d] = since;
+        }
+        n[d]++;
+        t += DID_MS;
+        muse_sched_done_did(&s, d, t);
+        done[d] = t;
+    }
+    /* Late by at most what can be ahead of it: the other two DIDs' exchanges
+     * and a few Mode 01 batches already overdue. */
+    uint32_t slack = 2 * DID_MS + 4 * MODE01_MS;
+    CHECK(worst[MUSE_DID_2612] <= MUSE_SCHED_DID_MIN_MS + slack);
+    CHECK(worst[MUSE_DID_2610] <= MUSE_DID_2610_MIN_MS + slack);
+    CHECK(worst[MUSE_DID_2663] <= MUSE_DID_2663_MIN_MS + slack);
+    CHECK(n[MUSE_DID_2612] >= 45 && n[MUSE_DID_2610] >= 17 && n[MUSE_DID_2663] >= 17);
+    if (worst[MUSE_DID_2612] > MUSE_SCHED_DID_MIN_MS + slack) {
+        fprintf(stderr, "2612 waited %u ms\n", (unsigned)worst[MUSE_DID_2612]);
+    }
+
+    /* A DID answered after polling started joins then, from its probe. */
+    muse_sched_init(&s, &sup, 1u << MUSE_DID_2612, 0);
+    muse_sched_set_did(&s, MUSE_DID_2663, true, 5000);
+    for (uint32_t t = 5000; t < 7900; t += MODE01_MS) {
+        muse_sched_pick(&s, t, &r);
+        CHECK(!(r.did && r.which == MUSE_DID_2663));   /* inside its floor from the probe */
+        if (r.did) {
+            muse_sched_done_did(&s, (muse_did_t)r.which, t);
+        } else {
+            serve(&s, &r, t);
+        }
+    }
+    bool seen = false;
+    for (uint32_t t = 8000; t < 9000 && !seen; t += MODE01_MS) {
+        muse_sched_pick(&s, t, &r);
+        seen = r.did && r.which == MUSE_DID_2663;
+        if (r.did) {
+            muse_sched_done_did(&s, (muse_did_t)r.which, t);
+        } else {
+            serve(&s, &r, t);
+        }
+    }
+    CHECK(seen);
+}
+
 int main(void)
 {
     test_fragmented_atz();
@@ -1284,6 +1610,9 @@ int main(void)
     test_pid_support();
     test_batch_parse();
     test_scheduler();
+    test_did_cards_parse();
+    test_misfire_trigger();
+    test_did_schedule();
     test_link_stats();
     test_tune();
     test_protocol();

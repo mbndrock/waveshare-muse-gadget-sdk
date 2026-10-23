@@ -63,6 +63,24 @@ bool muse_obd_enabled(void);
 void muse_obd_fire_coolant(void);
 void muse_obd_fire_warmup(void);
 
+/*
+ * The misfire warning (OBD-DID-CARDS-TASK): a cylinder's DID 0x2663 counter
+ * went up with the engine running (muse_misfire_update() in muse_obd_elm.h).
+ * It plays the coolant warning's pose through the same plumbing (visual
+ * only, idle only, never waking a sleeping screen), and nothing while OBD is
+ * turned off. muse_obd_fire_misfire() plays it without the trigger, as the
+ * trigger does once it fires.
+ *
+ * The bench console's ">misfire" goes through the trigger instead: it feeds
+ * it the latest counts (zeroes before any read) with cylinder 1 one higher,
+ * at a running engine's RPM, as if a read had come in. So the cooldown
+ * holds, and a first injection on a connection with no read yet sets the
+ * baseline first. Returns 1 if it fired, 0 if the trigger let it go (inside
+ * the cooldown), -1 while OBD is off.
+ */
+void muse_obd_fire_misfire(void);
+int muse_obd_bench_misfire(void);
+
 /* The car data cards' readings beyond RPM and coolant, in obd.read's order. */
 typedef enum {
     MUSE_OBD_LOAD,       /* 04, % */
@@ -101,6 +119,7 @@ typedef struct {
 } muse_obd_reading_t;
 
 #define MUSE_OBD_SUPPORT_RANGES 3   /* PIDs 01-20, 21-40, 41-60 */
+#define MUSE_OBD_MISFIRE_CYLS 4     /* DID 0x2663's cylinders (MUSE_MISFIRE_CYLS) */
 
 /*
  * What the OBD task is doing and its latest readings. state is one of "off"
@@ -139,6 +158,16 @@ typedef struct {
     muse_obd_reading_t vtec_psw;      /* the VTEC oil pressure switch: 1 on, 0 off */
     bool did_2612;
     muse_obd_reading_t did_2612_b23;  /* the block's data byte 23, raw (meaning unknown) */
+    /* OBD-DID-CARDS-TASK's DIDs, the same way: whether the engine ECU
+     * answered each on the last connection that asked (kept after a drop),
+     * and their live readings. misfire_rose has bit n set when cylinder
+     * n + 1's count went up on the latest 0x2663 read (the card's amber). */
+    bool did_2610;
+    bool did_2663;
+    muse_obd_reading_t misfire[MUSE_OBD_MISFIRE_CYLS];   /* DID 0x2663's counts, cylinders 1..4 */
+    uint8_t misfire_rose;
+    muse_obd_reading_t ac_clutch;     /* DID 0x2610's A/C clutch: 1 engaged, 0 not */
+    muse_obd_reading_t generator_pct; /* DID 0x2610's generator duty, % */
     /* The poll link's numbers (muse_obd_elm.h's muse_link_stats_t), this
      * connection only: they start over with each connection and read as
      * zeroes (and a -1 batch share) while no link is polling. */

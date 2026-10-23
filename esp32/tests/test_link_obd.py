@@ -136,7 +136,7 @@ class LinkObdTest(unittest.TestCase):
         self.assertNotIn("muse_elm_next_slot", source)
         self.assertNotIn("s_cursor", source)
         body = function_body(source, "static bool poll_rpm(void)")
-        self.assertIn("muse_sched_init(&s_sched, &s_support, s_did == DID_YES, now_ms());", body)
+        self.assertIn("muse_sched_init(&s_sched, &s_support, did_mask(), now_ms());", body)
         self.assertIn("muse_sched_pick(&s_sched, now_ms(), &req);", body)
         self.assertIn("muse_elm_parse_batch(s_rx.resp, req.pids, req.n, values, got);", body)
         self.assertIn("muse_sched_latch_batch_off(&s_sched);", body)

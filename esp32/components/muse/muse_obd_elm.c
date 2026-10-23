@@ -431,16 +431,27 @@ void muse_elm_protocol_name(int protocol, char *buf, size_t cap)
     }
 }
 
-/* The scheduler's items: RPM and the DID, then the secondaries in tier
+const muse_did_info_t MUSE_DID_INFO[MUSE_DIDS] = {
+    [MUSE_DID_2612] = { 0x2612, MUSE_VTEC_DID_REQ, MUSE_VTEC_DID_LEN - 3, MUSE_SCHED_DID_MIN_MS },
+    [MUSE_DID_2610] = { 0x2610, MUSE_DID_2610_REQ, MUSE_DID_2610_MIN, MUSE_DID_2610_MIN_MS },
+    [MUSE_DID_2663] = { 0x2663, MUSE_DID_2663_REQ, MUSE_DID_2663_MIN, MUSE_DID_2663_MIN_MS },
+};
+
+/* The scheduler's items: RPM and the DIDs, then the secondaries in tier
  * order. rank breaks overdue ties (the lower rank asks first); within a
- * rank the table's order does. -1 is the DID: not a Mode 01 PID. */
+ * rank the table's order does. A negative pid is a DID: -1 - its muse_did_t,
+ * not a Mode 01 PID; its target is its floor. */
+#define SCHED_DID_PID(d) (-1 - (d))
+
 static const struct {
     int pid;
     uint32_t target_ms;
     int rank;
 } SCHED[MUSE_SCHED_ITEMS] = {
     { 0x0C, 0, 0 },        /* RPM: always due, the standing filler */
-    { -1, 1000, 1 },       /* DID 0x2612 */
+    { SCHED_DID_PID(MUSE_DID_2612), MUSE_SCHED_DID_MIN_MS, 1 },   /* DID 0x2612, VTEC: 1 s */
+    { SCHED_DID_PID(MUSE_DID_2610), MUSE_DID_2610_MIN_MS, 1 },    /* DID 0x2610, A/C clutch: 3 s */
+    { SCHED_DID_PID(MUSE_DID_2663), MUSE_DID_2663_MIN_MS, 1 },    /* DID 0x2663, misfires: 3 s */
     { 0x0B, 1000, 2 },     /* fast: MAP */
     { 0x11, 1000, 2 },     /* fast: throttle */
     { 0x04, 1000, 2 },     /* fast: load */
@@ -459,7 +470,16 @@ static const struct {
     { 0x33, 3000, 4 },     /* slow: barometric pressure */
 };
 
-#define SCHED_DID 1   /* SCHED's index of the DID item */
+/* SCHED's index of each DID's item. */
+static int sched_did_item(muse_did_t d)
+{
+    for (int i = 0; i < MUSE_SCHED_ITEMS; i++) {
+        if (SCHED[i].pid == SCHED_DID_PID((int)d)) {
+            return i;
+        }
+    }
+    return -1;
+}
 
 static bool sched_eligible(const muse_sched_t *s, int i, uint32_t now_ms)
 {
@@ -467,8 +487,10 @@ static bool sched_eligible(const muse_sched_t *s, int i, uint32_t now_ms)
         return false;
     }
     if (SCHED[i].pid < 0) {
-        /* The DID's floor: at most one read per MUSE_SCHED_DID_MIN_MS. */
-        return s->did_on && (!s->did_have || now_ms - s->did_last_ms >= MUSE_SCHED_DID_MIN_MS);
+        /* A DID: only once its probe answered, and at most one read per
+         * its floor (the target), since the last attempt. */
+        int d = -1 - SCHED[i].pid;
+        return s->did_on[d] && (!s->have[i] || now_ms - s->last_ms[i] >= SCHED[i].target_ms);
     }
     return true;
 }
@@ -483,20 +505,28 @@ static int32_t sched_overdue(const muse_sched_t *s, int i, uint32_t now_ms)
     return (int32_t)(now_ms - s->last_ms[i]) - (int32_t)SCHED[i].target_ms;
 }
 
-void muse_sched_init(muse_sched_t *s, const muse_elm_support_t *sup, bool did, uint32_t now_ms)
+/* A DID's attempt at now_ms: its floor, and its freshness, run from here. */
+static void sched_did_attempt(muse_sched_t *s, muse_did_t d, uint32_t now_ms)
+{
+    int i = sched_did_item(d);
+    if (i >= 0) {
+        s->have[i] = true;
+        s->last_ms[i] = now_ms;
+    }
+}
+
+void muse_sched_init(muse_sched_t *s, const muse_elm_support_t *sup, unsigned dids, uint32_t now_ms)
 {
     memset(s, 0, sizeof(*s));
     for (int i = 0; i < MUSE_SCHED_ITEMS; i++) {
         s->present[i] = SCHED[i].pid < 0
             || muse_elm_pid_support(sup, SCHED[i].pid) != MUSE_ELM_PID_UNSUPPORTED;
     }
-    s->did_on = did;
-    if (did) {
-        /* The probe just read it: its floor, and its freshness, run from now. */
-        s->did_have = true;
-        s->did_last_ms = now_ms;
-        s->have[SCHED_DID] = true;
-        s->last_ms[SCHED_DID] = now_ms;
+    for (int d = 0; d < MUSE_DIDS; d++) {
+        s->did_on[d] = dids >> d & 1;
+        if (s->did_on[d]) {
+            sched_did_attempt(s, (muse_did_t)d, now_ms);   /* the probe just read it */
+        }
     }
 }
 
@@ -509,20 +539,22 @@ void muse_sched_apply_support(muse_sched_t *s, const muse_elm_support_t *sup)
     }
 }
 
-void muse_sched_set_did(muse_sched_t *s, bool did, uint32_t now_ms)
+void muse_sched_set_did(muse_sched_t *s, muse_did_t did, bool on, uint32_t now_ms)
 {
-    s->did_on = did;
-    if (did && !s->did_have) {
-        s->did_have = true;
-        s->did_last_ms = now_ms;
-        s->have[SCHED_DID] = true;
-        s->last_ms[SCHED_DID] = now_ms;
+    if ((int)did < 0 || did >= MUSE_DIDS) {
+        return;
     }
+    int i = sched_did_item(did);
+    if (on && !s->did_on[did] && i >= 0 && !s->have[i]) {
+        sched_did_attempt(s, did, now_ms);   /* its probe just read it */
+    }
+    s->did_on[did] = on;
 }
 
 void muse_sched_pick(const muse_sched_t *s, uint32_t now_ms, muse_sched_req_t *req)
 {
     req->did = false;
+    req->which = 0;
     req->n = 0;
     /* The most overdue eligible item; ties by rank, then by table order. */
     int best = -1;
@@ -544,6 +576,7 @@ void muse_sched_pick(const muse_sched_t *s, uint32_t now_ms, muse_sched_req_t *r
     }
     if (SCHED[best].pid < 0) {
         req->did = true;
+        req->which = (uint8_t)(-1 - SCHED[best].pid);
         return;
     }
     bool in[MUSE_SCHED_ITEMS] = { 0 };
@@ -600,12 +633,11 @@ void muse_sched_done_pid(muse_sched_t *s, int pid, bool got, bool ecu_live, uint
     }
 }
 
-void muse_sched_done_did(muse_sched_t *s, uint32_t now_ms)
+void muse_sched_done_did(muse_sched_t *s, muse_did_t did, uint32_t now_ms)
 {
-    s->did_have = true;
-    s->did_last_ms = now_ms;
-    s->have[SCHED_DID] = true;
-    s->last_ms[SCHED_DID] = now_ms;
+    if ((int)did >= 0 && did < MUSE_DIDS) {
+        sched_did_attempt(s, did, now_ms);
+    }
 }
 
 void muse_sched_latch_batch_off(muse_sched_t *s)
@@ -946,9 +978,17 @@ muse_elm_result_t muse_elm_parse_batch(const char *resp, const uint8_t *pids, in
     return parse_pid(resp, -1, 0, NULL, MUSE_ELM_NONE);
 }
 
-muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out)
+/*
+ * A UDS 0x22 reply for `did`, as the ELM prints it with headers off: on
+ * `found`, its bytes are in b (62, the DID, then the data) and *n says how
+ * many. Otherwise what it was: an error anywhere spoils the whole reply
+ * (MUSE_ELM_ERROR), a refusal is MUSE_ELM_NEGATIVE, the ECU's silence
+ * MUSE_ELM_NO_DATA, and anything else (another DID's answer, a short or
+ * out-of-order reply) MUSE_ELM_NONE.
+ */
+static muse_elm_result_t did_reply(const char *resp, int did, uint8_t *b, size_t cap, int *n,
+                                   muse_elm_result_t found)
 {
-    /* An error anywhere spoils the whole reply; NO DATA is the ECU's silence. */
     muse_elm_result_t lines = parse_pid(resp, -1, 0, NULL, MUSE_ELM_NONE);
     const char *p = resp;
     while (*p) {
@@ -965,19 +1005,68 @@ muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out
     if (lines == MUSE_ELM_ERROR) {
         return MUSE_ELM_ERROR;
     }
-    uint8_t b[64];
-    int n = can_reply_bytes(resp, b, sizeof(b));
-    if (n >= 3 && b[0] == 0x7F && b[1] == 0x22) {
+    *n = can_reply_bytes(resp, b, cap);
+    if (*n >= 3 && b[0] == 0x7F && b[1] == 0x22) {
         return MUSE_ELM_NEGATIVE;
     }
-    if (n == MUSE_VTEC_DID_LEN && b[0] == 0x62 && b[1] == 0x26 && b[2] == 0x12) {
-        const uint8_t *data = b + 3;
-        out->sol = data[MUSE_VTEC_DID_FLAGS] & MUSE_VTEC_DID_SOL;
-        out->psw = data[MUSE_VTEC_DID_FLAGS] & MUSE_VTEC_DID_PSW;
-        out->b23 = data[MUSE_VTEC_DID_B23];
-        return MUSE_ELM_VTEC_DID;
+    if (*n >= 3 && b[0] == 0x62 && b[1] == (did >> 8) && b[2] == (did & 0xFF)) {
+        return found;
     }
-    return n <= 0 && lines == MUSE_ELM_NO_DATA ? MUSE_ELM_NO_DATA : MUSE_ELM_NONE;
+    return *n <= 0 && lines == MUSE_ELM_NO_DATA ? MUSE_ELM_NO_DATA : MUSE_ELM_NONE;
+}
+
+muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out)
+{
+    uint8_t b[64];
+    int n = 0;
+    muse_elm_result_t res = did_reply(resp, 0x2612, b, sizeof(b), &n, MUSE_ELM_VTEC_DID);
+    if (res != MUSE_ELM_VTEC_DID) {
+        return res;
+    }
+    if (n != MUSE_VTEC_DID_LEN) {
+        return MUSE_ELM_NONE;   /* exactly its 57 bytes, as shipped and checked on the car */
+    }
+    const uint8_t *data = b + 3;
+    out->sol = data[MUSE_VTEC_DID_FLAGS] & MUSE_VTEC_DID_SOL;
+    out->psw = data[MUSE_VTEC_DID_FLAGS] & MUSE_VTEC_DID_PSW;
+    out->b23 = data[MUSE_VTEC_DID_B23];
+    return MUSE_ELM_VTEC_DID;
+}
+
+muse_elm_result_t muse_elm_parse_did_2610(const char *resp, muse_did_2610_t *out)
+{
+    uint8_t b[64];
+    int n = 0;
+    muse_elm_result_t res = did_reply(resp, 0x2610, b, sizeof(b), &n, MUSE_ELM_DID_2610);
+    if (res != MUSE_ELM_DID_2610) {
+        return res;
+    }
+    if (n - 3 < MUSE_DID_2610_MIN) {
+        return MUSE_ELM_NONE;   /* short of the clutch's byte: no reading */
+    }
+    const uint8_t *data = b + 3;
+    out->ac = data[MUSE_DID_2610_AC] & MUSE_DID_2610_AC_ON;
+    out->generator_pct = data[MUSE_DID_2610_GEN] * 100 / 255;
+    return MUSE_ELM_DID_2610;
+}
+
+muse_elm_result_t muse_elm_parse_did_2663(const char *resp, muse_did_2663_t *out)
+{
+    uint8_t b[64];
+    int n = 0;
+    muse_elm_result_t res = did_reply(resp, 0x2663, b, sizeof(b), &n, MUSE_ELM_DID_2663);
+    if (res != MUSE_ELM_DID_2663) {
+        return res;
+    }
+    if (n - 3 < MUSE_DID_2663_MIN) {
+        return MUSE_ELM_NONE;   /* short of cylinder 4's count: no reading */
+    }
+    const uint8_t *data = b + 3;
+    for (int c = 0; c < MUSE_MISFIRE_CYLS; c++) {
+        const uint8_t *at = data + MUSE_DID_2663_MIS + 2 * c;
+        out->count[c] = (uint16_t)(at[0] << 8 | at[1]);
+    }
+    return MUSE_ELM_DID_2663;
 }
 
 bool muse_vtec_engaged(bool valid, bool sol, uint32_t age_ms)
@@ -1042,5 +1131,44 @@ bool muse_warmup_update(muse_warmup_trigger_t *t, int coolant_c)
         return false;
     }
     t->armed = false;
+    return true;
+}
+
+void muse_misfire_init(muse_misfire_trigger_t *t)
+{
+    memset(t, 0, sizeof(*t));
+}
+
+void muse_misfire_reset(muse_misfire_trigger_t *t)
+{
+    t->have = false;
+    t->rose = 0;
+}
+
+bool muse_misfire_update(muse_misfire_trigger_t *t, const uint16_t count[MUSE_MISFIRE_CYLS], int rpm,
+                         uint32_t now_ms)
+{
+    bool first = !t->have, down = false;
+    uint8_t rose = 0;
+    for (int c = 0; c < MUSE_MISFIRE_CYLS; c++) {
+        if (!first && count[c] > t->base[c]) {
+            rose |= (uint8_t)(1u << c);
+        }
+        down = down || (!first && count[c] < t->base[c]);
+    }
+    memcpy(t->base, count, sizeof(t->base));   /* each read is the next one's baseline */
+    t->have = true;
+    if (down) {
+        rose = 0;   /* cleared or wrapped: a new baseline, never a fire */
+    }
+    t->rose = rose;
+    if (!rose || rpm < MUSE_COOLANT_RUNNING_RPM) {
+        return false;   /* nothing new, or the engine is off: let go */
+    }
+    if (t->fired && now_ms - t->last_fire_ms < MUSE_MISFIRE_COOLDOWN_MS) {
+        return false;
+    }
+    t->fired = true;
+    t->last_fire_ms = now_ms;
     return true;
 }

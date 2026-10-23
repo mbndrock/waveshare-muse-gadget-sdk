@@ -77,8 +77,8 @@ static void test_row(void)
     muse_log_sample_t s = { .ms = 1234 };
     char row[MUSE_LOG_ROW_MAX];
     size_t n = muse_log_format_row(row, sizeof(row), &s);
-    CHECK(n == strlen("1234,,,,,,,,,,,,,,,,,,,\n"));
-    CHECK(!memcmp(row, "1234,,,,,,,,,,,,,,,,,,,\n", n));
+    CHECK(n == strlen("1234,,,,,,,,,,,,,,,,,,,,,,,,,\n"));
+    CHECK(!memcmp(row, "1234,,,,,,,,,,,,,,,,,,,,,,,,,\n", n));
 
     s.ms = 0;
     for (int c = 0; c < MUSE_LOG_CHANNELS; c++) {
@@ -90,8 +90,10 @@ static void test_row(void)
     s.value[MUSE_LOG_VTEC_PSW] = 0;
     n = muse_log_format_row(row, sizeof(row), &s);
     /* OBD-MORE-PIDS-TASK's columns follow, appended: afr in tenths and
-     * module_v in mV, each written in its unit with the point. */
-    const char *want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0,11.0,120,130,140,0.150,160\n";
+     * module_v in mV, each written in its unit with the point; then
+     * OBD-DID-CARDS-TASK's four misfire counts, the A/C clutch and the
+     * generator, plain integers. */
+    const char *want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0,11.0,120,130,140,0.150,160,170,180,190,200,210,220\n";
     CHECK(n == strlen(want) && !memcmp(row, want, n));
     /* Real readings: AFR 14.7, 13.845 V; a value under one unit keeps its
      * zero, and one with no reading stays an empty field. */
@@ -102,13 +104,13 @@ static void test_row(void)
     s.value[MUSE_LOG_MODULE_V] = 13845;
     s.value[MUSE_LOG_BARO] = 101;
     n = muse_log_format_row(row, sizeof(row), &s);
-    want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0,14.7,62,20,10,13.845,101\n";
+    want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0,14.7,62,20,10,13.845,101,170,180,190,200,210,220\n";
     CHECK(n == strlen(want) && !memcmp(row, want, n));
     s.value[MUSE_LOG_AFR] = 5;
     s.value[MUSE_LOG_MODULE_V] = 7;
     s.has[MUSE_LOG_FUEL] = false;
     n = muse_log_format_row(row, sizeof(row), &s);
-    want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0,0.5,,20,10,0.007,101\n";
+    want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0,0.5,,20,10,0.007,101,170,180,190,200,210,220\n";
     CHECK(n == strlen(want) && !memcmp(row, want, n));
     s.value[MUSE_LOG_AFR] = -5;   /* never from the car, but signed all the same */
     n = muse_log_format_row(row, sizeof(row), &s);
@@ -129,13 +131,14 @@ static void test_row(void)
     CHECK(muse_log_format_row(row, n - 1, &s) == 0);   /* one short: refused, not cut */
     CHECK(muse_log_format_row(row, n, &s) == n);
 
-    CHECK(MUSE_LOG_CHANNELS == 19);
+    CHECK(MUSE_LOG_CHANNELS == 25);
     CHECK(MUSE_LOG_ROW_MAX > 255);   /* why the log queue's row length is 16 bits */
     static const char *const NAMES[] = {
         "rpm", "coolant_c", "iat_c", "timing_deg", "map_kpa", "load_pct",
         "throttle_pct", "speed_kmh", "stft_pct", "ltft_pct", "ambient_c",
         "vtec_sol", "vtec_psw",   /* OBD-VTEC-DID-TASK: the two trailing columns */
         "afr", "fuel_pct", "pedal_d_pct", "pedal_e_pct", "module_v", "baro_kpa",   /* OBD-MORE-PIDS-TASK */
+        "misfire_1", "misfire_2", "misfire_3", "misfire_4", "ac_clutch", "generator_pct",   /* OBD-DID-CARDS-TASK */
     };
     for (int c = 0; c < MUSE_LOG_CHANNELS; c++) {
         CHECK(!strcmp(MUSE_LOG_COLUMN[c], NAMES[c]));
@@ -162,7 +165,8 @@ static void test_header(void)
         "# start=2024-10-23T16:13:20Z\n"
         "# did_2612=yes\n"
         "ms,rpm,coolant_c,iat_c,timing_deg,map_kpa,load_pct,throttle_pct,speed_kmh,stft_pct,ltft_pct,ambient_c,"
-        "vtec_sol,vtec_psw,afr,fuel_pct,pedal_d_pct,pedal_e_pct,module_v,baro_kpa\n";
+        "vtec_sol,vtec_psw,afr,fuel_pct,pedal_d_pct,pedal_e_pct,module_v,baro_kpa,"
+        "misfire_1,misfire_2,misfire_3,misfire_4,ac_clutch,generator_pct\n";
     CHECK(!strcmp(h, want));
     if (strcmp(h, want)) {
         fprintf(stderr, "got:\n%s", h);
@@ -278,7 +282,7 @@ static void test_crc_base64_names(void)
 
 /* ---- A store ---- */
 
-#define BLOCK 320   /* small, so a trip spans many blocks (at least MUSE_LOG_ROW_MAX) */
+#define BLOCK 384   /* small, so a trip spans many blocks (at least MUSE_LOG_ROW_MAX) */
 
 static char s_expect[1 << 16];
 static size_t s_expect_len;
@@ -376,7 +380,7 @@ static void test_store(void)
     char *text = (char *)back;
     text[s_expect_len] = '\0';
     CHECK(!strncmp(text, "# muse obd trip log v1\n", 23));
-    CHECK(strstr(text, "\n0,800,,,,,,,,,,,,,,,,,,\n") != NULL);
+    CHECK(strstr(text, "\n0,800,,,,,,,,,,,,,,,,,,,,,,,,\n") != NULL);
     CHECK(strstr(text, "\n# end samples=500 dropped=0\n") != NULL);
 
     /* Reads at the start, the middle, the exact end and past it. */

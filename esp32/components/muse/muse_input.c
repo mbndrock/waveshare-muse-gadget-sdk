@@ -861,6 +861,17 @@ static void print_obd(void)
            obd_number(psw, sizeof(psw), st.vtec_psw.valid, st.vtec_psw.value),
            obd_number(psw_age, sizeof(psw_age), st.vtec_psw.valid, st.vtec_psw.age_ms),
            st.did_2612 ? "true" : "false", obd_number(b23, sizeof(b23), st.did_2612_b23.valid, st.did_2612_b23.value));
+    printf(",\"did_2610\":%s,\"did_2663\":%s", st.did_2610 ? "true" : "false", st.did_2663 ? "true" : "false");
+    for (int c = 0; c < MUSE_OBD_MISFIRE_CYLS; c++) {
+        printf(",\"misfire_%d\":%s,\"misfire_%d_age_ms\":%s", c + 1,
+               obd_number(sol, sizeof(sol), st.misfire[c].valid, st.misfire[c].value), c + 1,
+               obd_number(sol_age, sizeof(sol_age), st.misfire[c].valid, st.misfire[c].age_ms));
+    }
+    printf(",\"ac_clutch\":%s,\"ac_clutch_age_ms\":%s,\"generator_pct\":%s,\"generator_age_ms\":%s",
+           obd_number(sol, sizeof(sol), st.ac_clutch.valid, st.ac_clutch.value),
+           obd_number(sol_age, sizeof(sol_age), st.ac_clutch.valid, st.ac_clutch.age_ms),
+           obd_number(psw, sizeof(psw), st.generator_pct.valid, st.generator_pct.value),
+           obd_number(psw_age, sizeof(psw_age), st.generator_pct.valid, st.generator_pct.age_ms));
     printf(",\"log_card\":%s,\"log_flash\":%s,\"log_store\":%s%s%s,\"log_active\":%s,\"log_trip\":%s,"
            "\"log_pending\":%lu,\"log_dropped\":%lu,\"log_full\":%s",
            st.log_card ? "true" : "false", st.log_flash ? "true" : "false", st.log_store ? "\"" : "",
@@ -945,7 +956,8 @@ static bool console_command(char *line, bool whole)
 #endif
 #if CONFIG_MUSE_OBD_VTEC
     bool vtecsol = !strcmp(line, "vtecsol 0") || !strcmp(line, "vtecsol 1");
-    if (!muse_obd_enabled() && (vtecsol || !strcmp(line, "coolant") || !strcmp(line, "warmup"))) {
+    if (!muse_obd_enabled()
+        && (vtecsol || !strcmp(line, "coolant") || !strcmp(line, "warmup") || !strcmp(line, "misfire"))) {
         printf("@obd.off OBD is turned off in Settings\n");   /* the fires do nothing then */
         fflush(stdout);
         return true;
@@ -967,6 +979,14 @@ static bool console_command(char *line, bool whole)
     }
     if (!strcmp(line, "warmup")) {
         muse_obd_fire_warmup();
+        return true;
+    }
+    if (!strcmp(line, "misfire")) {
+        /* A cylinder 1 count increase through the misfire trigger, as if
+         * DID 0x2663 had read it with the engine running: inside the 120 s
+         * cooldown it doesn't fire, as on the car. */
+        printf("%s\n", muse_obd_bench_misfire() > 0 ? "@misfire fired" : "@misfire cooldown");
+        fflush(stdout);
         return true;
     }
     if (!strcmp(line, "obd")) {
@@ -1029,7 +1049,9 @@ static bool console_command(char *line, bool whole)
  * "vtecsol 0" hold the VTEC reaction up and let it go (a stand-in for the
  * car's solenoid reading, muse_obd_bench_vtec_sol), "coolant" / "warmup"
  * play those reactions without a car or adapter (muse_obd_fire_coolant /
- * _warmup), "obd" prints the OBD
+ * _warmup), "misfire" feeds the misfire trigger a cylinder 1 increase
+ * (muse_obd_bench_misfire: it fires unless inside its cooldown), "obd"
+ * prints the OBD
  * link's state and latest readings, as the obd.read Link command does
  * (muse_obd_status), and "card <n>" slides the touch screen to tile n (0 the
  * face, 1..3 the car data cards while the OBD link is up, the last one

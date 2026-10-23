@@ -73,6 +73,8 @@ typedef enum {
     MUSE_ELM_MODULE_V,  /* a 41 42 reply: *mv is set */
     MUSE_ELM_BARO,      /* a 41 33 reply: *kpa is set */
     MUSE_ELM_FUEL,      /* a 41 2F reply: *pct is set */
+    MUSE_ELM_DID_2610,  /* a 62 26 10 reply with its bytes: the A/C clutch and generator are set */
+    MUSE_ELM_DID_2663,  /* a 62 26 63 reply with its bytes: the misfire counts are set */
 } muse_elm_result_t;
 
 /* Reads engine RPM from the response to "010C": ((A * 256) + B) / 4. Spaces
@@ -213,6 +215,100 @@ typedef struct {
 muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out);
 
 /*
+ * OBD-DID-CARDS-TASK: two more blocks from the same ECU, asked the same way
+ * (OBDb's Honda-S2000 signal set; its bix counts bits of the data after
+ * 62 26 xx, MSB first, the convention 0x2612's flags were verified on). Every
+ * 2007 fixture OBDb has for them is a 57-byte reply, 62 26 xx and 54 data
+ * bytes, like 0x2612's.
+ *   2610  data byte 23: generator duty, x 100 / 255 %; data byte 32 mask
+ *         0x02: the A/C clutch, 1 engaged. Needs at least 33 data bytes.
+ *   2663  misfire counts, big-endian 16-bit: cylinder 1 at data byte 34,
+ *         2 at 36, 3 at 38, 4 at 40. Needs at least 42 data bytes.
+ * Each parser takes a reply whose bytes add up (as 0x2612's: the frames in
+ * order, as many as its length line says), that starts 62 26 xx and has at
+ * least the bytes its signals need; a refusal is MUSE_ELM_NEGATIVE; NO DATA
+ * and the ELM's errors as for the PIDs; anything else (a wrong prefix, short,
+ * out of order) is MUSE_ELM_NONE, and *out is left alone.
+ */
+#define MUSE_DID_2610_REQ "222610"
+#define MUSE_DID_2610_MIN 33          /* data bytes a 0x2610 read needs */
+#define MUSE_DID_2610_GEN 23          /* data byte: generator duty, x 100 / 255 % */
+#define MUSE_DID_2610_AC 32           /* data byte with the A/C clutch */
+#define MUSE_DID_2610_AC_ON 0x02      /* its bit: 1 = the clutch is engaged */
+#define MUSE_DID_2663_REQ "222663"
+#define MUSE_DID_2663_MIN 42          /* data bytes a 0x2663 read needs */
+#define MUSE_DID_2663_MIS 34          /* data byte: cylinder 1's count, high byte first; n at 34 + 2 (n - 1) */
+#define MUSE_MISFIRE_CYLS 4
+
+typedef struct {
+    bool ac;                /* the A/C compressor clutch is engaged */
+    int generator_pct;      /* the generator's duty, 0..100 */
+} muse_did_2610_t;
+
+typedef struct {
+    uint16_t count[MUSE_MISFIRE_CYLS];   /* misfires per cylinder, 1..4 */
+} muse_did_2663_t;
+
+muse_elm_result_t muse_elm_parse_did_2610(const char *resp, muse_did_2610_t *out);
+muse_elm_result_t muse_elm_parse_did_2663(const char *resp, muse_did_2663_t *out);
+
+/*
+ * The DIDs the poll loop reads, one table: each is asked by physical address
+ * with the same state-safe choreography (muse_obd.c's did_read), probed once
+ * per connection and never again on it if refused, silent or garbled, and
+ * read on its own floor once answered. 0x2612 keeps its 1 s so the VTEC hold
+ * stays fresh; 0x2610 and 0x2663 change slowly and take 3 s.
+ */
+typedef enum {
+    MUSE_DID_2612,   /* the VTEC flags */
+    MUSE_DID_2610,   /* the A/C clutch and the generator */
+    MUSE_DID_2663,   /* the misfire counts */
+    MUSE_DIDS,
+} muse_did_t;
+
+#define MUSE_DID_2610_MIN_MS 3000u    /* tunable: 0x2610's minimum interval */
+#define MUSE_DID_2663_MIN_MS 3000u    /* tunable: 0x2663's minimum interval */
+
+typedef struct {
+    uint16_t did;
+    const char *req;        /* the UDS 0x22 request, "222612" */
+    uint8_t min_data;       /* data bytes a read needs (0x2612: exactly its 54) */
+    uint32_t min_ms;        /* the scheduler's floor between reads */
+} muse_did_info_t;
+
+/* One per muse_did_t, in that order. */
+extern const muse_did_info_t MUSE_DID_INFO[MUSE_DIDS];
+
+/*
+ * The misfire warning: a cylinder's counter strictly increased between two
+ * consecutive good 0x2663 reads with the engine running (latest RPM >=
+ * MUSE_COOLANT_RUNNING_RPM). The first good read of a connection is the
+ * baseline and never fires. A read where any counter went down (the ECU
+ * cleared them, or one wrapped) is a new baseline and never fires. Each read
+ * becomes the baseline for the next, so an increase is counted once; one
+ * with the engine off, or inside MUSE_MISFIRE_COOLDOWN_MS of the last fire,
+ * is let go without firing. `rose` has bit n set when cylinder n + 1 went up
+ * on the latest read (the card's amber), whatever came of it.
+ */
+#define MUSE_MISFIRE_COOLDOWN_MS 120000u   /* mirrors MUSE_COOLANT_COOLDOWN_MS */
+
+typedef struct {
+    bool have;                            /* base holds the last good read */
+    uint16_t base[MUSE_MISFIRE_CYLS];
+    uint8_t rose;                         /* bit n: cylinder n + 1 went up on the latest read */
+    bool fired;                           /* has fired since init: last_fire_ms is valid */
+    uint32_t last_fire_ms;
+} muse_misfire_trigger_t;
+
+void muse_misfire_init(muse_misfire_trigger_t *t);
+/* The link dropped: the next read is a baseline again; the cooldown holds. */
+void muse_misfire_reset(muse_misfire_trigger_t *t);
+/* One good 0x2663 read at now_ms (any wrapping millisecond clock), with the
+ * latest RPM (negative: unknown); true to fire. */
+bool muse_misfire_update(muse_misfire_trigger_t *t, const uint16_t count[MUSE_MISFIRE_CYLS], int rpm,
+                         uint32_t now_ms);
+
+/*
  * The poll pipeline's scheduler (OBD-PIPELINE-TASK): what the response-driven
  * loop asks next, replacing the fixed RPM/secondary rotation. Producers hold
  * soft freshness targets, not an order: RPM (target 0, the standing filler,
@@ -222,20 +318,26 @@ muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out
  * the most overdue item; ties break by priority. OBD-MORE-PIDS-TASK adds
  * AFR (34) and pedals D and E (49, 4A) to the fast tier, fuel level (2F) to
  * the mid one and module voltage (42) and barometric pressure (33) to the
- * slow one. Targets are floors on
+ * slow one; OBD-DID-CARDS-TASK adds DIDs 0x2610 and 0x2663 (3 s each) beside
+ * 0x2612, each in the schedule only once its probe answered. Targets are
+ * floors on
  * freshness, never rate caps: a faster link simply refreshes everything
  * sooner, and nothing is ever delayed to meet a target.
  *
  * A Mode 01 pick carries up to MUSE_ELM_BATCH_MAX due PIDs in one request,
- * RPM first when it is among them; the DID is always a pick of its own. A
+ * RPM first when it is among them; a DID is always a pick of its own, one at
+ * a time, so DID exchanges never overlap each other or Mode 01. When DIDs
+ * are due together the most overdue goes, which keeps 0x2612 on its 1 s
+ * however the 3 s pair falls. A
  * signal already queued or in flight is never picked twice: a pick is the
  * only request outstanding, and an item leaves the due set the moment its
  * exchange completes (muse_sched_done_pid / muse_sched_done_did).
  *
- * One shaping rule, tunable: the DID keeps MUSE_SCHED_DID_MIN_MS between
- * reads (the probe before polling counts as one). Its multi-frame exchange
- * is the longest on the link; without the floor it could crowd out Mode 01
- * when everything is overdue at connect time.
+ * One shaping rule, tunable: each DID keeps its MUSE_DID_INFO[].min_ms
+ * between reads (MUSE_SCHED_DID_MIN_MS for 0x2612; the probe before polling
+ * counts as one). Their multi-frame exchanges are the longest on the link;
+ * without the floors they could crowd out Mode 01 when everything is overdue
+ * at connect time.
  *
  * A PID that misses twice against a live ECU (muse_sched_done_pid's
  * ecu_live: another PID in its exchange read a value, or RPM is locked on)
@@ -247,12 +349,13 @@ muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out
 #define MUSE_SCHED_DID_MIN_MS 1000u   /* tunable: DID 0x2612's minimum interval */
 
 typedef struct {
-    bool did;               /* the pick is the DID 0x2612 read, never batched */
+    bool did;               /* the pick is a DID read (which), never batched */
+    uint8_t which;          /* the muse_did_t, when did */
     uint8_t pids[MUSE_ELM_BATCH_MAX];
     int n;                  /* Mode 01: how many of pids[] the request carries */
 } muse_sched_req_t;
 
-#define MUSE_SCHED_ITEMS 18   /* RPM, the DID and the sixteen secondaries */
+#define MUSE_SCHED_ITEMS 20   /* RPM, the three DIDs and the sixteen secondaries */
 
 typedef struct {
     uint32_t last_ms[MUSE_SCHED_ITEMS];   /* the last completed attempt */
@@ -260,29 +363,28 @@ typedef struct {
     bool present[MUSE_SCHED_ITEMS];       /* the support scan didn't rule it out */
     bool evicted[MUSE_SCHED_ITEMS];       /* missed out of the schedule */
     uint8_t misses[MUSE_SCHED_ITEMS];
-    uint32_t did_last_ms;                 /* the last DID attempt (the floor) */
-    bool did_have;
-    bool did_on;                          /* this connection reads the DID */
+    bool did_on[MUSE_DIDS];               /* this connection reads the DID (its probe answered) */
     bool batch_off;                       /* latched: single-PID for the connection */
 } muse_sched_t;
 
 /* Starts a connection's schedule: the scan's proven-unsupported PIDs are
- * absent, the rest present and all due; the DID only when `did`, with its
- * floor running from now_ms (the probe just read it). */
-void muse_sched_init(muse_sched_t *s, const muse_elm_support_t *sup, bool did, uint32_t now_ms);
+ * absent, the rest present and all due; a DID only when its bit (1 << its
+ * muse_did_t) is in `dids`, with its floor running from now_ms (the probe
+ * just read it). */
+void muse_sched_init(muse_sched_t *s, const muse_elm_support_t *sup, unsigned dids, uint32_t now_ms);
 /* A support scan that landed after polling started (the first-RPM retry):
  * proven-unsupported PIDs leave; evictions and attempts stand. */
 void muse_sched_apply_support(muse_sched_t *s, const muse_elm_support_t *sup);
-/* The DID probe answered after polling started: it joins the schedule. */
-void muse_sched_set_did(muse_sched_t *s, bool did, uint32_t now_ms);
+/* A DID's probe answered after polling started: it joins the schedule. */
+void muse_sched_set_did(muse_sched_t *s, muse_did_t did, bool on, uint32_t now_ms);
 /* The next request: the most overdue eligible item, a batch of due Mode 01
- * PIDs, the DID on its own, or RPM alone when nothing is due (the filler). */
+ * PIDs, one DID on its own, or RPM alone when nothing is due (the filler). */
 void muse_sched_pick(const muse_sched_t *s, uint32_t now_ms, muse_sched_req_t *req);
 /* A Mode 01 exchange for `pid` completed: got says a value was read;
  * ecu_live says the ECU demonstrably answers (see above). */
 void muse_sched_done_pid(muse_sched_t *s, int pid, bool got, bool ecu_live, uint32_t now_ms);
-/* A DID exchange completed, answered or not: the floor runs from here. */
-void muse_sched_done_did(muse_sched_t *s, uint32_t now_ms);
+/* A DID exchange completed, answered or not: its floor runs from here. */
+void muse_sched_done_did(muse_sched_t *s, muse_did_t did, uint32_t now_ms);
 /* A batch request was refused as a whole: single-PID for the connection. */
 void muse_sched_latch_batch_off(muse_sched_t *s);
 

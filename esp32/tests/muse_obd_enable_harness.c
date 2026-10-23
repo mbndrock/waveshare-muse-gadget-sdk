@@ -32,6 +32,7 @@
 #include <time.h>
 
 #include "vtec_did_frames.h"
+#include "did_cards_frames.h"
 
 /* ---- The fakes' plumbing: one lock for everything, a virtual clock ---- */
 
@@ -446,7 +447,7 @@ int ble_gattc_disc_all_dscs(uint16_t conn, uint16_t start, uint16_t end, ble_gat
  * The adapter keeps the ELM state the DID exchange changes, and answers
  * Mode 01 only in the state Mode 01 expects (the functional header, no
  * receive filter), so a state left behind shows as RPM going missing. */
-typedef enum { DID_ON, DID_OFF, DID_REFUSE, DID_NO_DATA, DID_GARBAGE, DID_HANG } did_mode_t;
+typedef enum { DID_ON, DID_OFF, DID_REFUSE, DID_NO_DATA, DID_GARBAGE, DID_HANG, DID_SHORT } did_mode_t;
 static struct {
     const char *dpn;            /* ATDPN's answer */
     did_mode_t did;
@@ -455,11 +456,47 @@ static struct {
     int did_reqs;               /* 222612s sent */
     int bad_state_rpm;          /* 010Cs that found the DID's state left behind */
     bool s2000;                 /* Derek's 2008 S2000's support masks and its OBD-MORE-PIDS-TASK PIDs */
+    /* OBD-DID-CARDS-TASK's DIDs, silent unless a test says otherwise: 0x2610
+     * answers its "A/C on" fixture (DID_ON) or "off" one (DID_OFF); 0x2663
+     * answers mis_frames (an OBDb fixture) or, without them, a block with
+     * mis[]'s counts; DID_SHORT is a reply one byte short of its signals. */
+    did_mode_t did2610, did2663;
+    const char *const *mis_frames;
+    uint16_t mis[4];
+    int did2610_reqs, did2663_reqs;
+    bool engine_off;            /* 010C goes unanswered (RPM unknown) */
     char log[8192][16];         /* every command, in order */
     int logged;
-} g_car = { .dpn = "A6" };
+} g_car = { .dpn = "A6", .did2610 = DID_NO_DATA, .did2663 = DID_NO_DATA };
 
 static char g_did_reply[512];
+
+/* A 62 26 63 reply of n bytes in all with these counts at data bytes
+ * 34..41, as the ELM prints it: the length line and the frames, padded. */
+static const char *misfire_block(const uint16_t mis[4], size_t n)
+{
+    /* <= 10 frames of <= 17 chars plus length/prompt/NUL: < 180 of 512. */
+    if (n > 64) {
+        abort();
+    }
+    uint8_t b[64] = { 0x62, 0x26, 0x63 };
+    for (int c = 0; c < 4; c++) {
+        b[3 + 34 + 2 * c] = (uint8_t)(mis[c] >> 8);
+        b[3 + 35 + 2 * c] = (uint8_t)mis[c];
+    }
+    size_t at = 0, cap = sizeof(g_did_reply);
+    at += (size_t)snprintf(g_did_reply + at, cap - at, "%03X\r", (unsigned)n);
+    size_t i = 0;
+    for (int f = 0; i < n; f++) {
+        at += (size_t)snprintf(g_did_reply + at, cap - at, "%X:", (unsigned)(f & 0xF));
+        for (int k = 0; k < (f == 0 ? 6 : 7); k++, i++) {
+            at += (size_t)snprintf(g_did_reply + at, cap - at, "%02X", i < n ? b[i] : 0x55);
+        }
+        at += (size_t)snprintf(g_did_reply + at, cap - at, "\r");
+    }
+    snprintf(g_did_reply + at, cap - at, "\r>");
+    return g_did_reply;
+}
 
 static int hex_byte(const char *p)
 {
@@ -513,6 +550,9 @@ static const char *pid_line(int pid)
         case 0x2F: return "41 2F A0";            /* 62% */
         default: break;
         }
+    }
+    if (pid == 0x0C && g_car.engine_off) {
+        return NULL;   /* the engine is off: no RPM */
     }
     switch (pid) {
     case 0x00: return "41 00 BE 1F A8 12";   /* no PID 20: the scan stops here */
@@ -615,6 +655,35 @@ static const char *answer(const char *cmd)
         case DID_NO_DATA: return "NO DATA\r\r>";
         case DID_GARBAGE: return "039\r0:622612FFFFC0\r2:001E00\r\r>";
         case DID_HANG: return NULL;   /* no prompt at all */
+        case DID_SHORT: return "NO DATA\r\r>";   /* 0x2663's only */
+        }
+    }
+    if (!strcmp(cmd, "222610")) {
+        g_car.did2610_reqs++;
+        if (!g_car.physical || !g_car.filter) return "NO DATA\r\r>";
+        switch (g_car.did2610) {
+        case DID_ON: return elm_from_frames(g_did_reply, sizeof(g_did_reply), S2000_2610_AC_ON, S2000_DID_FRAMES, false);
+        case DID_OFF: return elm_from_frames(g_did_reply, sizeof(g_did_reply), S2000_2610_AC_OFF, S2000_DID_FRAMES, false);
+        case DID_REFUSE: return "7F2231\r\r>";
+        case DID_GARBAGE: return "039\r0:622610FFFDF0\r2:61E000\r\r>";
+        case DID_HANG: return NULL;
+        default: return "NO DATA\r\r>";
+        }
+    }
+    if (!strcmp(cmd, "222663")) {
+        g_car.did2663_reqs++;
+        if (!g_car.physical || !g_car.filter) return "NO DATA\r\r>";
+        switch (g_car.did2663) {
+        case DID_ON:
+            if (g_car.mis_frames) {
+                return elm_from_frames(g_did_reply, sizeof(g_did_reply), g_car.mis_frames, S2000_DID_FRAMES, false);
+            }
+            return misfire_block(g_car.mis, 57);
+        case DID_SHORT: return misfire_block(g_car.mis, 3 + 41);   /* one short of cylinder 4's low byte */
+        case DID_REFUSE: return "7F2231\r\r>";
+        case DID_GARBAGE: return "039\r0:622663F3FFFC\r2:3FF0E0\r\r>";
+        case DID_HANG: return NULL;
+        default: return "NO DATA\r\r>";
         }
     }
     if (g_car.physical || g_car.filter) {
@@ -808,7 +877,6 @@ static void check_quiet(const char *when)
     CHECK(is_off(), "%s: left off", when);
 }
 
-#ifndef MUSE_OBD_HARNESS_DID
 /* Waits in real time for pred while the task polls (a polling task never
  * blocks, so pass_by() can't be used); false if it never holds. */
 static bool settle(pred_t pred)
@@ -822,12 +890,7 @@ static bool settle(pred_t pred)
     return false;
 }
 
-static bool link_moving(void)
-{
-    muse_obd_status_t st = status();
-    return st.link_exchanges > 0 && st.link_batch_pct > 0;
-}
-
+#ifndef MUSE_OBD_HARNESS_DID
 /* Lets ms of the task's own time go by while it polls: a response-driven
  * loop never blocks, and each reply moves the clock on. False if it stalls. */
 static bool polled_for(uint64_t ms)
@@ -845,6 +908,38 @@ static bool polled_for(uint64_t ms)
         real_nap();
     }
     return false;
+}
+
+#else
+/* Whether pred held at any moment while ms of the task's own time went by
+ * (it polls, so this watches instead of sampling). */
+static bool seen_during(pred_t pred, uint64_t ms)
+{
+    pthread_mutex_lock(&g_mu);
+    uint64_t until = g_now + ms;
+    pthread_mutex_unlock(&g_mu);
+    for (long spins = 0; spins < 5000000; spins++) {
+        if (pred()) {
+            return true;
+        }
+        pthread_mutex_lock(&g_mu);
+        bool done = g_now >= until;
+        pthread_mutex_unlock(&g_mu);
+        if (done) {
+            return pred();
+        }
+        real_nap();
+    }
+    return pred();
+}
+
+#endif
+
+#ifndef MUSE_OBD_HARNESS_DID
+static bool link_moving(void)
+{
+    muse_obd_status_t st = status();
+    return st.link_exchanges > 0 && st.link_batch_pct > 0;
 }
 
 /* OBD-MORE-PIDS-TASK: every new extra has a reading. */
@@ -1128,8 +1223,103 @@ static void clear_log(void)
     ble_unlock();
 }
 
+/* ---- OBD-DID-CARDS-TASK ---- */
+
+static int fired(void) { ble_lock(); int n = g_coolant_fired; ble_unlock(); return n; }
+static int s_want_fired;
+static bool fired_reach(void) { return fired() >= s_want_fired; }
+static bool reqs_2663_reach(void) { return car(&g_car.did2663_reqs) >= s_want; }
+static bool reqs_2610_reach(void) { return car(&g_car.did2610_reqs) >= s_want; }
+static bool cards_dids_read(void)
+{
+    muse_obd_status_t st = status();
+    return st.did_2610 && st.did_2663 && st.ac_clutch.valid && st.misfire[0].valid;
+}
+static bool rpm_gone(void) { return !status().rpm_valid; }
+static bool rose_set(void) { return status().misfire_rose != 0; }
+static bool rpm_back(void) { return status().rpm_valid; }
+
+static void set_mis(const char *const *frames, uint16_t c1, uint16_t c2, uint16_t c3, uint16_t c4)
+{
+    ble_lock();
+    g_car.mis_frames = frames;
+    g_car.mis[0] = c1, g_car.mis[1] = c2, g_car.mis[2] = c3, g_car.mis[3] = c4;
+    ble_unlock();
+}
+
+static void set_dids(did_mode_t d2610, did_mode_t d2663)
+{
+    ble_lock();
+    g_car.did2610 = d2610;
+    g_car.did2663 = d2663;
+    ble_unlock();
+}
+
+/* Every DID request in the log since it was cleared sits inside its own
+ * choreography (header and filter set just before, Mode 01's state put back
+ * just after), with nothing else in between: no Mode 01 and no other DID.
+ * Returns how many reads of each DID it saw. */
+static void check_did_exchanges(const char *when, int reads[3])
+{
+    static const char *const REQ[3] = { "222612", "222610", "222663" };
+    reads[0] = reads[1] = reads[2] = 0;
+    ble_lock();
+    int n = g_car.logged;
+    bool inside = false;
+    for (int i = 0; i < n; i++) {
+        const char *c = g_car.log[i];
+        if (!strcmp(c, "ATSHDA10F1")) {
+            CHECK(!inside, "%s: a DID exchange inside another at %d", when, i);
+            inside = true;
+            continue;
+        }
+        if (!strcmp(c, "ATSHDB33F1")) {
+            inside = false;
+            continue;
+        }
+        int d = -1;
+        for (int k = 0; k < 3; k++) {
+            if (!strcmp(c, REQ[k])) {
+                d = k;
+            }
+        }
+        if (d >= 0) {
+            reads[d]++;
+            CHECK(inside && i >= 1 && !strcmp(g_car.log[i - 1], "ATCRA18DAF110"), "%s: %s at %d without its header",
+                  when, c, i);
+            if (i + 2 < n) {
+                CHECK(!strcmp(g_car.log[i + 1], "ATAR") && !strcmp(g_car.log[i + 2], "ATSHDB33F1"),
+                      "%s: %s at %d not put back", when, c, i);
+            }
+            continue;
+        }
+        CHECK(!inside || !strcmp(c, "ATCRA18DAF110") || !strcmp(c, "ATAR"),
+              "%s: %s inside a DID exchange at %d", when, c, i);
+    }
+    ble_unlock();
+}
+
 int main(void)
 {
+    /* A reply received just before disconnect must not fire after header
+     * restoration observes the lost link. Exercise the production dispatch
+     * before starting the worker, so this boundary is deterministic. */
+    muse_misfire_init(&s_misfire);
+    const uint16_t baseline[4] = { 0 };
+    muse_misfire_update(&s_misfire, baseline, 800, 0);
+    did_reading_t late = { .misfire = { .count = { 1, 0, 0, 0 } } };
+    s_rpm = 800;
+    got_did(MUSE_DID_2663, &late);
+    CHECK(g_coolant_fired == 0 && s_misfire.base[0] == 0, "disconnected reply fired or moved baseline");
+    s_conn = CONN;
+    s_enabled = false;
+    got_did(MUSE_DID_2663, &late);
+    CHECK(g_coolant_fired == 0 && s_misfire.base[0] == 0, "disabled reply moved baseline");
+    s_conn = BLE_HS_CONN_HANDLE_NONE;
+    s_enabled = true;
+    s_rpm = -1;
+    muse_misfire_init(&s_misfire);
+
     /* The level: a fresh "on" solenoid only, and only while OBD is on. RPM
      * plays no part, at any value. */
     muse_obd_status_t st = { .enabled = true, .rpm_valid = true, .rpm = 9000, .rpm_age_ms = 10 };
@@ -1257,6 +1447,174 @@ int main(void)
     ble_unlock();
     st = status();
     CHECK(!muse_obd_vtec_on(&st) && st.rpm_valid, "CAN 11-bit");
+
+    /* OBD-DID-CARDS-TASK: DIDs 0x2610 and 0x2663 against the real task. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "cards DIDs: not off");
+    /* Off, the bench's ">misfire" does nothing at all. */
+    int base_fired = fired();
+    CHECK(muse_obd_bench_misfire() == -1 && fired() == base_fired, "bench while off");
+    set_car(DID_ON, "A7");
+    set_dids(DID_ON, DID_ON);
+    set_mis(S2000_2663_NONE, 0, 0, 0, 0);
+    ble_lock();
+    g_car.did_reqs = g_car.did2610_reqs = g_car.did2663_reqs = 0;
+    ble_unlock();
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    CHECK(settle(cards_dids_read), "cards DIDs: no readings");
+    st = status();
+    CHECK(st.did_2612 && st.did_2610 && st.did_2663, "answered: %d %d %d", st.did_2612, st.did_2610, st.did_2663);
+    CHECK(st.ac_clutch.value == 1 && st.generator_pct.valid && st.generator_pct.value == 45, "2610: ac %d gen %d",
+          st.ac_clutch.value, st.generator_pct.value);
+    for (int c = 0; c < 4; c++) {
+        CHECK(st.misfire[c].valid && st.misfire[c].value == 0, "2663: cylinder %d %d", c + 1, st.misfire[c].value);
+    }
+    CHECK(st.misfire_rose == 0 && fired() == base_fired, "the baseline read fired");
+
+    /* The schedule: every DID exchange whole and alone, 0x2612 the most
+     * often (1 s against the pair's 3 s), each probe once, Mode 01 safe. */
+    clear_log();
+    s_want = car(&g_car.did2663_reqs) + 3;
+    CHECK(settle(reqs_2663_reach), "2663 not read again");
+    int reads[3];
+    check_did_exchanges("cards DIDs", reads);
+    CHECK(reads[0] >= 2 * reads[1] && reads[0] >= 2 * reads[2] && reads[1] >= 2 && reads[2] >= 3,
+          "reads 2612 %d, 2610 %d, 2663 %d", reads[0], reads[1], reads[2]);
+    CHECK(car(&g_car.bad_state_rpm) == 0, "cards DIDs: Mode 01 found a DID's state");
+    st = status();
+    CHECK(st.polling && st.rpm_valid && st.rpm == 1726 && muse_obd_vtec_on(&st), "cards DIDs: RPM or VTEC lost");
+
+    /* A cylinder 1 increase on OBDb's own frames, the engine running: one
+     * warning, through the coolant warning's plumbing, and the amber mark. */
+    s_want_fired = base_fired + 1;
+    set_mis(S2000_2663_CYL1, 0, 0, 0, 0);
+    CHECK(settle(fired_reach), "an increase didn't fire");
+    /* (The amber mark lasts one read, which the free-running task can be
+     * past by now: the trigger's own test checks it read by read.) */
+    CHECK(status().misfire[0].value == 1, "after the increase: %d", status().misfire[0].value);
+    /* Counted once: the next reads leave it and clear the mark. */
+    s_want = car(&g_car.did2663_reqs) + 2;
+    CHECK(settle(reqs_2663_reach), "2663 stopped");
+    CHECK(fired() == base_fired + 1 && status().misfire_rose == 0, "fired %d, rose %x", fired() - base_fired,
+          status().misfire_rose);
+    /* The bench inside the cooldown: the trigger lets it go... */
+    CHECK(muse_obd_bench_misfire() == 0 && fired() == base_fired + 1, "bench inside the cooldown fired");
+    /* ...and the car's baseline is untouched by it: the same counts again
+     * fire nothing, and the card isn't marked. */
+    s_want = car(&g_car.did2663_reqs) + 2;
+    CHECK(settle(reqs_2663_reach), "2663 stopped after the bench");
+    CHECK(fired() == base_fired + 1 && status().misfire_rose == 0, "the bench moved the baseline");
+    /* A cylinder 2 increase inside the cooldown: marked, not fired. */
+    set_mis(NULL, 1, 1, 0, 0);
+    s_want = car(&g_car.did2663_reqs) + 1;
+    CHECK(settle(reqs_2663_reach), "2663 stopped (cylinder 2)");
+    CHECK(fired() == base_fired + 1, "fired inside the cooldown");
+
+    /* A short read mid-connection: no reading, the last one ages, nothing
+     * made up, still asked. Garbled the same. */
+    set_dids(DID_ON, DID_SHORT);
+    set_mis(NULL, 50, 50, 50, 50);
+    s_want = car(&g_car.did2663_reqs) + 2;
+    CHECK(settle(reqs_2663_reach), "short: stopped asking");
+    st = status();
+    CHECK(st.did_2663 && st.misfire[0].valid && st.misfire[0].value == 1 && st.misfire[1].value == 1,
+          "short: %d %d", st.misfire[0].value, st.misfire[1].value);
+    CHECK(st.misfire[0].age_ms > 0, "short: the reading didn't age");
+    set_dids(DID_GARBAGE, DID_GARBAGE);
+    s_want = car(&g_car.did2610_reqs) + 2;
+    CHECK(settle(reqs_2610_reach), "garbled 2610: stopped asking");
+    st = status();
+    CHECK(st.did_2610 && st.ac_clutch.valid && st.ac_clutch.value == 1 && st.polling && st.rpm_valid,
+          "garbled 2610: readings %d/%d", st.ac_clutch.valid, st.ac_clutch.value);
+    CHECK(fired() == base_fired + 1 && ble(&g_ble.terminate) >= 0, "garbled: fired");
+
+    /* Off: no DID read at all, the readings go, the answers stay. Five
+     * quiet minutes pass, so the cooldown is over when it comes back. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "cards DIDs: not off (2)");
+    st = status();
+    CHECK(st.did_2610 && st.did_2663 && !st.ac_clutch.valid && !st.generator_pct.valid && !st.misfire[0].valid
+          && st.misfire_rose == 0, "off: the readings stayed");
+    int r2610 = car(&g_car.did2610_reqs), r2663 = car(&g_car.did2663_reqs);
+    check_off("cards DIDs");
+    check_quiet("cards DIDs");
+    CHECK(car(&g_car.did2610_reqs) == r2610 && car(&g_car.did2663_reqs) == r2663, "a DID read while off");
+    CHECK(fired() == base_fired + 1, "a warning while off");
+
+    /* A new connection: its first read is a baseline, however high. */
+    set_dids(DID_ON, DID_ON);
+    set_mis(NULL, 7, 7, 7, 7);
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    CHECK(settle(cards_dids_read), "reconnect: no readings");
+    s_want = car(&g_car.did2663_reqs) + 1;
+    CHECK(settle(reqs_2663_reach), "reconnect: 2663");
+    CHECK(fired() == base_fired + 1, "the reconnect's baseline fired");
+    /* The engine off: an increase is let go, and stays let go once it runs. */
+    ble_lock();
+    g_car.engine_off = true;
+    ble_unlock();
+    CHECK(settle(rpm_gone), "RPM didn't go");
+    set_mis(NULL, 8, 7, 7, 7);
+    s_want = car(&g_car.did2663_reqs) + 2;
+    CHECK(settle(reqs_2663_reach), "engine off: 2663");
+    CHECK(fired() == base_fired + 1 && status().misfire[0].value == 8, "engine off: fired");
+    ble_lock();
+    g_car.engine_off = false;
+    ble_unlock();
+    CHECK(settle(rpm_back), "RPM didn't come back");
+    s_want = car(&g_car.did2663_reqs) + 2;
+    CHECK(settle(reqs_2663_reach), "engine on: 2663");
+    CHECK(fired() == base_fired + 1, "an increase seen with the engine off fired later");
+    /* Running, past the cooldown: an increase fires; then the bench, within
+     * the new cooldown, doesn't. */
+    s_want_fired = base_fired + 2;
+    set_mis(NULL, 8, 7, 7, 9);
+    CHECK(settle(fired_reach), "running, past the cooldown: no fire");
+    CHECK(muse_obd_bench_misfire() == 0, "bench right after a fire");
+
+    /* An ECU that refuses both new DIDs: each asked once on the connection. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "refuse: not off");
+    check_quiet("before refuse");
+    set_dids(DID_REFUSE, DID_REFUSE);
+    ble_lock();
+    g_car.did_reqs = g_car.did2610_reqs = g_car.did2663_reqs = 0;
+    ble_unlock();
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    s_want = 6;
+    CHECK(settle(did_reqs_reach), "refuse: 2612 not polled");
+    st = status();
+    CHECK(car(&g_car.did2610_reqs) == 1 && car(&g_car.did2663_reqs) == 1, "refused: asked %d and %d times",
+          car(&g_car.did2610_reqs), car(&g_car.did2663_reqs));
+    CHECK(!st.did_2610 && !st.did_2663 && st.did_2612 && !st.ac_clutch.valid && !st.misfire[0].valid,
+          "refused: still answered");
+    /* With the trigger idle the bench fires through it, past the cooldown
+     * (the quiet minutes above). */
+    s_want_fired = fired() + 1;
+    CHECK(muse_obd_bench_misfire() == 1 && fired_reach(), "bench: no fire");
+    CHECK(muse_obd_bench_misfire() == 0, "bench: fired twice inside the cooldown");
+
+    /* The bench before a connection's first read leaves no baseline of its
+     * own behind: that read is still the car's baseline, unmarked. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "bench baseline: not off");
+    check_quiet("bench baseline");   /* past the bench's cooldown */
+    set_dids(DID_ON, DID_ON);
+    set_mis(NULL, 4, 4, 4, 4);
+    muse_obd_set_enabled(true);
+    int before = fired();
+    CHECK(muse_obd_bench_misfire() == 1 && fired() == before + 1, "bench before the link: no fire");
+    link_up(CONN);
+    CHECK(settle(cards_dids_read), "bench baseline: no readings");
+    /* Watched the whole time, not sampled: a leaked count would mark
+     * every cylinder for a read. */
+    CHECK(!seen_during(rose_set, 8000), "the bench's count leaked into the car's baseline");
+    st = status();
+    CHECK(st.misfire[0].value == 4 && fired() == before + 1, "bench baseline: %d, fired %d", st.misfire[0].value,
+          fired() - before);
 
     if (s_fail) {
         fprintf(stderr, "%d failed\n", s_fail);

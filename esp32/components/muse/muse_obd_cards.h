@@ -22,9 +22,12 @@
  * The car data cards (CONFIG_MUSE_OBD_VTEC): three passive tiles between the
  * face and settings, there only while the OBD link is up (muse_ui.c puts the
  * tiles in and takes them out), that show what the car's ECU answers, from
- * muse_obd_status(). "Temps": coolant, intake air, ambient. "Engine": RPM,
- * timing advance, load beside MAP, air-fuel ratio. "Drive": speed (km/h and
- * mph), throttle beside fuel level, short- and long-term fuel trim.
+ * muse_obd_status(). "Temps": coolant, intake air, ambient, the A/C clutch
+ * (DID 0x2610: ON, OFF or "--"). "Engine": RPM, timing advance beside the
+ * air-fuel ratio, load beside MAP, and the four cylinders' misfire counts
+ * (DID 0x2663, "--" until the first read, amber while a count went up on the
+ * latest read). "Drive": speed (km/h and mph), throttle beside fuel level,
+ * short- and long-term fuel trim.
  *
  * A reading older than MUSE_OBD_CARD_STALE_MS is dimmed, one not received yet
  * reads "...", and one the support scan proved unsupported reads "--". While
