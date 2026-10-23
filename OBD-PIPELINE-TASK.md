@@ -109,9 +109,12 @@ As built:
   so a slow flash write cannot starve it into drops. log_sample is called
   whenever a request carried RPM, as before; the CSV format is unchanged.
 
-Tests: 718 run, 0 failures, 6 errors (the pre-existing cJSON-environment
+Tests: 706 run, 0 failures, 6 errors (the pre-existing cJSON-environment
 ones, unchanged from baseline), 10 skipped. Baseline to beat was 706 / 0 /
-6 / 10. New coverage: scheduler ordering, dedupe, DID floor, filler,
+6 / 10. (QA correction, Muse: the implementer's report said 718; the
+canonical full-suite run at the pushed HEAD gives 706, because the new
+coverage deepened existing test methods and harness scenarios rather than
+adding test cases. The OBD subset is 52 tests, all passing.) New coverage: scheduler ordering, dedupe, DID floor, filler,
 two-miss eviction and the batch latch; batch parser (full reply, partial
 reply, a malformed line, whole-batch NO DATA and "?"); link stats math;
 the ATST policy. The DID and enable harnesses were reworked to the
