@@ -70,10 +70,8 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=20
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
 
-# USB drive mode (muse_usb_drive.c): TinyUSB MSC presenting the closed trip
-# logs as a read-only drive. Entered by reboot (the Serial/JTAG console and
-# TinyUSB share the USB PHY), so no console sdkconfig changes are needed and
-# ROM download-mode flashing is unaffected in both modes.
-CONFIG_MUSE_USB_DRIVE=y
-CONFIG_TINYUSB_MSC_ENABLED=y
-CONFIG_TINYUSB_MSC_BUFSIZE=4096
+# USB drive mode stays off until muse_usb_drive.c is migrated to the
+# esp_tinyusb v2 driver API (IDF v6 moved tinyusb to the component
+# manager, and esp_tinyusb owns the MSC callbacks the raw code defines).
+# CONFIG_MUSE_USB_DRIVE is not set
+

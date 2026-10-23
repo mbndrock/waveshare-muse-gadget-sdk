@@ -162,7 +162,7 @@ set(muse_priv_requires
     # The Sticky's microSD (CONFIG_MUSE_STICKY_SD) and the OBD trip log's
     # flash store (CONFIG_MUSE_OBD_VTEC). Requirements are resolved before
     # Kconfig values exist, so these can't depend on it; only the code does.
-    fatfs esp_driver_sdspi sdmmc esp_partition wear_levelling tinyusb)
+    fatfs esp_driver_sdspi sdmmc esp_partition wear_levelling)
 list(APPEND muse_priv_requires camera)
 
 idf_component_register(

@@ -57,7 +57,9 @@ class MuseMscFatTest(unittest.TestCase):
         settings = (MUSE / "muse_settings_ui.c").read_text()
         self.assertIn("USB drive mode", settings)
         overlay = (ROOT / "devices/sdkconfig.muse-waveshare-s3-18").read_text()
-        self.assertIn("CONFIG_MUSE_USB_DRIVE=y", overlay)
+        # Off until muse_usb_drive.c is migrated to the esp_tinyusb v2 API
+        # (IDF v6 moved tinyusb to the component manager).
+        self.assertIn("# CONFIG_MUSE_USB_DRIVE is not set", overlay)
         # No partition or log-store format changes ride along.
         self.assertNotIn("muse_log_store_delete", drive)
         self.assertNotIn("esp_partition", drive)
