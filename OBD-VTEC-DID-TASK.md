@@ -1,6 +1,6 @@
 # OBD-VTEC-DID-TASK: true VTEC solenoid state via Honda DID 0x2612 — branch obd-vtec-reaction
 
-Written by Muse (spec), for Claude Code to implement, Muse QAs after. Read the repo AGENTS.md files first. This task lands AFTER OBD-LOG-TASK.md (the trip logging foundation) has been implemented and pushed on this branch; its preflight (in the launch job, not here) guarantees that base. If the log module does not exist in the tree you are looking at, stop and say so in Results instead of improvising.
+Written by Muse (spec), for Claude Code to implement, Muse QAs after. Read the repo AGENTS.md files first. This task is implemented in the SAME Claude session as OBD-LOG-TASK.md, immediately after it (Derek's direction, 2026-10-22: one run when the limits reset at 8 PM, not a separate later build), so Part 3 below can extend the logger that was just built in the same session. If the log module does not exist when you reach this file, stop and say so in Results instead of improvising.
 
 ## Why
 
@@ -30,7 +30,7 @@ The VTEC reaction currently fires on an RPM proxy (arm <= 5500, fire >= 6000) be
 - `obd.read` gains `vtec_sol`, `vtec_psw`, `did_2612`, `did_2612_b23` with the usual null semantics.
 - Bench: extend the existing bench pattern with `>vtecsol <0|1>` driving the trigger input directly (keeping `>vtec` working as today), if the bench structure allows it as cleanly as the existing commands; if not, say so in Results rather than forcing it.
 
-## Part 3: trip log columns (only because the log build lands first)
+## Part 3: trip log columns (the log parts land earlier in this same session)
 
 - The CSV from OBD-LOG-TASK gains two trailing columns, `vtec_sol` and `vtec_psw` (1/0, empty when unknown), sampled from the same snapshot values the logger already consumes. No other format change; the header comment notes the block DID when known.
 
