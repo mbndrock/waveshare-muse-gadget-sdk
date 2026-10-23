@@ -143,6 +143,13 @@ Muse now reacts to the world a little, like a toy that gets dizzy when you shake
 - **Waking** plays for 1.5 s every time the screen turns on.
 - **Tickled**: rub his face quickly back and forth, or tap it four times fast. He giggles for as long as you keep going, then catches his breath. A single tap still gives hearts.
 
+On the AMOLED-1.8 in the car there are three more, drawn the same way (no previews yet — the renderer tests in `esp32/tests/test_muse_pixel_*.py` pin them). They rank above the ones above: coolant first, then VTEC, then warm-up. See [In the car](#in-the-car-the-obd-reactions-and-readout) for the triggers.
+
+- **VTEC!**: an excited, buzzing banner for as long as the VTEC solenoid is on — a held pose, not a flash. It settles when the solenoid goes off or the reading goes stale.
+- **HOT!**: a worried face with sweat and steam when the coolant is too hot. A misfire count going up plays this same pose, so there is no separate misfire drawing.
+- **Warm-up thumbs-up**: a pleased raised paw when the coolant first reaches operating temperature.
+- While the OBD adapter is linked, Muse also wears a **racing helmet** with the visor up. That one isn't a timed reaction: it's an overlay (`pose.helmet`) that sits over every mode and reaction until the link drops.
+
 The timing, the sensor and the snore are part of the firmware (Apache 2.0). The drawing is in Jollybot itself — please read the note below.
 
 ### About the Jollybot avatar
