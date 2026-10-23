@@ -71,7 +71,7 @@ typedef enum { IT_START = 1, IT_ROW, IT_END } item_kind_t;
 
 typedef struct {
     uint8_t kind;
-    uint8_t len;                     /* IT_ROW: bytes of row */
+    uint16_t len;                    /* IT_ROW: bytes of row (MUSE_LOG_ROW_MAX is past 255) */
     uint32_t seq;                    /* the trip it belongs to (s_seq) */
     union {
         char row[MUSE_LOG_ROW_MAX];
@@ -388,6 +388,9 @@ void muse_obd_log_sample_of(const muse_obd_status_t *st, uint32_t ms, muse_log_s
         { MUSE_LOG_THROTTLE, MUSE_OBD_THROTTLE }, { MUSE_LOG_SPEED, MUSE_OBD_SPEED },
         { MUSE_LOG_STFT, MUSE_OBD_STFT },     { MUSE_LOG_LTFT, MUSE_OBD_LTFT },
         { MUSE_LOG_AMBIENT, MUSE_OBD_AMBIENT },
+        { MUSE_LOG_AFR, MUSE_OBD_AFR },       { MUSE_LOG_FUEL, MUSE_OBD_FUEL },
+        { MUSE_LOG_PEDAL_D, MUSE_OBD_PEDAL_D }, { MUSE_LOG_PEDAL_E, MUSE_OBD_PEDAL_E },
+        { MUSE_LOG_MODULE_V, MUSE_OBD_MODULE_V }, { MUSE_LOG_BARO, MUSE_OBD_BARO },
     };
     memset(out, 0, sizeof(*out));
     out->ms = ms;
@@ -440,7 +443,7 @@ void muse_obd_log_sample(const muse_obd_status_t *st, uint32_t now_ms)
     muse_obd_log_sample_of(st, now_ms - s_t0, &s);
     item_t it = { .kind = IT_ROW, .seq = s_seq };
     size_t n = muse_log_format_row(it.row, sizeof(it.row), &s);
-    it.len = (uint8_t)n;
+    it.len = (uint16_t)n;
     if (!n || xQueueSend(s_queue, &it, 0) != pdTRUE) {
         atomic_fetch_add(&s_lost, 1);   /* the writer is behind: dropped, counted */
     }

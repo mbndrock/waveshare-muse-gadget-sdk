@@ -202,7 +202,9 @@ class MuseObdDidContractTest(unittest.TestCase):
 
     def test_trip_log_columns(self):
         store = (MUSE / "muse_obd_log_store.c").read_text()
-        self.assertIn('[MUSE_LOG_VTEC_SOL] = "vtec_sol",\n    [MUSE_LOG_VTEC_PSW] = "vtec_psw",\n};', store)
+        # The two VTEC columns, in place; OBD-MORE-PIDS-TASK appends after them.
+        self.assertIn('[MUSE_LOG_VTEC_SOL] = "vtec_sol",\n    [MUSE_LOG_VTEC_PSW] = "vtec_psw",\n'
+                      '    [MUSE_LOG_AFR] = "afr",', store)
         log = (MUSE / "muse_obd_log.c").read_text()
         sample = function_body(log, "void muse_obd_log_sample_of(")
         self.assertIn("out->has[MUSE_LOG_VTEC_SOL] = st->vtec_sol.valid;", sample)

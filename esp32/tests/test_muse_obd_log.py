@@ -296,7 +296,7 @@ class MuseObdCardLayoutTest(unittest.TestCase):
         self.assertIn("bool rule = slot != last && !lv_obj_has_flag(slot, LV_OBJ_FLAG_HIDDEN);", rules)
         self.assertIn("LV_BORDER_SIDE_BOTTOM", self.cards)
         for name in ('"COOLANT"', '"INTAKE AIR"', '"AMBIENT"', '"RPM"', '"TIMING"', '"LOAD"', '"MAP"',
-                     '"SPEED"', '"THROTTLE"', '"STFT"', '"LTFT"'):
+                     '"SPEED"', '"THROTTLE"', '"STFT"', '"LTFT"', '"AFR"', '"FUEL"'):
             self.assertIn(name, self.cards)
 
     def test_big_fonts_enabled_for_the_obd_build_only(self):
@@ -311,7 +311,7 @@ class MuseObdCardLayoutTest(unittest.TestCase):
     def test_heroes_bars_and_the_shared_trim_row(self):
         for row in ('ROW(1, "RPM", "rpm", SRC_RPM, .hero = true, .bar_max = 8000, .vtec = true),',
                     'ROW(2, "SPEED", "mph", MUSE_OBD_SPEED, .hero = true, .mph = true),',
-                    'ROW(2, "THROTTLE", "%", MUSE_OBD_THROTTLE, .bar_max = 100),',
+                    'ROW(2, "THROTTLE", "%", MUSE_OBD_THROTTLE, .half = true, .bar_max = 100),',
                     'ROW(2, "STFT", "%", MUSE_OBD_STFT, .sign = true, .half = true, .tone = TONE_TRIM),',
                     'ROW(2, "LTFT", "%", MUSE_OBD_LTFT, .sign = true, .half = true, .tone = TONE_TRIM),'):
             self.assertIn(row, self.cards)

@@ -77,8 +77,8 @@ static void test_row(void)
     muse_log_sample_t s = { .ms = 1234 };
     char row[MUSE_LOG_ROW_MAX];
     size_t n = muse_log_format_row(row, sizeof(row), &s);
-    CHECK(n == strlen("1234,,,,,,,,,,,,,\n"));
-    CHECK(!memcmp(row, "1234,,,,,,,,,,,,,\n", n));
+    CHECK(n == strlen("1234,,,,,,,,,,,,,,,,,,,\n"));
+    CHECK(!memcmp(row, "1234,,,,,,,,,,,,,,,,,,,\n", n));
 
     s.ms = 0;
     for (int c = 0; c < MUSE_LOG_CHANNELS; c++) {
@@ -89,8 +89,34 @@ static void test_row(void)
     s.value[MUSE_LOG_VTEC_SOL] = 1;
     s.value[MUSE_LOG_VTEC_PSW] = 0;
     n = muse_log_format_row(row, sizeof(row), &s);
-    const char *want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0\n";
+    /* OBD-MORE-PIDS-TASK's columns follow, appended: afr in tenths and
+     * module_v in mV, each written in its unit with the point. */
+    const char *want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0,11.0,120,130,140,0.150,160\n";
     CHECK(n == strlen(want) && !memcmp(row, want, n));
+    /* Real readings: AFR 14.7, 13.845 V; a value under one unit keeps its
+     * zero, and one with no reading stays an empty field. */
+    s.value[MUSE_LOG_AFR] = 147;
+    s.value[MUSE_LOG_FUEL] = 62;
+    s.value[MUSE_LOG_PEDAL_D] = 20;
+    s.value[MUSE_LOG_PEDAL_E] = 10;
+    s.value[MUSE_LOG_MODULE_V] = 13845;
+    s.value[MUSE_LOG_BARO] = 101;
+    n = muse_log_format_row(row, sizeof(row), &s);
+    want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0,14.7,62,20,10,13.845,101\n";
+    CHECK(n == strlen(want) && !memcmp(row, want, n));
+    s.value[MUSE_LOG_AFR] = 5;
+    s.value[MUSE_LOG_MODULE_V] = 7;
+    s.has[MUSE_LOG_FUEL] = false;
+    n = muse_log_format_row(row, sizeof(row), &s);
+    want = "0,-20,-10,0,10,20,30,40,50,60,70,,1,0,0.5,,20,10,0.007,101\n";
+    CHECK(n == strlen(want) && !memcmp(row, want, n));
+    s.value[MUSE_LOG_AFR] = -5;   /* never from the car, but signed all the same */
+    n = muse_log_format_row(row, sizeof(row), &s);
+    CHECK(n > 0 && strstr(row, ",-0.5,") != NULL);
+    CHECK(MUSE_LOG_DECIMALS[MUSE_LOG_AFR] == 1 && MUSE_LOG_DECIMALS[MUSE_LOG_MODULE_V] == 3);
+    for (int c = 0; c < MUSE_LOG_CHANNELS; c++) {
+        CHECK(c == MUSE_LOG_AFR || c == MUSE_LOG_MODULE_V || MUSE_LOG_DECIMALS[c] == 0);
+    }
 
     /* The widest row there can be fits MUSE_LOG_ROW_MAX. */
     s.ms = UINT32_MAX;
@@ -103,11 +129,13 @@ static void test_row(void)
     CHECK(muse_log_format_row(row, n - 1, &s) == 0);   /* one short: refused, not cut */
     CHECK(muse_log_format_row(row, n, &s) == n);
 
-    CHECK(MUSE_LOG_CHANNELS == 13);
+    CHECK(MUSE_LOG_CHANNELS == 19);
+    CHECK(MUSE_LOG_ROW_MAX > 255);   /* why the log queue's row length is 16 bits */
     static const char *const NAMES[] = {
         "rpm", "coolant_c", "iat_c", "timing_deg", "map_kpa", "load_pct",
         "throttle_pct", "speed_kmh", "stft_pct", "ltft_pct", "ambient_c",
         "vtec_sol", "vtec_psw",   /* OBD-VTEC-DID-TASK: the two trailing columns */
+        "afr", "fuel_pct", "pedal_d_pct", "pedal_e_pct", "module_v", "baro_kpa",   /* OBD-MORE-PIDS-TASK */
     };
     for (int c = 0; c < MUSE_LOG_CHANNELS; c++) {
         CHECK(!strcmp(MUSE_LOG_COLUMN[c], NAMES[c]));
@@ -134,11 +162,19 @@ static void test_header(void)
         "# start=2024-10-23T16:13:20Z\n"
         "# did_2612=yes\n"
         "ms,rpm,coolant_c,iat_c,timing_deg,map_kpa,load_pct,throttle_pct,speed_kmh,stft_pct,ltft_pct,ambient_c,"
-        "vtec_sol,vtec_psw\n";
+        "vtec_sol,vtec_psw,afr,fuel_pct,pedal_d_pct,pedal_e_pct,module_v,baro_kpa\n";
     CHECK(!strcmp(h, want));
     if (strcmp(h, want)) {
         fprintf(stderr, "got:\n%s", h);
     }
+
+    /* The longest header there can be still fits MUSE_LOG_HEADER_MAX. */
+    muse_log_meta_t big = {
+        .id = MUSE_LOG_ID_MAX, .firmware = "123456789012345", .protocol = "1234567890123456789",
+        .support_valid = { true, true, true }, .support = { 1, 2, 3 },
+        .started = 4102444799LL, .did_2612 = MUSE_LOG_DID_YES,
+    };
+    CHECK(muse_log_format_header(h, MUSE_LOG_HEADER_MAX, &big) > 0);
 
     /* No clock: t0 is boot. Nothing known: "unknown". */
     m = (muse_log_meta_t){ .id = 1, .started = -1, .boot_ms = 5000 };
@@ -242,7 +278,7 @@ static void test_crc_base64_names(void)
 
 /* ---- A store ---- */
 
-#define BLOCK 256   /* small, so a trip spans many blocks */
+#define BLOCK 320   /* small, so a trip spans many blocks (at least MUSE_LOG_ROW_MAX) */
 
 static char s_expect[1 << 16];
 static size_t s_expect_len;
@@ -340,7 +376,7 @@ static void test_store(void)
     char *text = (char *)back;
     text[s_expect_len] = '\0';
     CHECK(!strncmp(text, "# muse obd trip log v1\n", 23));
-    CHECK(strstr(text, "\n0,800,,,,,,,,,,,,\n") != NULL);
+    CHECK(strstr(text, "\n0,800,,,,,,,,,,,,,,,,,,\n") != NULL);
     CHECK(strstr(text, "\n# end samples=500 dropped=0\n") != NULL);
 
     /* Reads at the start, the middle, the exact end and past it. */

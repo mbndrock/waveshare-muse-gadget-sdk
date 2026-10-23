@@ -220,6 +220,7 @@ bool muse_link_ble_started(void) { return true; }
 static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_trip_starts, g_trip_ends, g_samples;
 static bool g_trip_open;
+static muse_obd_status_t g_last_sample;   /* the snapshot the last row came from */
 
 void muse_obd_log_start(void) {}
 
@@ -237,6 +238,7 @@ void muse_obd_log_sample(const muse_obd_status_t *st, uint32_t now_ms)
     (void)now_ms;
     pthread_mutex_lock(&g_log_mu);
     g_samples += g_trip_open && st->polling;
+    g_last_sample = *st;
     pthread_mutex_unlock(&g_log_mu);
 }
 
@@ -452,6 +454,7 @@ static struct {
     bool filter;                /* ATCRA 18DAF110 is in force */
     int did_reqs;               /* 222612s sent */
     int bad_state_rpm;          /* 010Cs that found the DID's state left behind */
+    bool s2000;                 /* Derek's 2008 S2000's support masks and its OBD-MORE-PIDS-TASK PIDs */
     char log[8192][16];         /* every command, in order */
     int logged;
 } g_car = { .dpn = "A6" };
@@ -494,6 +497,23 @@ static bool mode01_has(const char *cmd, int pid)
  * 0E, 0F and 11 — not 0B (MAP), and 46 is past the mask's chain bit. */
 static const char *pid_line(int pid)
 {
+    if (g_car.s2000) {
+        /* The masks read live from the car (2026-10-22), and the six PIDs
+         * OBD-MORE-PIDS-TASK adds; ambient (46) is not in its masks. */
+        switch (pid) {
+        case 0x00: return "41 00 BE 3E A8 13";
+        case 0x20: return "41 20 80 07 F0 11";
+        case 0x40: return "41 40 FA D0 00 00";
+        case 0x0B: return "41 0B 21";            /* 33 kPa */
+        case 0x34: return "41 34 80 00 80 00";   /* lambda 1.000, AFR 14.7 */
+        case 0x49: return "41 49 33";            /* 20% */
+        case 0x4A: return "41 4A 1A";            /* 10% */
+        case 0x42: return "41 42 36 15";         /* 13.845 V */
+        case 0x33: return "41 33 65";            /* 101 kPa */
+        case 0x2F: return "41 2F A0";            /* 62% */
+        default: break;
+        }
+    }
     switch (pid) {
     case 0x00: return "41 00 BE 1F A8 12";   /* no PID 20: the scan stops here */
     case 0x0C: return "41 0C 1A F8";         /* 1726 rpm */
@@ -789,6 +809,58 @@ static void check_quiet(const char *when)
 }
 
 #ifndef MUSE_OBD_HARNESS_DID
+/* Waits in real time for pred while the task polls (a polling task never
+ * blocks, so pass_by() can't be used); false if it never holds. */
+static bool settle(pred_t pred)
+{
+    for (long spins = 0; spins < 5000000; spins++) {
+        if (pred()) {
+            return true;
+        }
+        real_nap();
+    }
+    return false;
+}
+
+static bool link_moving(void)
+{
+    muse_obd_status_t st = status();
+    return st.link_exchanges > 0 && st.link_batch_pct > 0;
+}
+
+/* Lets ms of the task's own time go by while it polls: a response-driven
+ * loop never blocks, and each reply moves the clock on. False if it stalls. */
+static bool polled_for(uint64_t ms)
+{
+    pthread_mutex_lock(&g_mu);
+    uint64_t until = g_now + ms;
+    pthread_mutex_unlock(&g_mu);
+    for (long spins = 0; spins < 5000000; spins++) {
+        pthread_mutex_lock(&g_mu);
+        bool done = g_now >= until;
+        pthread_mutex_unlock(&g_mu);
+        if (done) {
+            return true;
+        }
+        real_nap();
+    }
+    return false;
+}
+
+/* OBD-MORE-PIDS-TASK: every new extra has a reading. */
+static bool more_pids_read(void)
+{
+    static const muse_obd_extra_t NEW[] = { MUSE_OBD_AFR, MUSE_OBD_LAMBDA, MUSE_OBD_PEDAL_D, MUSE_OBD_PEDAL_E,
+                                            MUSE_OBD_MODULE_V, MUSE_OBD_BARO, MUSE_OBD_FUEL };
+    muse_obd_status_t st = status();
+    for (size_t i = 0; i < sizeof(NEW) / sizeof(NEW[0]); i++) {
+        if (!st.extra[NEW[i]].valid) {
+            return false;
+        }
+    }
+    return true;
+}
+
 int main(void)
 {
     /* Linked: subscribed or polling, and never while turned off. */
@@ -814,7 +886,10 @@ int main(void)
     /* The connection asked for the fast parameters (7.5-15 ms). */
     CHECK(ble(&g_ble.param_updates) == 1 && g_ble.itvl_min == 6 && g_ble.itvl_max == 12,
           "connection parameters: %d updates, %u-%u", ble(&g_ble.param_updates), g_ble.itvl_min, g_ble.itvl_max);
-    /* And the link's numbers are moving: exchanges, a rate, batched readings. */
+    /* And the link's numbers are moving: exchanges, a rate, batched readings
+     * (counted just after the reply that made it "polling": wait for them). */
+    CHECK(settle(link_moving), "link stats never moved");
+    st = status();
     CHECK(st.link_exchanges > 0 && st.link_last_rtt_ms > 0 && st.link_batch_pct > 0 && !st.link_batch_off,
           "link stats: %u exchanges, rtt %u, batch %d%%", (unsigned)st.link_exchanges,
           (unsigned)st.link_last_rtt_ms, st.link_batch_pct);
@@ -903,6 +978,50 @@ int main(void)
     muse_obd_bench_vtec_sol(false);
     st = status();
     CHECK(st.vtec_sol.valid && st.vtec_sol.value == 0 && !muse_obd_vtec_on(&st), "bench: not let go");
+
+    /* OBD-MORE-PIDS-TASK on Derek's S2000: its masks list all six new PIDs,
+     * so the real task schedules them, they ride the J1979 batches, and
+     * each lands in the snapshot (obd.read's source) and in the log's row. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 1500), "s2000: not off: %s", status().state);
+    g_car.s2000 = true;
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    CHECK(await(more_pids_read, 5000), "s2000: the new PIDs never all read");
+    st = status();
+    CHECK(st.support_valid[0] && st.support_valid[1] && st.support_valid[2]
+          && st.support[0] == 0xBE3EA813u && st.support[1] == 0x8007F011u && st.support[2] == 0xFAD00000u,
+          "s2000: masks %08X %08X %08X", (unsigned)st.support[0], (unsigned)st.support[1], (unsigned)st.support[2]);
+    CHECK(st.extra[MUSE_OBD_AFR].value == 147, "s2000: afr x10 %d", st.extra[MUSE_OBD_AFR].value);
+    CHECK(st.extra[MUSE_OBD_LAMBDA].value == 1000, "s2000: lambda x1000 %d", st.extra[MUSE_OBD_LAMBDA].value);
+    CHECK(st.extra[MUSE_OBD_PEDAL_D].value == 20, "s2000: pedal d %d", st.extra[MUSE_OBD_PEDAL_D].value);
+    CHECK(st.extra[MUSE_OBD_PEDAL_E].value == 10, "s2000: pedal e %d", st.extra[MUSE_OBD_PEDAL_E].value);
+    CHECK(st.extra[MUSE_OBD_MODULE_V].value == 13845, "s2000: module mV %d", st.extra[MUSE_OBD_MODULE_V].value);
+    CHECK(st.extra[MUSE_OBD_BARO].value == 101, "s2000: baro %d", st.extra[MUSE_OBD_BARO].value);
+    CHECK(st.extra[MUSE_OBD_FUEL].value == 62, "s2000: fuel %d", st.extra[MUSE_OBD_FUEL].value);
+    CHECK(st.extra[MUSE_OBD_MAP].valid && st.extra[MUSE_OBD_MAP].value == 33, "s2000: map");
+    /* Ambient isn't in the car's masks: never asked, never a value. */
+    CHECK(!st.extra[MUSE_OBD_AMBIENT].valid && muse_obd_pid_unsupported(&st, 0x46), "s2000: ambient");
+    CHECK(st.link_batch_pct > 0 && !st.link_batch_off, "s2000: batches %d%% off %d", st.link_batch_pct,
+          st.link_batch_off);
+    /* Fresh: each is read again within its tier's target (and the cards'
+     * 3 s dimming rule), fuel included. The loop never idles while it
+     * polls (each reply moves the clock on), so let 4 s of its time go by. */
+    CHECK(polled_for(4000), "s2000: the poll loop stalled");
+    st = status();
+    static const muse_obd_extra_t FRESH[] = { MUSE_OBD_AFR, MUSE_OBD_PEDAL_D, MUSE_OBD_PEDAL_E, MUSE_OBD_FUEL,
+                                              MUSE_OBD_MODULE_V, MUSE_OBD_BARO };
+    for (size_t i = 0; i < sizeof(FRESH) / sizeof(FRESH[0]); i++) {
+        CHECK(st.extra[FRESH[i]].valid && st.extra[FRESH[i]].age_ms <= 3000u, "s2000: %s %u ms old",
+              MUSE_OBD_EXTRA[FRESH[i]].key, (unsigned)st.extra[FRESH[i]].age_ms);
+    }
+    pthread_mutex_lock(&g_log_mu);
+    muse_obd_status_t row = g_last_sample;
+    pthread_mutex_unlock(&g_log_mu);
+    CHECK(row.extra[MUSE_OBD_AFR].valid && row.extra[MUSE_OBD_AFR].value == 147
+          && row.extra[MUSE_OBD_FUEL].valid && row.extra[MUSE_OBD_MODULE_V].value == 13845,
+          "s2000: the log's rows lack the new values");
+    g_car.s2000 = false;
 
     if (s_fail) {
         fprintf(stderr, "%d failed\n", s_fail);

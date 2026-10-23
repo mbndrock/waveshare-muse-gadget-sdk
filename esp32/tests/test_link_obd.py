@@ -27,6 +27,14 @@ EXTRA_KEYS = (
     ("MUSE_OBD_STFT", 0x06, "stft_pct", "stft_age_ms"),
     ("MUSE_OBD_LTFT", 0x07, "ltft_pct", "ltft_age_ms"),
     ("MUSE_OBD_AMBIENT", 0x46, "ambient_c", "ambient_age_ms"),
+    # OBD-MORE-PIDS-TASK: 34 feeds both afr (tenths) and lambda (thousandths).
+    ("MUSE_OBD_AFR", 0x34, "afr", "afr_age_ms", 1),
+    ("MUSE_OBD_LAMBDA", 0x34, "lambda", "lambda_age_ms", 3),
+    ("MUSE_OBD_PEDAL_D", 0x49, "pedal_d_pct", "pedal_d_age_ms"),
+    ("MUSE_OBD_PEDAL_E", 0x4A, "pedal_e_pct", "pedal_e_age_ms"),
+    ("MUSE_OBD_MODULE_V", 0x42, "module_v", "module_v_age_ms", 3),
+    ("MUSE_OBD_BARO", 0x33, "baro_kpa", "baro_age_ms"),
+    ("MUSE_OBD_FUEL", 0x2F, "fuel_pct", "fuel_age_ms"),
 )
 
 
@@ -170,14 +178,16 @@ class LinkObdTest(unittest.TestCase):
                       "uint32_t support[MUSE_OBD_SUPPORT_RANGES];"):
             self.assertIn(field, header)
         obd = (ROOT / "components/muse/muse_obd.c").read_text()
-        for enum_name, pid, key, age_key in EXTRA_KEYS:
-            self.assertIn(f'[{enum_name}] = {{ 0x{pid:02X}, "{key}", "{age_key}" }},', obd)
+        for enum_name, pid, key, age_key, *decimals in EXTRA_KEYS:
+            tail = f", {decimals[0]}" if decimals else ""
+            self.assertIn(f'[{enum_name}] = {{ 0x{pid:02X}, "{key}", "{age_key}"{tail} }},', obd)
 
         app = (ROOT / "main/app.c").read_text()
         block = gated_block_with(app, "static cJSON *obd_read_command(void)")
         body = block[block.index("static cJSON *obd_read_command(void)"):]
         self.assertIn("for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {", body)
         self.assertIn("add_obd_reading(payload, MUSE_OBD_EXTRA[i].key, MUSE_OBD_EXTRA[i].age_key", body)
+        self.assertIn("st.extra[i].age_ms, MUSE_OBD_EXTRA[i].decimals);", body)
         self.assertIn('cJSON_AddStringToObject(payload, "protocol", st.protocol_name);', body)
         self.assertIn('cJSON_AddNullToObject(payload, "protocol");', body)
         self.assertIn('"supported_00", "supported_20", "supported_40",', body)
@@ -187,6 +197,7 @@ class LinkObdTest(unittest.TestCase):
         block = gated_block_with(console, "static void print_obd(void)")
         self.assertIsNotNone(block)
         for needle in ("MUSE_OBD_EXTRA[i].key", "MUSE_OBD_EXTRA[i].age_key", '\\"protocol\\"',
+                       "obd_fixed(rpm, sizeof(rpm), r->valid, r->value, MUSE_OBD_EXTRA[i].decimals)",
                        '\\"supported_%02X\\":\\"%08lX\\"'):
             self.assertIn(needle, block)
 

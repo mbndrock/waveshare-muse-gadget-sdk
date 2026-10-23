@@ -38,6 +38,17 @@ const char *const MUSE_LOG_COLUMN[MUSE_LOG_CHANNELS] = {
     [MUSE_LOG_AMBIENT] = "ambient_c",
     [MUSE_LOG_VTEC_SOL] = "vtec_sol",
     [MUSE_LOG_VTEC_PSW] = "vtec_psw",
+    [MUSE_LOG_AFR] = "afr",
+    [MUSE_LOG_FUEL] = "fuel_pct",
+    [MUSE_LOG_PEDAL_D] = "pedal_d_pct",
+    [MUSE_LOG_PEDAL_E] = "pedal_e_pct",
+    [MUSE_LOG_MODULE_V] = "module_v",
+    [MUSE_LOG_BARO] = "baro_kpa",
+};
+
+const uint8_t MUSE_LOG_DECIMALS[MUSE_LOG_CHANNELS] = {
+    [MUSE_LOG_AFR] = 1,
+    [MUSE_LOG_MODULE_V] = 3,
 };
 
 /* ---- Text into a bounded buffer, without printf: every length is checked
@@ -83,6 +94,36 @@ static void put_i(out_t *o, long long v)
     } else {
         put_u(o, (unsigned long long)v);
     }
+}
+
+/* v in 10^-decimals of its unit, with the point: 147 with 1 is "14.7",
+ * 845 with 3 is "0.845". No point when decimals is 0. */
+static void put_fixed(out_t *o, long long v, int decimals)
+{
+    if (decimals <= 0) {
+        put_i(o, v);
+        return;
+    }
+    if (decimals > 9) {
+        decimals = 9;   /* d[] below holds them */
+    }
+    unsigned long long m = v < 0 ? 0ull - (unsigned long long)v : (unsigned long long)v;
+    unsigned long long scale = 1;
+    for (int i = 0; i < decimals; i++) {
+        scale *= 10;
+    }
+    if (v < 0) {
+        put(o, "-");
+    }
+    put_u(o, m / scale);
+    put(o, ".");
+    char d[20];
+    unsigned long long part = m % scale;
+    for (int i = decimals - 1; i >= 0; i--) {
+        d[i] = (char)('0' + part % 10);
+        part /= 10;
+    }
+    put_n(o, d, (size_t)decimals);
 }
 
 /* Zero-padded to `width` digits. */
@@ -146,7 +187,7 @@ size_t muse_log_format_row(char *buf, size_t cap, const muse_log_sample_t *s)
     for (int c = 0; c < MUSE_LOG_CHANNELS; c++) {
         put(&o, ",");
         if (s->has[c]) {
-            put_i(&o, s->value[c]);
+            put_fixed(&o, s->value[c], MUSE_LOG_DECIMALS[c]);
         }
     }
     put(&o, "\n");

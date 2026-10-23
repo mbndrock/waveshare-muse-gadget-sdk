@@ -1867,14 +1867,20 @@ static cJSON *bug_report_command(
 
 #if CONFIG_MUSE_OBD_VTEC
 // A reading and its age, or null for both when there is no current one.
+// decimals: the value is in 10^-decimals of its unit (0..3), reported in
+// the unit (AFR 147 with 1 is 14.7).
 static void add_obd_reading(cJSON *payload, const char *key, const char *age_key,
-                            bool valid, int value, uint32_t age_ms) {
+                            bool valid, int value, uint32_t age_ms, int decimals) {
+    static const double SCALE[] = { 1.0, 10.0, 100.0, 1000.0 };
     if (!valid) {
         cJSON_AddNullToObject(payload, key);
         cJSON_AddNullToObject(payload, age_key);
         return;
     }
-    cJSON_AddNumberToObject(payload, key, value);
+    if (decimals < 0 || decimals > 3) {
+        decimals = 0;
+    }
+    cJSON_AddNumberToObject(payload, key, value / SCALE[decimals]);
     cJSON_AddNumberToObject(payload, age_key, (double)age_ms);
 }
 
@@ -1894,12 +1900,12 @@ static cJSON *obd_read_command(void) {
     cJSON_AddBoolToObject(payload, "connected", st.connected);
     cJSON_AddBoolToObject(payload, "subscribed", st.subscribed);
     cJSON_AddBoolToObject(payload, "polling", st.polling);
-    add_obd_reading(payload, "rpm", "rpm_age_ms", st.rpm_valid, st.rpm, st.rpm_age_ms);
+    add_obd_reading(payload, "rpm", "rpm_age_ms", st.rpm_valid, st.rpm, st.rpm_age_ms, 0);
     add_obd_reading(payload, "coolant_c", "coolant_age_ms", st.coolant_valid, st.coolant_c,
-                    st.coolant_age_ms);
+                    st.coolant_age_ms, 0);
     for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
         add_obd_reading(payload, MUSE_OBD_EXTRA[i].key, MUSE_OBD_EXTRA[i].age_key, st.extra[i].valid,
-                        st.extra[i].value, st.extra[i].age_ms);
+                        st.extra[i].value, st.extra[i].age_ms, MUSE_OBD_EXTRA[i].decimals);
     }
     if (st.protocol > 0) {
         cJSON_AddStringToObject(payload, "protocol", st.protocol_name);

@@ -146,9 +146,17 @@ const muse_obd_extra_info_t MUSE_OBD_EXTRA[MUSE_OBD_EXTRAS] = {
     [MUSE_OBD_STFT] = { 0x06, "stft_pct", "stft_age_ms" },
     [MUSE_OBD_LTFT] = { 0x07, "ltft_pct", "ltft_age_ms" },
     [MUSE_OBD_AMBIENT] = { 0x46, "ambient_c", "ambient_age_ms" },
+    [MUSE_OBD_AFR] = { 0x34, "afr", "afr_age_ms", 1 },
+    [MUSE_OBD_LAMBDA] = { 0x34, "lambda", "lambda_age_ms", 3 },
+    [MUSE_OBD_PEDAL_D] = { 0x49, "pedal_d_pct", "pedal_d_age_ms" },
+    [MUSE_OBD_PEDAL_E] = { 0x4A, "pedal_e_pct", "pedal_e_age_ms" },
+    [MUSE_OBD_MODULE_V] = { 0x42, "module_v", "module_v_age_ms", 3 },
+    [MUSE_OBD_BARO] = { 0x33, "baro_kpa", "baro_age_ms" },
+    [MUSE_OBD_FUEL] = { 0x2F, "fuel_pct", "fuel_age_ms" },
 };
 
-/* Each extra's parser, and the result that means it read a value. */
+/* Each extra's parser, and the result that means it read a value. AFR and
+ * lambda share PID 34's: it reads the raw ratio, extra_value() converts. */
 static const struct {
     muse_elm_result_t (*parse)(const char *resp, int *value);
     muse_elm_result_t ok;
@@ -162,6 +170,13 @@ static const struct {
     [MUSE_OBD_STFT] = { muse_elm_parse_stft, MUSE_ELM_STFT },
     [MUSE_OBD_LTFT] = { muse_elm_parse_ltft, MUSE_ELM_LTFT },
     [MUSE_OBD_AMBIENT] = { muse_elm_parse_ambient, MUSE_ELM_AMBIENT },
+    [MUSE_OBD_AFR] = { muse_elm_parse_afr, MUSE_ELM_AFR },
+    [MUSE_OBD_LAMBDA] = { muse_elm_parse_afr, MUSE_ELM_AFR },
+    [MUSE_OBD_PEDAL_D] = { muse_elm_parse_pedal_d, MUSE_ELM_PEDAL_D },
+    [MUSE_OBD_PEDAL_E] = { muse_elm_parse_pedal_e, MUSE_ELM_PEDAL_E },
+    [MUSE_OBD_MODULE_V] = { muse_elm_parse_module_v, MUSE_ELM_MODULE_V },
+    [MUSE_OBD_BARO] = { muse_elm_parse_baro, MUSE_ELM_BARO },
+    [MUSE_OBD_FUEL] = { muse_elm_parse_fuel, MUSE_ELM_FUEL },
 };
 
 /* ---- On the host task: post and wake ---- */
@@ -997,6 +1012,30 @@ static bool got_coolant(void)
     return true;
 }
 
+/* A PID's value as its extra holds it: PID 34's raw ratio becomes the AFR
+ * and the lambda; every other extra keeps the parser's value. */
+static int extra_value(muse_obd_extra_t i, int value)
+{
+    switch (i) {
+    case MUSE_OBD_AFR: return muse_elm_afr_x10(value);
+    case MUSE_OBD_LAMBDA: return muse_elm_lambda_x1000(value);
+    default: return value;
+    }
+}
+
+/* One reading of a cards' PID (from a single-PID reply or out of a batch):
+ * into every extra it feeds. */
+static void extra_reading(int pid, int value)
+{
+    for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
+        if (MUSE_OBD_EXTRA[i].pid == pid) {
+            int v = extra_value((muse_obd_extra_t)i, value);
+            ESP_LOGD(TAG, "%s %d", MUSE_OBD_EXTRA[i].key, v);
+            set_extra((muse_obd_extra_t)i, v);
+        }
+    }
+}
+
 /* A reply to one of the cards' PIDs: into the snapshot. NO DATA (an ECU
  * without it, or nothing yet) is skipped like coolant's, keeping the last
  * reading, which ages. True when a reading came in. */
@@ -1008,8 +1047,7 @@ static bool got_extra(int pid)
         }
         int value = 0;
         if (EXTRA_PARSE[i].parse(s_rx.resp, &value) == EXTRA_PARSE[i].ok) {
-            ESP_LOGD(TAG, "%s %d", MUSE_OBD_EXTRA[i].key, value);
-            set_extra((muse_obd_extra_t)i, value);
+            extra_reading(pid, value);
             return true;
         }
         return false;
@@ -1024,13 +1062,7 @@ static void batch_reading(int pid, int value)
         coolant_reading(value);
         return;
     }
-    for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
-        if (MUSE_OBD_EXTRA[i].pid == pid) {
-            ESP_LOGD(TAG, "%s %d", MUSE_OBD_EXTRA[i].key, value);
-            set_extra((muse_obd_extra_t)i, value);
-            return;
-        }
-    }
+    extra_reading(pid, value);
 }
 
 /* One row of the trip log: the snapshot as it stands after an RPM reply.

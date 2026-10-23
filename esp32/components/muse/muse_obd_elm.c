@@ -143,14 +143,19 @@ static muse_elm_result_t parse_pid(const char *resp, int pid, int nbytes, int *d
     return res;
 }
 
-/* How many data bytes a Mode 01 PID's reply carries (only RPM takes two),
+/* How many data bytes a Mode 01 PID's reply carries,
  * and its whole-unit value from them: the one place the conversions the
  * header lists live, shared by the single-PID parsers and the batch one. */
-#define MUSE_ELM_PID_BYTES_MAX 2   /* the most data bytes pid_nbytes() says */
+#define MUSE_ELM_PID_BYTES_MAX 4   /* the most data bytes pid_nbytes() says */
 
 static int pid_nbytes(int pid)
 {
-    return pid == 0x0C ? 2 : 1;
+    switch (pid) {
+    case 0x0C: return 2;
+    case 0x42: return 2;
+    case 0x34: return 4;   /* lambda's two, then the sensor's two, unused */
+    default: return 1;
+    }
 }
 
 static int pid_value(int pid, const int *data)
@@ -167,6 +172,12 @@ static int pid_value(int pid, const int *data)
     case 0x06: return (data[0] - 128) * 100 / 128;
     case 0x07: return (data[0] - 128) * 100 / 128;
     case 0x46: return data[0] - 40;
+    case 0x34: return data[0] * 256 + data[1];   /* raw: lambda x 32768 */
+    case 0x49: return data[0] * 100 / 255;
+    case 0x4A: return data[0] * 100 / 255;
+    case 0x42: return data[0] * 256 + data[1];   /* mV */
+    case 0x33: return data[0];
+    case 0x2F: return data[0] * 100 / 255;
     default: return 0;
     }
 }
@@ -281,6 +292,57 @@ muse_elm_result_t muse_elm_parse_ambient(const char *resp, int *c)
     return res;
 }
 
+/* A one-PID parser for `pid`, whose reading is `ok`. */
+static muse_elm_result_t parse_one(const char *resp, int pid, muse_elm_result_t ok, int *value)
+{
+    int data[MUSE_ELM_PID_BYTES_MAX];
+    muse_elm_result_t res = parse_pid(resp, pid, pid_nbytes(pid), data, ok);
+    if (res == ok) {
+        *value = pid_value(pid, data);
+    }
+    return res;
+}
+
+muse_elm_result_t muse_elm_parse_afr(const char *resp, int *raw)
+{
+    return parse_one(resp, 0x34, MUSE_ELM_AFR, raw);
+}
+
+muse_elm_result_t muse_elm_parse_pedal_d(const char *resp, int *pct)
+{
+    return parse_one(resp, 0x49, MUSE_ELM_PEDAL_D, pct);
+}
+
+muse_elm_result_t muse_elm_parse_pedal_e(const char *resp, int *pct)
+{
+    return parse_one(resp, 0x4A, MUSE_ELM_PEDAL_E, pct);
+}
+
+muse_elm_result_t muse_elm_parse_module_v(const char *resp, int *mv)
+{
+    return parse_one(resp, 0x42, MUSE_ELM_MODULE_V, mv);
+}
+
+muse_elm_result_t muse_elm_parse_baro(const char *resp, int *kpa)
+{
+    return parse_one(resp, 0x33, MUSE_ELM_BARO, kpa);
+}
+
+muse_elm_result_t muse_elm_parse_fuel(const char *resp, int *pct)
+{
+    return parse_one(resp, 0x2F, MUSE_ELM_FUEL, pct);
+}
+
+int muse_elm_lambda_x1000(int raw)
+{
+    return (raw * 1000 + 16384) / 32768;
+}
+
+int muse_elm_afr_x10(int raw)
+{
+    return (raw * 147 + 16384) / 32768;
+}
+
 muse_elm_result_t muse_elm_parse_support(const char *resp, int base, uint32_t *mask)
 {
     int abcd[4];
@@ -383,12 +445,18 @@ static const struct {
     { 0x11, 1000, 2 },     /* fast: throttle */
     { 0x04, 1000, 2 },     /* fast: load */
     { 0x0D, 1000, 2 },     /* fast: speed */
+    { 0x34, 1000, 2 },     /* fast: AFR (wideband lambda) */
+    { 0x49, 1000, 2 },     /* fast: pedal D */
+    { 0x4A, 1000, 2 },     /* fast: pedal E */
     { 0x06, 2000, 3 },     /* mid: STFT */
     { 0x07, 2000, 3 },     /* mid: LTFT */
     { 0x0E, 2000, 3 },     /* mid: timing */
+    { 0x2F, 2000, 3 },     /* mid: fuel level (off the cards' 3 s dimming edge) */
     { 0x05, 3000, 4 },     /* slow: coolant */
     { 0x0F, 3000, 4 },     /* slow: IAT */
     { 0x46, 3000, 4 },     /* slow: ambient */
+    { 0x42, 3000, 4 },     /* slow: module voltage */
+    { 0x33, 3000, 4 },     /* slow: barometric pressure */
 };
 
 #define SCHED_DID 1   /* SCHED's index of the DID item */

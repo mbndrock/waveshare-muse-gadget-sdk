@@ -74,6 +74,13 @@ typedef enum {
     MUSE_OBD_STFT,       /* 06, % */
     MUSE_OBD_LTFT,       /* 07, % */
     MUSE_OBD_AMBIENT,    /* 46, degrees C */
+    MUSE_OBD_AFR,        /* 34, air-fuel ratio x 10 (lambda x 14.7) */
+    MUSE_OBD_LAMBDA,     /* 34 too, lambda x 1000 */
+    MUSE_OBD_PEDAL_D,    /* 49, % */
+    MUSE_OBD_PEDAL_E,    /* 4A, % */
+    MUSE_OBD_MODULE_V,   /* 42, mV (volts x 1000) */
+    MUSE_OBD_BARO,       /* 33, kPa */
+    MUSE_OBD_FUEL,       /* 2F, % */
     MUSE_OBD_EXTRAS,
 } muse_obd_extra_t;
 
@@ -81,6 +88,7 @@ typedef struct {
     uint8_t pid;           /* Mode 01 PID */
     const char *key;       /* obd.read's name for it: "load_pct", ... */
     const char *age_key;   /* and for its age: "load_age_ms", ... */
+    uint8_t decimals;      /* the value is in 10^-decimals of its unit: AFR 1, lambda and volts 3 */
 } muse_obd_extra_info_t;
 
 /* One per muse_obd_extra_t, in that order. */

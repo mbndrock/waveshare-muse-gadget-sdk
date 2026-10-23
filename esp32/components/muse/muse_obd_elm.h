@@ -67,6 +67,12 @@ typedef enum {
     MUSE_ELM_VTEC_DID,  /* a whole 62 26 12 reply: the VTEC flags are set */
     MUSE_ELM_NEGATIVE,  /* 7F 22 <NRC>: the ECU refused the DID */
     MUSE_ELM_BATCH,     /* a multi-PID reply: at least one asked PID read a value */
+    MUSE_ELM_AFR,       /* a 41 34 reply: *raw is set */
+    MUSE_ELM_PEDAL_D,   /* a 41 49 reply: *pct is set */
+    MUSE_ELM_PEDAL_E,   /* a 41 4A reply: *pct is set */
+    MUSE_ELM_MODULE_V,  /* a 41 42 reply: *mv is set */
+    MUSE_ELM_BARO,      /* a 41 33 reply: *kpa is set */
+    MUSE_ELM_FUEL,      /* a 41 2F reply: *pct is set */
 } muse_elm_result_t;
 
 /* Reads engine RPM from the response to "010C": ((A * 256) + B) / 4. Spaces
@@ -98,6 +104,27 @@ muse_elm_result_t muse_elm_parse_throttle(const char *resp, int *pct);
 muse_elm_result_t muse_elm_parse_stft(const char *resp, int *pct);
 muse_elm_result_t muse_elm_parse_ltft(const char *resp, int *pct);
 muse_elm_result_t muse_elm_parse_ambient(const char *resp, int *c);
+
+/* OBD-MORE-PIDS-TASK's PIDs, parsed the same way (the J1979 decodes):
+ *   34 wideband lambda  256A + B, raw: lambda = raw / 32768 (C and D unused)
+ *   49 pedal D          A * 100 / 255        %      0..100
+ *   4A pedal E          A * 100 / 255        %      0..100
+ *   42 module voltage   256A + B             mV     0..65535
+ *   33 barometric       A                    kPa    0..255
+ *   2F fuel level       A * 100 / 255        %      0..100
+ * A reply cut short of its PID's bytes (34 has four, 42 two) is no reading. */
+muse_elm_result_t muse_elm_parse_afr(const char *resp, int *raw);
+muse_elm_result_t muse_elm_parse_pedal_d(const char *resp, int *pct);
+muse_elm_result_t muse_elm_parse_pedal_e(const char *resp, int *pct);
+muse_elm_result_t muse_elm_parse_module_v(const char *resp, int *mv);
+muse_elm_result_t muse_elm_parse_baro(const char *resp, int *kpa);
+muse_elm_result_t muse_elm_parse_fuel(const char *resp, int *pct);
+
+/* PID 34's raw ratio (0..65535) as lambda in thousandths and as a gasoline
+ * air-fuel ratio (lambda x 14.7) in tenths, each rounded to nearest:
+ * 0x8000 is stoich, 1000 and 147 (lambda 1.000, AFR 14.7). */
+int muse_elm_lambda_x1000(int raw);
+int muse_elm_afr_x10(int raw);
 
 /*
  * The supported-PID bitmask from the response to "0100", "0120" or "0140"
@@ -192,7 +219,10 @@ muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out
  * top priority), DID 0x2612 (about 1 s), the fast secondaries MAP, throttle,
  * load and speed (about 1 s), the mid STFT, LTFT and timing (about 2 s) and
  * the slow coolant, IAT and ambient (about 3 s). muse_sched_pick() chooses
- * the most overdue item; ties break by priority. Targets are floors on
+ * the most overdue item; ties break by priority. OBD-MORE-PIDS-TASK adds
+ * AFR (34) and pedals D and E (49, 4A) to the fast tier, fuel level (2F) to
+ * the mid one and module voltage (42) and barometric pressure (33) to the
+ * slow one. Targets are floors on
  * freshness, never rate caps: a faster link simply refreshes everything
  * sooner, and nothing is ever delayed to meet a target.
  *
@@ -222,7 +252,7 @@ typedef struct {
     int n;                  /* Mode 01: how many of pids[] the request carries */
 } muse_sched_req_t;
 
-#define MUSE_SCHED_ITEMS 12   /* RPM, the DID and the ten secondaries */
+#define MUSE_SCHED_ITEMS 18   /* RPM, the DID and the sixteen secondaries */
 
 typedef struct {
     uint32_t last_ms[MUSE_SCHED_ITEMS];   /* the last completed attempt */

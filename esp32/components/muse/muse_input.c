@@ -808,6 +808,19 @@ static const char *obd_number(char *buf, size_t cap, bool valid, long long value
     return buf;
 }
 
+/* A reading in 10^-decimals of its unit (0..3), in the unit ("14.7"), or
+ * null. buf needs 13 bytes: a sign, ten digits, the point, the NUL. */
+static const char *obd_fixed(char *buf, size_t cap, bool valid, int value, int decimals)
+{
+    static const int SCALE[] = { 1, 10, 100, 1000 };
+    if (!valid || decimals <= 0 || decimals > 3) {
+        return obd_number(buf, cap, valid, value);
+    }
+    long long v = value, whole = (v < 0 ? -v : v) / SCALE[decimals], part = (v < 0 ? -v : v) % SCALE[decimals];
+    snprintf(buf, cap, "%s%lld.%0*lld", v < 0 ? "-" : "", whole, decimals, part);
+    return buf;
+}
+
 /* The same snapshot as the obd.read Link command, as one line. */
 static void print_obd(void)
 {
@@ -824,7 +837,8 @@ static void print_obd(void)
            obd_number(coolant_age, sizeof(coolant_age), st.coolant_valid, st.coolant_age_ms));
     for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
         const muse_obd_reading_t *r = &st.extra[i];
-        printf(",\"%s\":%s,\"%s\":%s", MUSE_OBD_EXTRA[i].key, obd_number(rpm, sizeof(rpm), r->valid, r->value),
+        printf(",\"%s\":%s,\"%s\":%s", MUSE_OBD_EXTRA[i].key,
+               obd_fixed(rpm, sizeof(rpm), r->valid, r->value, MUSE_OBD_EXTRA[i].decimals),
                MUSE_OBD_EXTRA[i].age_key, obd_number(rpm_age, sizeof(rpm_age), r->valid, r->age_ms));
     }
     if (st.protocol > 0) {

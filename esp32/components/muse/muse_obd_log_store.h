@@ -70,11 +70,22 @@ typedef enum {
     MUSE_LOG_AMBIENT,
     MUSE_LOG_VTEC_SOL,        /* DID 0x2612's VTEC solenoid, 1/0 */
     MUSE_LOG_VTEC_PSW,        /* and its pressure switch, 1/0 */
+    /* OBD-MORE-PIDS-TASK: appended, so a parser of the older rows still
+     * finds every column where it was. */
+    MUSE_LOG_AFR,             /* air-fuel ratio, in tenths (written "14.7") */
+    MUSE_LOG_FUEL,            /* fuel level, % */
+    MUSE_LOG_PEDAL_D,         /* accelerator pedal D, % */
+    MUSE_LOG_PEDAL_E,         /* accelerator pedal E, % */
+    MUSE_LOG_MODULE_V,        /* control module voltage, in mV (written "13.845") */
+    MUSE_LOG_BARO,            /* barometric pressure, kPa */
     MUSE_LOG_CHANNELS,
 } muse_log_channel_t;
 
 /* Each column's name, in that order ("rpm", "coolant_c", ...). */
 extern const char *const MUSE_LOG_COLUMN[MUSE_LOG_CHANNELS];
+/* And how many decimals its value carries: the value is in 10^-n of the
+ * column's unit and is written with the point (AFR 1, module voltage 3). */
+extern const uint8_t MUSE_LOG_DECIMALS[MUSE_LOG_CHANNELS];
 
 /* One sample: trip-relative ms and each channel's value, if it has one. */
 typedef struct {
@@ -83,8 +94,10 @@ typedef struct {
     int value[MUSE_LOG_CHANNELS];
 } muse_log_sample_t;
 
-/* Room for any row: ten digits of ms and eleven digits a channel, commas, '\n'. */
-#define MUSE_LOG_ROW_MAX (10 + MUSE_LOG_CHANNELS * 12 + 2)
+/* Room for any row: ten digits of ms, then a comma and at most twelve
+ * characters a channel (a sign, ten digits, a decimal point), '\n' and a
+ * spare byte. */
+#define MUSE_LOG_ROW_MAX (10 + MUSE_LOG_CHANNELS * 13 + 2)
 
 /* One CSV row, '\n' included, into buf (not NUL-terminated); its length, or 0
  * when it doesn't fit in cap. A channel without a value is an empty field. */

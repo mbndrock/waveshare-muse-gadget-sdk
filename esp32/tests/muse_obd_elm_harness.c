@@ -544,6 +544,15 @@ static const struct {
       { 0x80, 0x00, 0xFF, 0x8A, 0x70 }, { 0, -100, 99, 7, -12 } },
     { "ambient", 0x46, muse_elm_parse_ambient, MUSE_ELM_AMBIENT,
       { 0x00, 0x3C, 0xFF, 0x28, 0x14 }, { -40, 20, 215, 0, -20 } },
+    /* OBD-MORE-PIDS-TASK's one-byte PIDs (J1979: A * 100 / 255 %, A kPa). */
+    { "pedal_d", 0x49, muse_elm_parse_pedal_d, MUSE_ELM_PEDAL_D,
+      { 0x00, 0x80, 0xFF, 0x33, 0x1A }, { 0, 50, 100, 20, 10 } },
+    { "pedal_e", 0x4A, muse_elm_parse_pedal_e, MUSE_ELM_PEDAL_E,
+      { 0x00, 0x80, 0xFF, 0x33, 0x1A }, { 0, 50, 100, 20, 10 } },
+    { "baro", 0x33, muse_elm_parse_baro, MUSE_ELM_BARO,
+      { 0x00, 0x65, 0xFF, 0x63, 0x5A }, { 0, 101, 255, 99, 90 } },
+    { "fuel", 0x2F, muse_elm_parse_fuel, MUSE_ELM_FUEL,
+      { 0x00, 0x80, 0xFF, 0x33, 0x1A }, { 0, 50, 100, 20, 10 } },
 };
 #define EXTRA_COUNT (int)(sizeof(EXTRAS) / sizeof(EXTRAS[0]))
 
@@ -563,6 +572,84 @@ static void check_nobody_else(const char *resp, int except)
     int v = -999;
     CHECK(muse_elm_parse_rpm(resp, &v) == MUSE_ELM_NONE && v == -999);
     CHECK(muse_elm_parse_coolant(resp, &v) == MUSE_ELM_NONE && v == -999);
+    CHECK(muse_elm_parse_afr(resp, &v) == MUSE_ELM_NONE && v == -999);
+    CHECK(muse_elm_parse_module_v(resp, &v) == MUSE_ELM_NONE && v == -999);
+}
+
+/* OBD-MORE-PIDS-TASK's wide PIDs against worked J1979 frames: 34, the
+ * wideband lambda (256A + B) / 32768, its four bytes all there (C and D,
+ * the sensor's, unused), and 42, the module voltage (256A + B) / 1000. */
+static void test_more_pids_wide(void)
+{
+    static const struct {
+        const char *resp;
+        int raw, lambda_x1000, afr_x10;
+    } AFR[] = {
+        { "41 34 80 00 80 00\n", 0x8000, 1000, 147 },   /* stoich: lambda 1.000, AFR 14.7 */
+        { "41 34 00 00 00 00\n", 0x0000, 0, 0 },        /* the bottom byte extreme */
+        { "41 34 FF FF FF FF\n", 0xFFFF, 2000, 294 },   /* the top: 1.99997, 29.39955 */
+        { "41346CCC7FFF\n", 0x6CCC, 850, 125 },         /* rich: 0.84998, 12.4946; ATS0 */
+        { "SEARCHING...\n41 34 8C CD 80 00\n", 0x8CCD, 1100, 162 },   /* lean: 1.10001, 16.1701 */
+        { "0134\n41 34 7a e1 80 00\n", 0x7AE1, 960, 141 },            /* the echo; lower case */
+    };
+    for (size_t i = 0; i < sizeof(AFR) / sizeof(AFR[0]); i++) {
+        int raw = -999;
+        CHECK(muse_elm_parse_afr(AFR[i].resp, &raw) == MUSE_ELM_AFR && raw == AFR[i].raw);
+        CHECK(muse_elm_lambda_x1000(raw) == AFR[i].lambda_x1000);
+        CHECK(muse_elm_afr_x10(raw) == AFR[i].afr_x10);
+        int v = -999;
+        CHECK(muse_elm_parse_module_v(AFR[i].resp, &v) == MUSE_ELM_NONE && v == -999);
+        CHECK(muse_elm_parse_rpm(AFR[i].resp, &v) == MUSE_ELM_NONE && v == -999);
+    }
+    /* A miss is never a value: cut short, garbled, refused, someone else's. */
+    static const char *const AFR_NONE[] = {
+        "41 34 80 00\n", "41 34 80 00 80\n", "41 34 80 0G 80 00\n", "41 24 80 00 80 00\n",
+        "7E8 06 41 34 80 00 80 00\n", "0134\n", "OK\n", "",
+    };
+    for (size_t i = 0; i < sizeof(AFR_NONE) / sizeof(AFR_NONE[0]); i++) {
+        int raw = -999;
+        CHECK(muse_elm_parse_afr(AFR_NONE[i], &raw) == MUSE_ELM_NONE && raw == -999);
+    }
+    int raw = -999;
+    CHECK(muse_elm_parse_afr("NO DATA\n", &raw) == MUSE_ELM_NO_DATA && raw == -999);
+    CHECK(muse_elm_parse_afr("?\n", &raw) == MUSE_ELM_ERROR && raw == -999);
+
+    static const struct {
+        const char *resp;
+        int mv;
+    } VOLTS[] = {
+        { "41 42 36 15\n", 13845 },   /* 13.845 V, running */
+        { "41 42 30 D4\n", 12500 },   /* 12.500 V, key on */
+        { "41 42 00 00\n", 0 },
+        { "41 42 FF FF\n", 65535 },   /* the top: 65.535 V */
+        { "41423615\n", 13845 },
+    };
+    for (size_t i = 0; i < sizeof(VOLTS) / sizeof(VOLTS[0]); i++) {
+        int mv = -999;
+        CHECK(muse_elm_parse_module_v(VOLTS[i].resp, &mv) == MUSE_ELM_MODULE_V && mv == VOLTS[i].mv);
+        CHECK(muse_elm_parse_afr(VOLTS[i].resp, &raw) == MUSE_ELM_NONE);
+    }
+    int mv = -999;
+    CHECK(muse_elm_parse_module_v("41 42 36\n", &mv) == MUSE_ELM_NONE && mv == -999);   /* cut short */
+    CHECK(muse_elm_parse_module_v("41 42 3G 15\n", &mv) == MUSE_ELM_NONE && mv == -999);
+    CHECK(muse_elm_parse_module_v("NO DATA\n", &mv) == MUSE_ELM_NO_DATA && mv == -999);
+
+    /* All six ride a batch like any Mode 01 PID: one J1979 message, the
+     * wide ones' bytes counted (sixteen bytes, three frames). */
+    static const uint8_t pids[6] = { 0x0C, 0x34, 0x42, 0x49, 0x2F, 0x33 };
+    int values[6];
+    bool got[6];
+    CHECK(muse_elm_parse_batch("010\n0:410C1AF83480\n1:00800042361549\n2:332F8000000000\n", pids, 6, values, got)
+          == MUSE_ELM_BATCH);
+    CHECK(got[0] && values[0] == 1726);
+    CHECK(got[1] && values[1] == 0x8000);
+    CHECK(got[2] && values[2] == 13845);
+    CHECK(got[3] && values[3] == 20);
+    CHECK(got[4] && values[4] == 50);
+    CHECK(!got[5]);   /* baro left out: its miss only */
+    /* AFR cut short at the message's end: a miss, never a value. */
+    CHECK(muse_elm_parse_batch("410D3C348000\n", (const uint8_t[]){ 0x0D, 0x34 }, 2, values, got) == MUSE_ELM_BATCH);
+    CHECK(got[0] && !got[1]);
 }
 
 static void test_extra_parse_cases(void)
@@ -873,6 +960,36 @@ static void serve(muse_sched_t *s, const muse_sched_req_t *r, uint32_t t)
     }
 }
 
+/* Picks and serves at t until only the filler is left (RPM alone), adding
+ * each PID asked to asks[]; the first pick in *first. Returns the picks. */
+static int sweep(muse_sched_t *s, uint32_t t, int asks[256], muse_sched_req_t *first)
+{
+    muse_sched_req_t r;
+    for (int k = 0; k < 16; k++) {
+        muse_sched_pick(s, t, &r);
+        if (k == 0 && first) {
+            *first = r;
+        }
+        if (r.did || (r.n == 1 && r.pids[0] == 0x0C)) {
+            if (!r.did) {
+                serve(s, &r, t);
+            }
+            return k + 1;
+        }
+        for (int i = 0; i < r.n; i++) {
+            asks[r.pids[i]]++;
+        }
+        serve(s, &r, t);
+    }
+    return -1;
+}
+
+/* The schedule's secondaries by tier (OBD-PIPELINE-TASK, OBD-MORE-PIDS-TASK). */
+static const uint8_t FAST[] = { 0x0B, 0x11, 0x04, 0x0D, 0x34, 0x49, 0x4A };
+static const uint8_t MID[] = { 0x06, 0x07, 0x0E, 0x2F };
+static const uint8_t SLOW[] = { 0x05, 0x0F, 0x46, 0x42, 0x33 };
+#define TIER_N(t) (int)(sizeof(t) / sizeof(t[0]))
+
 static void test_scheduler(void)
 {
     muse_elm_support_t sup = { 0 };   /* nothing scanned: everything unknown, all kept */
@@ -884,12 +1001,17 @@ static void test_scheduler(void)
      * only the filler is left. */
     muse_sched_init(&s, &sup, true, 1000);
     int asks[256] = { 0 };
-    for (int k = 0; k < 3; k++) {
+    /* Sixteen secondaries and RPM: RPM and five, six, then the last five
+     * with RPM riding along, then the filler alone. */
+    for (int k = 0; k < 4; k++) {
         muse_sched_pick(&s, 1000, &r);
         CHECK(!r.did);
         if (k == 0) {
             CHECK(r.n == MUSE_ELM_BATCH_MAX && r.pids[0] == 0x0C);
             CHECK(req_has(&r, 0x0B) && req_has(&r, 0x11));   /* the fast tier rides first */
+        }
+        if (k < 3) {
+            CHECK(r.n == MUSE_ELM_BATCH_MAX);
         }
         for (int i = 0; i < r.n; i++) {
             for (int j = i + 1; j < r.n; j++) {
@@ -900,12 +1022,15 @@ static void test_scheduler(void)
         serve(&s, &r, 1000);
     }
     CHECK(r.n == 1 && r.pids[0] == 0x0C);   /* the last of the sweep: RPM alone */
-    for (int pid = 0x04; pid <= 0x46; pid++) {
+    for (int pid = 0x01; pid <= 0x4A; pid++) {
         if (pid == 0x0C) {
             continue;
         }
         CHECK(asks[pid] <= 1);   /* no secondary asked twice in the sweep */
     }
+    for (int i = 0; i < TIER_N(FAST); i++) CHECK(asks[FAST[i]] == 1);
+    for (int i = 0; i < TIER_N(MID); i++) CHECK(asks[MID[i]] == 1);
+    for (int i = 0; i < TIER_N(SLOW); i++) CHECK(asks[SLOW[i]] == 1);
 
     /* The DID's floor: never inside 1 s of the probe, however overdue;
      * eligible after it, picked once it is the most overdue, and the floor
@@ -929,21 +1054,41 @@ static void test_scheduler(void)
     muse_sched_pick(&s, 2500, &r);
     CHECK(!r.did);
 
-    /* Tiers by target: at +1500 ms only the fast tier is due again. */
+    /* Tiers by target, each PID at its own (OBD-MORE-PIDS-TASK: AFR and
+     * the pedals fast, fuel mid, volts and baro slow). All swept at 0. */
     muse_sched_init(&s, &sup, false, 0);
-    for (int k = 0; k < 3; k++) {
-        muse_sched_pick(&s, 0, &r);
-        serve(&s, &r, 0);
-    }
-    muse_sched_pick(&s, 1500, &r);
-    CHECK(req_has(&r, 0x0B) && !req_has(&r, 0x06) && !req_has(&r, 0x05));
-    serve(&s, &r, 1500);
-    /* At +3600 ms the mid tier is the most overdue, the slow tier next. */
-    muse_sched_pick(&s, 3600, &r);
-    CHECK(req_has(&r, 0x06) && !req_has(&r, 0x05));
-    serve(&s, &r, 3600);
-    muse_sched_pick(&s, 3600, &r);
-    CHECK(req_has(&r, 0x05));
+    int t_asks[256] = { 0 };
+    CHECK(sweep(&s, 0, t_asks, NULL) > 0);
+    /* +1500 ms: only the fast tier (1 s) is due; all of it is asked. */
+    memset(t_asks, 0, sizeof(t_asks));
+    CHECK(sweep(&s, 1500, t_asks, NULL) > 0);
+    for (int i = 0; i < TIER_N(FAST); i++) CHECK(t_asks[FAST[i]] == 1);
+    for (int i = 0; i < TIER_N(MID); i++) CHECK(t_asks[MID[i]] == 0);
+    for (int i = 0; i < TIER_N(SLOW); i++) CHECK(t_asks[SLOW[i]] == 0);
+    /* +2100 ms: the mid tier (2 s) is due; the fast one was just read. */
+    memset(t_asks, 0, sizeof(t_asks));
+    CHECK(sweep(&s, 2100, t_asks, NULL) > 0);
+    for (int i = 0; i < TIER_N(FAST); i++) CHECK(t_asks[FAST[i]] == 0);
+    for (int i = 0; i < TIER_N(MID); i++) CHECK(t_asks[MID[i]] == 1);
+    for (int i = 0; i < TIER_N(SLOW); i++) CHECK(t_asks[SLOW[i]] == 0);
+    /* +3050 ms: fast (550 ms over) and slow (50 ms over) are both due: the
+     * more overdue fast tier fills the first request, then the slow one. */
+    memset(t_asks, 0, sizeof(t_asks));
+    muse_sched_req_t first;
+    CHECK(sweep(&s, 3050, t_asks, &first) > 0);
+    for (int i = 0; i < TIER_N(FAST); i++) CHECK(t_asks[FAST[i]] == 1);
+    for (int i = 0; i < TIER_N(MID); i++) CHECK(t_asks[MID[i]] == 0);
+    for (int i = 0; i < TIER_N(SLOW); i++) CHECK(t_asks[SLOW[i]] == 1);
+    for (int i = 0; i < TIER_N(SLOW); i++) CHECK(!req_has(&first, SLOW[i]));
+    /* Misses evict the new PIDs as any other: twice against a live ECU. */
+    muse_sched_init(&s, &sup, false, 0);
+    muse_sched_done_pid(&s, 0x34, false, true, 0);
+    muse_sched_done_pid(&s, 0x34, false, true, 0);
+    muse_sched_done_pid(&s, 0x42, false, false, 0);   /* silent: proves nothing */
+    muse_sched_done_pid(&s, 0x42, false, false, 0);
+    memset(t_asks, 0, sizeof(t_asks));
+    CHECK(sweep(&s, 10000, t_asks, NULL) > 0);
+    CHECK(t_asks[0x34] == 0 && t_asks[0x42] == 1 && t_asks[0x49] == 1);
 
     /* Misses: twice against a live ECU and a PID leaves the schedule;
      * against a silent one it stays. RPM never leaves. */
@@ -984,7 +1129,37 @@ static void test_scheduler(void)
     for (int k = 0; k < 12; k++) {
         muse_sched_pick(&s, (uint32_t)k * 1000, &r);
         CHECK(!req_has(&r, 0x0B) && !req_has(&r, 0x46));
+        /* 21-60 proven unsupported too: none of the new PIDs either. */
+        CHECK(!req_has(&r, 0x2F) && !req_has(&r, 0x33) && !req_has(&r, 0x34) && !req_has(&r, 0x42)
+              && !req_has(&r, 0x49) && !req_has(&r, 0x4A));
         serve(&s, &r, (uint32_t)k * 1000);
+    }
+    /* Derek's 2008 S2000 (its masks, read live 2026-10-22): all six new
+     * PIDs supported, so all six are scheduled. */
+    sup.valid[0] = sup.valid[1] = sup.valid[2] = true;
+    sup.masks[0] = 0xBE3EA813u;
+    sup.masks[1] = 0x8007F011u;
+    sup.masks[2] = 0xFAD00000u;
+    static const uint8_t NEW[] = { 0x34, 0x49, 0x4A, 0x2F, 0x42, 0x33 };
+    for (int i = 0; i < 6; i++) {
+        CHECK(muse_elm_pid_support(&sup, NEW[i]) == MUSE_ELM_PID_SUPPORTED);
+    }
+    muse_sched_init(&s, &sup, false, 0);
+    memset(t_asks, 0, sizeof(t_asks));
+    CHECK(sweep(&s, 0, t_asks, NULL) > 0);
+    for (int i = 0; i < 6; i++) {
+        CHECK(t_asks[NEW[i]] == 1);
+    }
+    /* Each one alone proven unsupported (its bit cleared) leaves the schedule. */
+    for (int i = 0; i < 6; i++) {
+        muse_elm_support_t one = sup;
+        int pid = NEW[i];
+        one.masks[(pid - 1) / 32] &= ~(1u << (31 - (pid - 1) % 32));
+        CHECK(muse_elm_pid_support(&one, pid) == MUSE_ELM_PID_UNSUPPORTED);
+        muse_sched_init(&s, &one, false, 0);
+        memset(t_asks, 0, sizeof(t_asks));
+        CHECK(sweep(&s, 0, t_asks, NULL) > 0);
+        CHECK(t_asks[pid] == 0);
     }
 }
 
@@ -1104,6 +1279,7 @@ int main(void)
     test_warmup_trigger();
     test_extra_parse_cases();
     test_extra_frames();
+    test_more_pids_wide();
     test_support_parse();
     test_pid_support();
     test_batch_parse();

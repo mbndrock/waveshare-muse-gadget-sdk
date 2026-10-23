@@ -64,7 +64,7 @@ typedef struct {
     bool hero;          /* twice the height, the biggest value, in the accent colour */
     bool mph;           /* speed: the value in mph, km/h on a small line under it */
     bool sign;          /* fuel trims: +3 / -2 */
-    bool half;          /* half a row, beside the next half (STFT | LTFT) */
+    bool half;          /* half a row: halves pair up in order (LOAD | MAP, STFT | LTFT) */
     int bar_max;        /* > 0: a thin bar under the value, 0..bar_max */
     uint8_t tone;
     bool vtec;          /* RPM: "VTEC ON / OFF / --" under the bar, from DID 0x2612 */
@@ -77,10 +77,12 @@ static const row_def_t ROWS[] = {
     ROW(0, "AMBIENT", "C", MUSE_OBD_AMBIENT),
     ROW(1, "RPM", "rpm", SRC_RPM, .hero = true, .bar_max = 8000, .vtec = true),
     ROW(1, "TIMING", "deg", MUSE_OBD_TIMING),
-    ROW(1, "LOAD", "%", MUSE_OBD_LOAD),
-    ROW(1, "MAP", "kPa", MUSE_OBD_MAP),
+    ROW(1, "LOAD", "%", MUSE_OBD_LOAD, .half = true),
+    ROW(1, "MAP", "kPa", MUSE_OBD_MAP, .half = true),
+    ROW(1, "AFR", ":1", MUSE_OBD_AFR),
     ROW(2, "SPEED", "mph", MUSE_OBD_SPEED, .hero = true, .mph = true),
-    ROW(2, "THROTTLE", "%", MUSE_OBD_THROTTLE, .bar_max = 100),
+    ROW(2, "THROTTLE", "%", MUSE_OBD_THROTTLE, .half = true, .bar_max = 100),
+    ROW(2, "FUEL", "%", MUSE_OBD_FUEL, .half = true, .bar_max = 100),
     ROW(2, "STFT", "%", MUSE_OBD_STFT, .sign = true, .half = true, .tone = TONE_TRIM),
     ROW(2, "LTFT", "%", MUSE_OBD_LTFT, .sign = true, .half = true, .tone = TONE_TRIM),
 };
@@ -261,6 +263,20 @@ static void rule_lines(lv_obj_t *list)
     }
 }
 
+/* Is ROWS[r] the second of a pair? Halves pair up two at a time, in order
+ * within a card, so a card can hold more than one pair. */
+static bool second_half(size_t r)
+{
+    if (!ROWS[r].half) {
+        return false;
+    }
+    size_t run = 0;   /* halves of this card right before r */
+    while (run < r && ROWS[r - run - 1].half && ROWS[r - run - 1].card == ROWS[r].card) {
+        run++;
+    }
+    return run % 2 == 1;
+}
+
 void muse_obd_cards_build(lv_obj_t *const tiles[MUSE_OBD_CARDS])
 {
     int w = muse_board->width, h = muse_board->height;
@@ -295,16 +311,14 @@ void muse_obd_cards_build(lv_obj_t *const tiles[MUSE_OBD_CARDS])
     /* Each card's height in units: a hero takes two, a pair of halves one. */
     int units[MUSE_OBD_CARDS] = { 0 };
     for (size_t r = 0; r < ROW_COUNT; r++) {
-        bool second_half = ROWS[r].half && r > 0 && ROWS[r - 1].half && ROWS[r - 1].card == ROWS[r].card;
-        units[ROWS[r].card] += second_half ? 0 : ROWS[r].hero ? 2 : 1;
+        units[ROWS[r].card] += second_half(r) ? 0 : ROWS[r].hero ? 2 : 1;
     }
     lv_obj_t *pair = NULL;
     for (size_t r = 0; r < ROW_COUNT; r++) {
         const row_def_t *def = &ROWS[r];
         int unit_h = list_h / (units[def->card] ? units[def->card] : 1);
         const lv_font_t *font = fit_font(def->hero ? 48 : 40, def->hero ? 2 * unit_h : unit_h, cell_extra(def));
-        bool second_half = def->half && r > 0 && ROWS[r - 1].half && ROWS[r - 1].card == def->card;
-        if (def->half && !second_half) {
+        if (def->half && !second_half(r)) {
             pair = box(s_list[def->card]);
             lv_obj_set_width(pair, lv_pct(100));
             lv_obj_set_flex_grow(pair, 1);
@@ -446,7 +460,13 @@ void muse_obd_cards_tick(void)
         int bar = 0;
         if (v.valid) {
             int shown = def->mph ? (v.value * 621 + 500) / 1000 : v.value;
-            snprintf(text, sizeof(text), def->sign ? "%+d" : "%d", shown);
+            int decimals = def->src < MUSE_OBD_EXTRAS ? MUSE_OBD_EXTRA[def->src].decimals : 0;
+            if (decimals == 1 && shown >= 0) {
+                /* AFR: tenths, "14.7" (int's ten digits, the point: fits text) */
+                snprintf(text, sizeof(text), "%d.%d", shown / 10, shown % 10);
+            } else {
+                snprintf(text, sizeof(text), def->sign ? "%+d" : "%d", shown);
+            }
             snprintf(sub, sizeof(sub), "%d km/h", v.value);
             bool stale = v.age_ms > MUSE_OBD_CARD_STALE_MS;
             color = stale ? COLOR_STALE : fresh_color(def, v.value);
