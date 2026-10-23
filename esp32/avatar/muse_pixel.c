@@ -1382,7 +1382,7 @@ static void react_setup(const muse_pose_t *p, react_t *r)
     } else if (p->vtec > 0) {
         r->kind = RE_VTEC;
         r->p = clampf(p->vtec, 0, 1);
-        r->ts = r->p * MUSE_VTEC_S;
+        r->ts = p->t;   /* progress waits while the solenoid holds it, so the buzz runs on time */
     } else if (p->warmup > 0) {
         /* Below both: a pat on the back, not an alarm. */
         r->kind = RE_WARMUP;
