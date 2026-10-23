@@ -284,6 +284,11 @@ transcribes it and answers in writing, and boards with a screen show the
 answer as captions (Voice PE and reSpeaker Lite replies show up in the Muse app). Two
 things you can change:
 
+> **This fork:** on the three Waveshare boards (`s185c`, `s143c`, `s18`),
+> replies are also spoken aloud when an ElevenLabs key is set in
+> `secrets/` — see the root [`README.md`](../README.md#whats-new-compared-to-upstream).
+> Without a key they stay text, as above.
+
 - **Shorter answers.** Ask for them in the message itself, such as "Answer in
   one sentence."
 - **Spoken answers.** Send each reply's text to a text-to-speech API of your

@@ -1,8 +1,9 @@
 # What this fork adds to Meta's SDK
 
 Baseline: [`facebookincubator/muse-gadget-sdk`](https://github.com/facebookincubator/muse-gadget-sdk)
-up to `b139b45` (synced on 2026-10-07; first forked at `693cde9`). Everything
-below is on top of it. To see it all: `git diff upstream/main`.
+up to `e6fe517` (synced on 2026-10-21; first forked at `693cde9`, previously
+synced at `b139b45` on 2026-10-07). Everything below is on top of it. To see
+it all: `git diff upstream/main` (with the `upstream` remote fetched).
 
 The Linux SDK (`linux/`) and the skills (`skills/`) are unchanged.
 
@@ -24,6 +25,14 @@ The Linux SDK (`linux/`) and the skills (`skills/`) are unchanged.
 | 12 | Claude Code support | Tooling | — | `CLAUDE.md`, `.claude/skills/flash-muse-board/` |
 | 13 | Avatar reactions: dizzy when shaken, sleepy with a snore, waking | Feature | On (shake: boards with a QMI8658) | `muse_imu.*`, `muse_state.*`, `muse_input.c`, `muse_voice.*`, `muse_ui.c`, `muse_pixel.h`, the three board files |
 | 14 | Tickle: rub or tap Muse's face quickly and it giggles | Feature | On (touch boards) | `muse_ui.c`, `muse_state.*`, `muse_pixel.h` |
+| 15 | Voice switcher: pick the ElevenLabs voice in Settings › Voice | Feature (this fork) | On when a key and 2+ voices are set | `muse_voices.c`, `muse_settings_ui.c`, `tools/muse/secrets.py` |
+| 16 | Replies spoken sooner: first piece at 30+ bytes, later pieces at 240+ bytes | Feature (this fork) | On when spoken replies are on | `muse_chat_session.cpp`, `muse_chat_text.c` |
+| 17 | Secrets hooks: block commits/pushes that would publish the token or keys | Tooling (this fork) | Opt-in per clone | `.githooks/`, `tools/muse/check_secrets.py` |
+| 18 | Working pose: laptop and grey headphones while thinking | Avatar (this fork) | On | `esp32/avatar/muse_pixel.c` |
+| 19 | Display page for brightness; Touch volume switch in Settings › Sound | Settings (this fork) | Display: —; Touch volume: **On** | `muse_settings_ui.c`, `muse_ui.c` |
+| 20 | Longer voice turns: 180 s reply timeout, 10 min turn cap | Robustness (this fork) | On | `muse_chat_session.cpp`, `muse_chat_link.c` |
+| 21 | Build branch indicator: `Build: <branch>` in Settings | Tooling (this fork) | On | `muse_build_info.c`, `muse_settings_ui.c`, `CMakeLists.txt` |
+| 22 | OBD car mode (this branch): VTEC/coolant/misfire/warm-up reactions, cards, trip log | Feature (this branch) | **On**, s18 only (`CONFIG_MUSE_OBD_VTEC`) | `muse_obd.c`, `muse_obd_elm.c`, `muse_obd_cards.c`, `muse_obd_log*.c`, `main/app.c` |
 
 ## 1–3. Three Waveshare boards with the full UI
 
@@ -163,8 +172,8 @@ that uses `muse_lcd_bands`.
 ## 11. Secrets outside git
 
 - **`secrets/`.** It is gitignored, except for its README and the `*.example`
-  templates. It holds `muse_sdk_token`, `elevenlabs_api_key` and
-  `elevenlabs_voice_id`.
+  templates. It holds `muse_sdk_token`, `elevenlabs_api_key`,
+  `elevenlabs_voice_id` and `elevenlabs_voices` (the voice list, #15).
 - **`tools/muse/secrets.py`.** It writes them into a build's generated
   `sdkconfig`, from the environment or from the files. It prints only which
   ones it set.
@@ -291,11 +300,101 @@ drives.
   ends drowsing quietly; the screen going to sleep, or a shake, ends it.
   `muse_ui.c` logs `tickled (rub)` or `tickled (taps)` once per tickle.
 
+## 15. Voice switcher
+
+**Settings › Voice** lists up to 8 voices from `secrets/elevenlabs_voices`
+(`Name=voice_id` per line; `tools/muse/secrets.py` packs them into the
+build). Tapping one previews it and saves the choice in NVS, so it survives
+reboots and reflashes. The row appears only when an ElevenLabs key and two
+or more voices are set; otherwise the single configured voice is used.
+
+## 16. Replies spoken sooner
+
+A reply is spoken in pieces instead of waiting for the full text
+(`muse_hatch_speech_cut` in `muse_chat_text.c`, driven by `tts_pump`).
+The first piece goes at 30+ bytes (`SPEECH_FIRST_MIN`), later pieces at
+240+ bytes (`SPEECH_LATER_MIN`, about 17 s of speech), each carrying what
+was already said as context. First audio lands about 1 s after the first
+text.
+
+## 17. Secrets hooks
+
+`.githooks/pre-commit` and `pre-push` run `tools/muse/check_secrets.py`,
+which scans outgoing changes for the real SDK token and ElevenLabs key
+(whole or in part) and for token-shaped strings, and blocks the commit or
+push. It reports where, never what. Enable once per clone:
+`git config core.hooksPath .githooks`.
+
+## 18. Working pose
+
+While thinking, Jollybot works on a laptop with grey headphones instead of
+the paw-on-chin pose (`draw_laptop`, `draw_headphones` in
+`esp32/avatar/muse_pixel.c`). Like #13–14's drawings, this is part of
+Jollybot and **not** under the Apache License.
+
+## 19. Display page and Touch volume switch
+
+Brightness has its own **Settings › Display** page, and the slider preview
+is applied once per frame instead of synchronously in the touch handler,
+so it no longer fights the page swipe. **Settings › Sound › Touch volume**
+(on by default) turns the face volume drag (#6) off entirely.
+
+## 20. Longer voice turns
+
+The voice reply timeout is 180 s (`REPLY_TIMEOUT_US`) and the turn cap is
+10 minutes (`TURN_CAP_US`), so a busy agent holds the turn instead of
+failing with NO REPLY after 60 s. Typed turns already worked this way.
+
+## 21. Build branch indicator
+
+CMake stamps the checked-out branch from `.git/HEAD` as `MUSE_GIT_BRANCH`
+(no `git` call; `detached` or `unknown` otherwise), exposed by
+`muse_build_branch()` (`muse_build_info.c`). Settings home shows
+`Build: <branch>` under the Muse version line, and the button menu's
+Status page shows it too. `.git/HEAD` is a configure dependency, so a
+branch switch in a reused build directory restamps it.
+
+## 22. OBD car mode (AMOLED-1.8 only, this branch)
+
+Only the s18 overlay sets `CONFIG_MUSE_OBD_VTEC` (with the NimBLE central
+and observer roles and a second BLE connection); every other board
+compiles it out. The root README's [In the
+car](../README.md#in-the-car-the-obd-reactions-and-readout) section is the
+full description. In brief:
+
+- **Link.** `muse_obd.c` is a NimBLE central to a LELink^2 ELM327 adapter
+  (FFE0/FFE1), beside Link's peripheral. ELM init, the supported-PID scan
+  (`0100`/`0120`/`0140`) and `ATDPN` run once per connection; polling is
+  response-driven (`muse_obd_elm.c`): most-overdue-first over freshness
+  floors, RPM the standing filler, up to 6 PIDs per request, unsupported
+  PIDs skipped.
+- **Honda DIDs.** 0x2612 (VTEC solenoid/pressure switch, 1 s floor),
+  0x2610 (A/C clutch, generator duty, 3 s) and 0x2663 (per-cylinder
+  misfire counts, 3 s) are probed once per connection and read with
+  `did_read()`'s header choreography, headers always restored.
+- **Reactions (visual only).** VTEC is held while the solenoid reads on
+  (fresh within 3 s); coolant at 105 °C for 5 s with the engine running
+  fires the warning (re-arms at 100 °C, 120 s cooldown), and a misfire
+  count increase plays the same pose; warm-up arms at ≤70 °C and fires
+  once at ≥82 °C. While linked, the face shows an `OBD` status label,
+  Muse wears a racing helmet, and three cards (Temps, Engine, Drive)
+  sit between the face and settings.
+- **Readout.** `obd.read` (and `>obd` on the console) reports link state,
+  protocol, supported-PID masks and every reading with its age.
+- **Trip log.** `muse_obd_log.c` records a CSV per polling link to the
+  `obdlog` FAT partition (7.8 MB); `obd.trips`, `obd.trip_read` and
+  `obd.trip_delete` pull them over Link. The board never deletes a trip.
+- **Off switch.** Settings › OBD (default on, NVS `obd_on`) stops all
+  scanning, connecting and reactions; turning it back on rescans without
+  a reboot. Bench commands (`>vtecsol`, `>coolant`, `>warmup`,
+  `>misfire`, `>obd`, `>card`) exercise it without a car.
+
 ## Not changed
 
 - The pairing protocol, the Noise session, the home-network tunnel and OTA.
-- Every other board, with two exceptions. #8 applies to every board that uses
+- Every other board, with a few exceptions. #8 applies to every board that uses
   `muse_lcd_bands`. #13's drowsing, snore and waking apply to every board with
   the full UI, but a board only reacts to shakes if it calls `muse_imu_init()`.
-  #14 applies to every board with a touch screen and the full UI.
+  #14 and #18 apply to every board with the full UI (touch too, for #14).
+  #22 is compiled in only on the AMOLED-1.8 (`s18`).
 - `linux/` and `skills/`.
