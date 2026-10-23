@@ -270,8 +270,8 @@ static void test_crc_base64_names(void)
     CHECK(!strncmp(big, "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v", 64));
     CHECK(!strcmp(big + MUSE_LOG_B64_LEN(256) - 8, "/P3+/w=="));
     CHECK(muse_log_base64(big, MUSE_LOG_B64_LEN(256), all, 256) == 0);   /* no room for the NUL */
-    /* trip_read's chunk: 6144 bytes are exactly 8192 characters. */
-    CHECK(MUSE_LOG_B64_LEN(6144) == 8192);
+    /* trip_read's chunk (MUSE_OBD_LOG_CHUNK): 49152 bytes are exactly 65536 characters. */
+    CHECK(MUSE_LOG_B64_LEN(49152) == 65536);
 
     char name[MUSE_LOG_NAME_MAX];
     muse_log_file_name(12, name);

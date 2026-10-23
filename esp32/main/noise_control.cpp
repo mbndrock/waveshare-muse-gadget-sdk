@@ -1577,7 +1577,7 @@ static char *build_register_json(void) {
         cJSON_AddItemToObject(required, "id", obd_trip_param("Trip id from obd.trips."));
         cJSON_AddItemToObject(required, "offset", obd_trip_param("Byte offset to read from."));
         add_command(commands, "obd.trip_read",
-                    "Read up to 6144 bytes of a trip's CSV from offset: "
+                    "Read up to 49152 bytes of a trip's CSV from offset: "
                     "{id, offset, bytes, total, eof, data (base64)}.",
                     required, nullptr);
     }

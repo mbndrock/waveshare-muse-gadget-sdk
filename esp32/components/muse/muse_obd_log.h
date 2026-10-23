@@ -77,7 +77,7 @@ void muse_obd_log_status(muse_obd_log_status_t *out);
  * from any task; they work with OBD turned off too. Each may wait briefly
  * for the writer to finish a block. ---- */
 
-#define MUSE_OBD_LOG_CHUNK 6144   /* the most obd.trip_read returns at once */
+#define MUSE_OBD_LOG_CHUNK 49152   /* the most obd.trip_read returns at once (65536 base64 chars) */
 
 typedef struct {
     muse_log_trip_t trip;

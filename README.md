@@ -97,7 +97,7 @@ The same reply also has `load_pct`, `map_kpa`, `speed_kmh`, `timing_deg`, `iat_c
 Muse pulls trips over Link with three commands, which work with OBD turned off too:
 
 - `obd.trips` lists the completed trips: `{"trips": [{"id", "store", "bytes", "samples", "dropped", "started", "ended", "crc32"}], "card", "flash", "logging"}`. `store` is `"flash"` (or `"sd"`), the times are Unix seconds or null, and `crc32` is zlib's CRC-32 of the whole file.
-- `obd.trip_read {"id", "offset"}` returns up to 6144 bytes of the file from `offset`, base64-encoded: `{"id", "offset", "bytes", "total", "eof", "data"}`.
+- `obd.trip_read {"id", "offset"}` returns up to 49152 bytes of the file from `offset`, base64-encoded: `{"id", "offset", "bytes", "total", "eof", "data"}`.
 - `obd.trip_delete {"id"}` deletes a trip, for when Muse has checked that what it pulled matches `bytes` and `crc32`. It is the only way a trip is ever deleted.
 
 `obd.read` reports the log too: `log_card`, `log_flash`, `log_store` (where the current or next trip goes), `log_active`, `log_trip`, `log_dropped`, `log_full`, and `log_pending`, the number of trips waiting to be pulled, which is the flag Muse checks after a drive. The partition arrives with the next flash of this branch. The app and NVS keep their offsets, so pairing, Wi-Fi and Settings survive, and a trip log that's already there survives later reflashes.
