@@ -138,7 +138,7 @@ Muse now reacts to the world a little, like a toy that gets dizzy when you shake
   </tr>
   <tr>
     <td align="center"><img src="docs/images/jollybot/jollybot-vtec.gif" width="180" alt="Jollybot buzzes side to side with a wide grin under a red VTEC! banner"><br><b>VTEC!</b><br><sub>While the VTEC solenoid is on (car, AMOLED-1.8)</sub></td>
-    <td align="center"><img src="docs/images/jollybot/jollybot-coolant.gif" width="180" alt="Jollybot frets with sweat drops and steam under an orange HOT! banner"><br><b>HOT!</b><br><sub>Coolant too hot, or a misfire (car, AMOLED-1.8)</sub></td>
+    <td align="center"><img src="docs/images/jollybot/jollybot-coolant.gif" width="180" alt="Jollybot frets with sweat drops and steam under an orange HOT! banner"><br><b>HOT! / Misfire</b><br><sub>Coolant too hot, or a misfire count going up (car, AMOLED-1.8)</sub></td>
     <td align="center"><img src="docs/images/jollybot/jollybot-warmup.gif" width="180" alt="Jollybot smiles with closed eyes and one paw raised in a thumbs-up"><br><b>Warm-up</b><br><sub>Coolant reaches operating temperature (car, AMOLED-1.8)</sub></td>
     <td align="center"><br><b>Racing helmet</b><br><sub>Worn while the OBD adapter is linked (car, AMOLED-1.8); no preview yet</sub></td>
   </tr>
@@ -152,7 +152,8 @@ Muse now reacts to the world a little, like a toy that gets dizzy when you shake
 On the AMOLED-1.8 in the car there are three more, drawn the same way (second row above; the renderer tests in `esp32/tests/test_muse_pixel_*.py` pin them). They rank above the ones above: coolant first, then VTEC, then warm-up. See [In the car](#in-the-car-the-obd-reactions-and-readout) for the triggers.
 
 - **VTEC!**: an excited, buzzing banner for as long as the VTEC solenoid is on — a held pose, not a flash. It settles when the solenoid goes off or the reading goes stale.
-- **HOT!**: a worried face with sweat and steam when the coolant is too hot. A misfire count going up plays this same pose, so there is no separate misfire drawing.
+- **HOT!**: a worried face with sweat and steam when the coolant is too hot.
+- **Misfire warning**: a misfire count going up in DID 0x2663 with the engine running (400 rpm or more) plays the same **HOT!** pose — there is no separate misfire drawing or GIF. The first read of a connection only sets the baseline, and after a warning the next waits at least 120 s.
 - **Warm-up thumbs-up**: a pleased raised paw when the coolant first reaches operating temperature.
 - While the OBD adapter is linked, Muse also wears a **racing helmet** with the visor up. That one isn't a timed reaction: it's an overlay (`pose.helmet`) that sits over every mode and reaction until the link drops.
 
