@@ -54,4 +54,89 @@ Context for why this round exists: the current poller issues single-PID requests
 
 ## Results (Claude fills in)
 
-Commits, files touched, test counts, the scheduler targets as built, the DID floor as built, ATST value(s) and step-back rule as built, BLE parameter outcome, any logger/buffer changes, deviations, and the one line Derek needs: after his next flash, the `link` stats in obd.read are where the achieved rate shows up.
+Implemented by Muse, not Claude Code: Derek reassigned this build on
+2026-10-23 as a coding trial, on this same spec and its invariants.
+
+Commits: b7a920c (the pipeline), 3f32081 (tests), and this document's commit.
+Files touched: components/muse/muse_obd.c, muse_obd.h, muse_obd_elm.c,
+muse_obd_elm.h, muse_obd_log.c; main/app.c, main/noise_control.cpp (the
+obd.read link object and its description); the two OBD harnesses, the
+enable fakes, and the three OBD contract test files.
+
+As built:
+
+- Poll loop: response-driven. poll_rpm issues the scheduler's pick the
+  moment the previous exchange completes; there is no vTaskDelay, cadence
+  or timer anywhere in the poll path. Connection management outside the
+  polling state is unchanged.
+- Scheduler targets (freshness floors, never caps; most overdue first,
+  ties by tier then table order): RPM 0 ms (the standing filler); DID
+  1000 ms (MUSE_SCHED_DID_MIN_MS in muse_obd_elm.h, the tunable floor);
+  fast tier 1000 ms (MAP 0x0B, throttle 0x11, load 0x04, speed 0x0D);
+  mid tier 2000 ms (STFT 0x06, LTFT 0x07, timing 0x0E); slow tier 3000 ms
+  (coolant 0x05, IAT 0x0F, ambient 0x46). Nothing is queued twice: one
+  request outstanding, no PID twice inside it.
+- Batching: up to 6 PIDs per Mode 01 request, RPM riding along whenever
+  due and there is room. A whole-batch NO DATA or error latches batching
+  OFF for the rest of the connection and the loop carries on single-PID,
+  with no retry of the batch and no misses counted for its PIDs. A PID
+  missing from a batch reply is a miss for that PID only. The DID is
+  never batched.
+- Misses: a PID leaves the schedule after two misses against a live ECU
+  (another PID in the same exchange read a value, or RPM is locked).
+  Misses against a silent ECU do not count, so an engine-off period at
+  connect cannot evict the schedule. RPM is never evicted.
+- Link tuning: ATAT2 once per connection, after the protocol is known.
+  ATST starts at the ELM default 0x32 (200 ms). After 4 valued exchanges
+  it is trimmed once, to twice the mean round trip (the ATST byte is the
+  round trip in 4 ms units), clamped to 0x08..0x32. After 3 consecutive
+  answerless exchanges it steps back up one 0x04 (16 ms) notch, capped at
+  0x32. Every step is logged; tuning never wedges or reconnects the
+  session.
+- BLE parameters: fast connection parameters are requested right after
+  connect (interval min 6 / max 12, 7.5-15 ms; latency 0; supervision
+  timeout 4 s). The request's return code is logged, and a
+  connection-update event logs the negotiated interval when one arrives.
+  A refusal leaves the defaults in force and changes nothing else. The
+  fake stack in the host harness accepts (returns 0); the real adapter's
+  answer is observable only in the flash log on the car.
+- Link stats in obd.read, under "link": exchanges, per_sec (rolling, from
+  the completion times of the last 16 exchanges), last_rtt_ms, timeouts,
+  batch_pct (the share of readings that arrived in multi-PID replies;
+  null until the first reading), batch_off.
+- Logger: the row queue went from 64 to 256 entries (PSRAM-backed, about
+  51 KB, roughly 25 s of headroom at the pipeline's fastest sample rate)
+  so a slow flash write cannot starve it into drops. log_sample is called
+  whenever a request carried RPM, as before; the CSV format is unchanged.
+
+Tests: 718 run, 0 failures, 6 errors (the pre-existing cJSON-environment
+ones, unchanged from baseline), 10 skipped. Baseline to beat was 706 / 0 /
+6 / 10. New coverage: scheduler ordering, dedupe, DID floor, filler,
+two-miss eviction and the batch latch; batch parser (full reply, partial
+reply, a malformed line, whole-batch NO DATA and "?"); link stats math;
+the ATST policy. The DID and enable harnesses were reworked to the
+pipeline: the per-DID choreography assertions are unchanged, tier
+coverage is judged over the whole inter-DID span (one window is only
+about a second of link time, shorter than the slow tier's target), and
+the fake car now answers batched Mode 01 requests.
+
+Deviations and notes:
+
+- Ambient (0x46) sits in the slow tier with IAT. The spec tiered coolant
+  and IAT as slow and did not place ambient; dropping it would have
+  broken a card field on cars that support it.
+- The spec's "existing invalid/unsupported machinery" for per-PID misses
+  did not exist as code: support came only from the scan. The two-miss
+  eviction lives in the scheduler now, gated on a live ECU as above.
+- Stats "timeouts" are no-prompt failures plus NO DATA outcomes. A
+  whole-batch error is not counted as one (it latches batching instead).
+- The console's >obd printout is unchanged; only obd.read gained the
+  link object.
+- Host QA only on this VM, as ever: the Mac IDF build remains the
+  toolchain gate. The poll path adds no snprintf (the batch command and
+  the ATST command are built digit by digit, sized by construction).
+
+Derek: after the next flash, obd.read's link object is the verdict.
+per_sec is the achieved exchange rate and batch_pct how much of it rides
+in batches; if batch_off is true, the adapter refused batching and the
+loop is running single-PID for that connection.
