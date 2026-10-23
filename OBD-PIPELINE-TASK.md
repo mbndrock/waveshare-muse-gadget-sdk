@@ -96,7 +96,9 @@ As built:
 - BLE parameters: fast connection parameters are requested right after
   connect (interval min 6 / max 12, 7.5-15 ms; latency 0; supervision
   timeout 4 s). The request's return code is logged, and a
-  connection-update event logs the negotiated interval when one arrives.
+  connection-update event logs its status when one arrives (status only:
+  the handler does not read the negotiated interval back; correction by
+  Claude Code, see OBD-PIPELINE-HANDOFF.md "Resolution").
   A refusal leaves the defaults in force and changes nothing else. The
   fake stack in the host harness accepts (returns 0); the real adapter's
   answer is observable only in the flash log on the car.

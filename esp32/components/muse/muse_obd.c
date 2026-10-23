@@ -668,7 +668,6 @@ static bool connect(const ble_addr_t *addr)
      * stack's) leaves the defaults in force and changes nothing else. */
     static const struct ble_gap_upd_params FAST = {
         .itvl_min = 6, .itvl_max = 12, .latency = 0, .supervision_timeout = 400,   /* 7.5 ms, 15 ms, 4 s */
-        .min_ce_events = 0, .max_ce_events = 0,
     };
     int urc = ble_gap_update_params(ev.conn, &FAST);
     ESP_LOGI(TAG, "fast connection parameters requested: %d", urc);

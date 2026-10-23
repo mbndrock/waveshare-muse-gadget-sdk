@@ -151,3 +151,34 @@ signature against the IDF v6.0.1 headers on the Mac in one pass.
 - There is no scheduled Claude launch for this task anymore: the Friday
   cron was deleted when Derek reassigned the build. Whoever runs this
   handoff was launched by Derek directly.
+
+## Resolution (Claude Code, 2026-10-23)
+
+- No ESP-IDF or NimBLE headers exist on this VM. The real header was read
+  instead from the exact source IDF v6.0.1 pins: the
+  `components/bt/host/nimble/nimble` submodule of espressif/esp-idf at tag
+  v6.0.1 is espressif/esp-nimble commit `7075927f97c6`, and its
+  `nimble/host/include/host/ble_gap.h` was fetched raw from GitHub.
+- `struct ble_gap_upd_params` there is `itvl_min, itvl_max, latency,
+  supervision_timeout, min_ce_len, max_ce_len` (all `uint16_t`). The
+  `.min_ce_events / .max_ce_events` line in connect() was deleted; the
+  designated initializer zeroes `min_ce_len` and `max_ce_len`, which is
+  what the line meant. The host fake (`tests/obd_enable_fakes/obd_fake.h`)
+  now uses the real member names too.
+- Audit of the pipeline diff (4d1c089..5903c78, components and main) for
+  external API with no prior use in the tree: only three tokens, all now
+  checked against that same header:
+  - `ble_gap_update_params(uint16_t conn_handle, const struct
+    ble_gap_upd_params *params)`: matches the call.
+  - `BLE_GAP_EVENT_CONN_UPDATE` (3) and `event->conn_update.status`
+    (`int`): match the handler, which logs the status only (it does not
+    read the negotiated interval; the pipeline Results said it did and is
+    corrected).
+  - Everything else new in the diff already had uses in the tree
+    (`cJSON_AddNullToObject`, `cJSON_AddBoolToObject`,
+    `taskENTER_CRITICAL`, `ESP_LOGD`, `xQueueCreateWithCaps` unchanged).
+    `muse_obd_elm.c` is plain C with no external API.
+- Host suite after the fix: 706 tests, 0 failures, 6 errors (the known
+  cJSON-environment ones), 10 skipped. OBD subset: 52 tests, all pass.
+- Still unverified: the Mac build (`tools/muse/board.sh build s18`) is the
+  real compiler gate, and remains Derek's step.

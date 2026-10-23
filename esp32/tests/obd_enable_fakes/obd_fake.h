@@ -115,7 +115,7 @@ struct ble_gap_event {
         struct { int status; uint16_t conn_handle; } conn_update;
     };
 };
-struct ble_gap_upd_params { uint16_t itvl_min, itvl_max, latency, supervision_timeout, min_ce_events, max_ce_events; };
+struct ble_gap_upd_params { uint16_t itvl_min, itvl_max, latency, supervision_timeout, min_ce_len, max_ce_len;   /* as NimBLE's ble_gap.h (esp-nimble 7075927, IDF v6.0.1) */ };
 int ble_gap_update_params(uint16_t conn, const struct ble_gap_upd_params *params);
 struct ble_gap_disc_params { uint16_t itvl, window; uint8_t filter_policy, limited, passive, filter_duplicates; };
 typedef int ble_gap_event_fn(struct ble_gap_event *event, void *arg);
