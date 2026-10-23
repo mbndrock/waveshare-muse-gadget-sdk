@@ -1919,6 +1919,18 @@ static cJSON *obd_read_command(void) {
             cJSON_AddNullToObject(payload, SUPPORTED[i]);
         }
     }
+    // Honda's DID 0x2612: the VTEC solenoid and pressure switch (1/0), whether
+    // the engine ECU answers it, and its unexplained byte 23, raw.
+    add_obd_reading(payload, "vtec_sol", "vtec_sol_age_ms", st.vtec_sol.valid, st.vtec_sol.value,
+                    st.vtec_sol.age_ms);
+    add_obd_reading(payload, "vtec_psw", "vtec_psw_age_ms", st.vtec_psw.valid, st.vtec_psw.value,
+                    st.vtec_psw.age_ms);
+    cJSON_AddBoolToObject(payload, "did_2612", st.did_2612);
+    if (st.did_2612_b23.valid) {
+        cJSON_AddNumberToObject(payload, "did_2612_b23", st.did_2612_b23.value);
+    } else {
+        cJSON_AddNullToObject(payload, "did_2612_b23");
+    }
     // The trip log: where trips go, and how many wait to be pulled
     // (log_pending is the doorbell Muse checks).
     cJSON_AddBoolToObject(payload, "log_card", st.log_card);

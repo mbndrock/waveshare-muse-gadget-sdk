@@ -1550,8 +1550,10 @@ static char *build_register_json(void) {
                 "with each reading's age in milliseconds; also the OBD "
                 "protocol the car answered on and the supported-PID "
                 "bitmasks for PIDs 01-60 as hex strings (null if unknown). "
-                "log_* fields describe the trip log; log_pending counts "
-                "trips waiting to be pulled.",
+                "vtec_sol and vtec_psw are the VTEC solenoid and pressure "
+                "switch (1/0) from Honda DID 2612; did_2612 says whether "
+                "the ECU answers it. log_* fields describe the trip log; "
+                "log_pending counts trips waiting to be pulled.",
                 nullptr, nullptr);
     add_command(commands, "obd.trips",
                 "List the logged car trips waiting to be pulled: id, store "

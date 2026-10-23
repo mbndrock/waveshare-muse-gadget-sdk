@@ -67,6 +67,7 @@ typedef struct {
     bool half;          /* half a row, beside the next half (STFT | LTFT) */
     int bar_max;        /* > 0: a thin bar under the value, 0..bar_max */
     uint8_t tone;
+    bool vtec;          /* RPM: "VTEC ON / OFF / --" under the bar, from DID 0x2612 */
 } row_def_t;
 
 #define ROW(c, n, u, s, ...) { .card = (c), .name = (n), .unit = (u), .src = (s), __VA_ARGS__ }
@@ -74,7 +75,7 @@ static const row_def_t ROWS[] = {
     ROW(0, "COOLANT", "C", SRC_COOLANT, .tone = TONE_COOLANT),
     ROW(0, "INTAKE AIR", "C", MUSE_OBD_IAT),
     ROW(0, "AMBIENT", "C", MUSE_OBD_AMBIENT),
-    ROW(1, "RPM", "rpm", SRC_RPM, .hero = true, .bar_max = 8000),
+    ROW(1, "RPM", "rpm", SRC_RPM, .hero = true, .bar_max = 8000, .vtec = true),
     ROW(1, "TIMING", "deg", MUSE_OBD_TIMING),
     ROW(1, "LOAD", "%", MUSE_OBD_LOAD),
     ROW(1, "MAP", "kPa", MUSE_OBD_MAP),
@@ -91,7 +92,9 @@ typedef struct {
     lv_obj_t *cell;     /* hidden when the scan proves its PID unsupported */
     lv_obj_t *slot;     /* what sits in the column: the cell, or the pair it shares */
     lv_obj_t *value, *sub, *bar;
+    lv_obj_t *vtec;     /* the VTEC word, ON / OFF / -- */
     uint32_t color;     /* the value's colour as shown; 0 before the first tick */
+    uint32_t vtec_color;
     uint32_t bar_color;
     int bar_value;      /* as shown; -1 before the first tick */
 } row_t;
@@ -160,6 +163,9 @@ static int cell_extra(const row_def_t *def)
     if (def->mph) {
         extra += small;
     }
+    if (def->vtec) {
+        extra += BAR_GAP + lv_font_get_line_height(&lv_font_montserrat_20);
+    }
     return extra;
 }
 
@@ -222,6 +228,18 @@ static void build_row(lv_obj_t *list, const row_def_t *def, row_t *row, lv_obj_t
     }
     if (def->bar_max) {
         row->bar = build_bar(c, def->bar_max);
+    }
+    if (def->vtec) {
+        /* Part of the RPM cluster: the solenoid's state, so Derek can see
+         * the DID working. "--" when there's no fresh reading at all. */
+        lv_obj_t *status = box(c);
+        lv_obj_set_size(status, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_top(status, BAR_GAP, 0);
+        lv_obj_set_flex_flow(status, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(status, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+        lv_obj_set_style_pad_column(status, 8, 0);
+        label(status, &lv_font_montserrat_16, COLOR_DIM, "VTEC");
+        row->vtec = label(status, &lv_font_montserrat_20, COLOR_DIM, "--");
     }
 }
 
@@ -365,6 +383,20 @@ static uint32_t fresh_color(const row_def_t *def, int value)
     return def->hero ? COLOR_ACCENT : COLOR_TEXT;
 }
 
+/* The VTEC word under RPM: ON in the accent, OFF dim, "--" dim when the
+ * car doesn't answer DID 0x2612 or the reading isn't fresh. */
+static void tick_vtec(const muse_obd_status_t *st, row_t *row)
+{
+    bool fresh = st->vtec_sol.valid && st->vtec_sol.age_ms <= MUSE_OBD_CARD_STALE_MS;
+    const char *word = !fresh ? "--" : st->vtec_sol.value ? "ON" : "OFF";
+    uint32_t color = fresh && st->vtec_sol.value ? COLOR_ACCENT : COLOR_DIM;
+    set_text(row->vtec, word);
+    if (color != row->vtec_color) {
+        lv_obj_set_style_text_color(row->vtec, lv_color_hex(color), 0);
+        row->vtec_color = color;
+    }
+}
+
 void muse_obd_cards_tick(void)
 {
     if (!s_built) {
@@ -431,6 +463,9 @@ void muse_obd_cards_tick(void)
         if (row->sub) {
             set_text(row->sub, sub);
         }
+        if (row->vtec) {
+            tick_vtec(&st, row);
+        }
         if (color != row->color) {
             lv_obj_set_style_text_color(row->value, lv_color_hex(color), 0);
             row->color = color;
@@ -453,3 +488,4 @@ void muse_obd_cards_tick(void)
         }
     }
 }
+
