@@ -839,6 +839,12 @@ static void print_obd(void)
             printf(",\"supported_%02X\":null", 0x20 * i);
         }
     }
+    printf(",\"log_card\":%s,\"log_flash\":%s,\"log_store\":%s%s%s,\"log_active\":%s,\"log_trip\":%s,"
+           "\"log_pending\":%lu,\"log_dropped\":%lu,\"log_full\":%s",
+           st.log_card ? "true" : "false", st.log_flash ? "true" : "false", st.log_store ? "\"" : "",
+           st.log_store ? st.log_store : "null", st.log_store ? "\"" : "", st.log_active ? "true" : "false",
+           obd_number(rpm, sizeof(rpm), st.log_trip_valid, st.log_trip), (unsigned long)st.log_pending,
+           (unsigned long)st.log_dropped, st.log_full ? "true" : "false");
     printf("}\n");
     fflush(stdout);
 }

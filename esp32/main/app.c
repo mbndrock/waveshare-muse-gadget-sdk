@@ -78,6 +78,7 @@
 #endif
 #if CONFIG_MUSE_OBD_VTEC
 #include "muse_obd.h"
+#include "muse_obd_log.h"
 #endif
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
@@ -1918,6 +1919,175 @@ static cJSON *obd_read_command(void) {
             cJSON_AddNullToObject(payload, SUPPORTED[i]);
         }
     }
+    // The trip log: where trips go, and how many wait to be pulled
+    // (log_pending is the doorbell Muse checks).
+    cJSON_AddBoolToObject(payload, "log_card", st.log_card);
+    cJSON_AddBoolToObject(payload, "log_flash", st.log_flash);
+    if (st.log_store) {
+        cJSON_AddStringToObject(payload, "log_store", st.log_store);
+    } else {
+        cJSON_AddNullToObject(payload, "log_store");
+    }
+    cJSON_AddBoolToObject(payload, "log_active", st.log_active);
+    if (st.log_trip_valid) {
+        cJSON_AddNumberToObject(payload, "log_trip", st.log_trip);
+    } else {
+        cJSON_AddNullToObject(payload, "log_trip");
+    }
+    cJSON_AddNumberToObject(payload, "log_pending", st.log_pending);
+    cJSON_AddNumberToObject(payload, "log_dropped", st.log_dropped);
+    cJSON_AddBoolToObject(payload, "log_full", st.log_full);
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddItemToObject(result, "payload", payload);
+    return result;
+}
+
+// A whole number param in 0..max, into *out.
+static bool obd_uint_param(cJSON *params, const char *name, double max, uint32_t *out) {
+    cJSON *v = params ? cJSON_GetObjectItem(params, name) : NULL;
+    if (!cJSON_IsNumber(v) || !(v->valuedouble >= 0 && v->valuedouble <= max)) return false;
+    uint32_t u = (uint32_t)v->valuedouble;
+    if ((double)u != v->valuedouble) return false;
+    *out = u;
+    return true;
+}
+
+static cJSON *obd_trip_id_param(cJSON *params, uint32_t *id) {
+    if (!params || !cJSON_GetObjectItem(params, "id")) {
+        return command_error("missing_param", "id is required");
+    }
+    if (!obd_uint_param(params, "id", MUSE_LOG_ID_MAX, id) || *id == 0) {
+        return command_error("invalid_params", "id must be a trip id from obd.trips");
+    }
+    return NULL;
+}
+
+static void add_obd_time(cJSON *obj, const char *key, int64_t t) {
+    if (t < 0) {
+        cJSON_AddNullToObject(obj, key);
+    } else {
+        cJSON_AddNumberToObject(obj, key, (double)t);
+    }
+}
+
+// Every completed trip in both stores. Works with OBD turned off.
+static cJSON *obd_trips_command(void) {
+    int n = muse_obd_log_list(NULL, 0);
+    if (n < 0) return command_error("busy", "the trip log is busy; try again");
+    muse_obd_log_entry_t *list = n > 0 ? malloc(sizeof(*list) * (size_t)n) : NULL;
+    if (n > 0 && !list) return command_error("out_of_memory", "failed to allocate");
+    int got = n > 0 ? muse_obd_log_list(list, n) : 0;
+    if (got < 0) {
+        free(list);
+        return command_error("busy", "the trip log is busy; try again");
+    }
+    if (got > n) got = n;   // a trip completed in between: the next call lists it
+    muse_obd_status_t st;
+    muse_obd_status(&st);
+    cJSON *result = cJSON_CreateObject();
+    cJSON *payload = cJSON_CreateObject();
+    cJSON *trips = cJSON_CreateArray();
+    if (!result || !payload || !trips) {
+        free(list);
+        cJSON_Delete(result);
+        cJSON_Delete(payload);
+        cJSON_Delete(trips);
+        return command_error("out_of_memory", "failed to allocate");
+    }
+    for (int i = 0; i < got; i++) {
+        const muse_log_trip_t *t = &list[i].trip;
+        cJSON *trip = cJSON_CreateObject();
+        if (!trip) break;
+        cJSON_AddNumberToObject(trip, "id", t->id);
+        cJSON_AddStringToObject(trip, "store", list[i].store);
+        cJSON_AddNumberToObject(trip, "bytes", t->bytes);
+        cJSON_AddNumberToObject(trip, "samples", t->samples);
+        cJSON_AddNumberToObject(trip, "dropped", t->dropped);
+        add_obd_time(trip, "started", t->started);
+        add_obd_time(trip, "ended", t->ended);
+        cJSON_AddNumberToObject(trip, "crc32", t->crc32);
+        cJSON_AddItemToArray(trips, trip);
+    }
+    free(list);
+    cJSON_AddItemToObject(payload, "trips", trips);
+    cJSON_AddBoolToObject(payload, "card", st.log_card);
+    cJSON_AddBoolToObject(payload, "flash", st.log_flash);
+    cJSON_AddBoolToObject(payload, "logging", st.log_active);
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddItemToObject(result, "payload", payload);
+    return result;
+}
+
+// A slice of a trip's file, base64: at most MUSE_OBD_LOG_CHUNK bytes from
+// offset. A few KB from an already mounted store: fine on this task.
+static cJSON *obd_trip_read_command(cJSON *params) {
+    uint32_t id, offset;
+    cJSON *err = obd_trip_id_param(params, &id);
+    if (err) return err;
+    if (!cJSON_GetObjectItem(params, "offset")) {
+        return command_error("missing_param", "offset is required");
+    }
+    if (!obd_uint_param(params, "offset", (double)UINT32_MAX, &offset)) {
+        return command_error("invalid_params", "offset must be a whole number of bytes");
+    }
+    uint8_t *buf = malloc(MUSE_OBD_LOG_CHUNK);
+    char *data = malloc(MUSE_LOG_B64_LEN(MUSE_OBD_LOG_CHUNK) + 1);
+    if (!buf || !data) {
+        free(buf);
+        free(data);
+        return command_error("out_of_memory", "failed to allocate");
+    }
+    uint32_t total = 0;
+    int n = muse_obd_log_read(id, offset, buf, MUSE_OBD_LOG_CHUNK, &total);
+    if (n >= 0) {
+        muse_log_base64(data, MUSE_LOG_B64_LEN(MUSE_OBD_LOG_CHUNK) + 1, buf, (size_t)n);
+    }
+    free(buf);
+    if (n < 0) {
+        free(data);
+        if (n == MUSE_LOG_READ_UNKNOWN) return command_error("not_found", "no trip with that id");
+        if (n == MUSE_LOG_READ_PAST_END) {
+            return command_error("invalid_params", "offset is past the end of the trip");
+        }
+        return command_error("storage_error", "couldn't read the trip; try again");
+    }
+    cJSON *result = cJSON_CreateObject();
+    cJSON *payload = cJSON_CreateObject();
+    if (!result || !payload) {
+        free(data);
+        cJSON_Delete(result);
+        cJSON_Delete(payload);
+        return command_error("out_of_memory", "failed to allocate");
+    }
+    cJSON_AddNumberToObject(payload, "id", id);
+    cJSON_AddNumberToObject(payload, "offset", offset);
+    cJSON_AddNumberToObject(payload, "bytes", n);
+    cJSON_AddNumberToObject(payload, "total", total);
+    cJSON_AddBoolToObject(payload, "eof", offset + (uint32_t)n >= total);
+    cJSON_AddStringToObject(payload, "data", data);
+    free(data);
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddItemToObject(result, "payload", payload);
+    return result;
+}
+
+// The only way a trip is deleted: Muse, after checking what it pulled.
+static cJSON *obd_trip_delete_command(cJSON *params) {
+    uint32_t id;
+    cJSON *err = obd_trip_id_param(params, &id);
+    if (err) return err;
+    int res = muse_obd_log_delete(id);
+    if (res == MUSE_LOG_READ_UNKNOWN) return command_error("not_found", "no trip with that id");
+    if (res != MUSE_LOG_READ_OK) return command_error("storage_error", "couldn't delete the trip; try again");
+    cJSON *result = cJSON_CreateObject();
+    cJSON *payload = cJSON_CreateObject();
+    if (!result || !payload) {
+        cJSON_Delete(result);
+        cJSON_Delete(payload);
+        return command_error("out_of_memory", "failed to allocate");
+    }
+    cJSON_AddNumberToObject(payload, "id", id);
+    cJSON_AddBoolToObject(payload, "deleted", true);
     cJSON_AddBoolToObject(result, "ok", true);
     cJSON_AddItemToObject(result, "payload", payload);
     return result;
@@ -2008,6 +2178,15 @@ static cJSON *on_ws_command(
 #if CONFIG_MUSE_OBD_VTEC
     if (strcmp(command, "obd.read") == 0) {
         return obd_read_command();
+    }
+    if (strcmp(command, "obd.trips") == 0) {
+        return obd_trips_command();
+    }
+    if (strcmp(command, "obd.trip_read") == 0) {
+        return obd_trip_read_command(params);
+    }
+    if (strcmp(command, "obd.trip_delete") == 0) {
+        return obd_trip_delete_command(params);
     }
 #endif
     if (strcmp(command, "device.reset_vm") == 0) {

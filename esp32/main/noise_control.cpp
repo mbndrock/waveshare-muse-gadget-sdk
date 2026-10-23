@@ -1339,6 +1339,16 @@ static cJSON *row_params(void) {
 }
 #endif
 
+#if CONFIG_MUSE_OBD_VTEC
+// An integer parameter of the OBD trip commands.
+static cJSON *obd_trip_param(const char *description) {
+    cJSON *param = cJSON_CreateObject();
+    cJSON_AddStringToObject(param, "type", "integer");
+    cJSON_AddStringToObject(param, "description", description);
+    return param;
+}
+#endif
+
 static void add_command(cJSON *commands, const char *name,
                         const char *description,
                         cJSON *required, cJSON *optional) {
@@ -1539,8 +1549,32 @@ static char *build_register_json(void) {
                 "fuel trims, each null when there is no current reading, "
                 "with each reading's age in milliseconds; also the OBD "
                 "protocol the car answered on and the supported-PID "
-                "bitmasks for PIDs 01-60 as hex strings (null if unknown).",
+                "bitmasks for PIDs 01-60 as hex strings (null if unknown). "
+                "log_* fields describe the trip log; log_pending counts "
+                "trips waiting to be pulled.",
                 nullptr, nullptr);
+    add_command(commands, "obd.trips",
+                "List the logged car trips waiting to be pulled: id, store "
+                "(sd or flash), bytes, samples, dropped, started/ended (Unix "
+                "s or null) and crc32 (zlib) of each CSV.",
+                nullptr, nullptr);
+    {
+        cJSON *required = cJSON_CreateObject();
+        cJSON_AddItemToObject(required, "id", obd_trip_param("Trip id from obd.trips."));
+        cJSON_AddItemToObject(required, "offset", obd_trip_param("Byte offset to read from."));
+        add_command(commands, "obd.trip_read",
+                    "Read up to 6144 bytes of a trip's CSV from offset: "
+                    "{id, offset, bytes, total, eof, data (base64)}.",
+                    required, nullptr);
+    }
+    {
+        cJSON *required = cJSON_CreateObject();
+        cJSON_AddItemToObject(required, "id", obd_trip_param("Trip id from obd.trips."));
+        add_command(commands, "obd.trip_delete",
+                    "Delete a trip after its bytes and crc32 were verified. "
+                    "The gadget never deletes trips itself.",
+                    required, nullptr);
+    }
 #endif
 
 #if CONFIG_MUSE_WATCHER_CAMERA
