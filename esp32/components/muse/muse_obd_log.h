@@ -99,3 +99,29 @@ int muse_obd_log_read(uint32_t id, uint32_t offset, uint8_t *buf, size_t cap, ui
  * are busy or the manifest couldn't be rewritten. The open trip isn't listed
  * until it closes, so it can't be deleted. */
 int muse_obd_log_delete(uint32_t id);
+
+/* ---- The log doorbell (OBD-LOG-DOORBELL-TASK): the gadget announces stored
+ * trips to Muse as one text turn ("Trip logs ready: ..."), on the chat
+ * session coming up, on a trip closing while it is up, and from Settings'
+ * "Send logs to Muse" row. The decision is muse_obd_doorbell.h's; this side
+ * lists the stores and sends. It concerns stored trips only: it runs with
+ * Car mode on or off and never touches the car side. ---- */
+
+/* Starts the doorbell's watcher task. Once, beside the writer
+ * (muse_obd_log_start). */
+void muse_obd_doorbell_start(void);
+
+typedef enum {
+    MUSE_DOORBELL_SENT,            /* the announcement was handed to the chat session */
+    MUSE_DOORBELL_NOT_CONNECTED,   /* trips are waiting but the session is not ready */
+    MUSE_DOORBELL_NO_LOGS,         /* nothing is waiting */
+    MUSE_DOORBELL_ALREADY_SENT,    /* everything waiting was already announced on this connection */
+} muse_doorbell_result_t;
+
+/* Settings' row tapped: announce now if there is anything new to announce.
+ * Marks nothing when the session is not ready. */
+muse_doorbell_result_t muse_obd_doorbell_ring(void);
+
+/* Stored trips waiting, from the watcher's last listing; *total_bytes (if
+ * not NULL) is their summed size. For Settings' row text. Never blocks. */
+int muse_obd_doorbell_pending(uint32_t *total_bytes);

@@ -56,7 +56,7 @@ if(CONFIG_MUSE_ENABLED)
         # VTEC reaction from the car's OBD adapter, the car data cards, and
         # the trip log (flash and microSD stores, pulled over Link)
         list(APPEND srcs "muse_obd.c" "muse_obd_elm.c" "muse_obd_cards.c" "muse_obd_log.c"
-             "muse_obd_log_store.c")
+             "muse_obd_log_store.c" "muse_obd_doorbell.c" "muse_obd_doorbell_task.c")
     endif()
     if(CONFIG_MUSE_CJK_FONT)
         list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback

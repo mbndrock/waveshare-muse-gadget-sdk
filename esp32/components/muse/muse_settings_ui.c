@@ -39,6 +39,10 @@
 #include "muse_ui.h"
 #include "muse_voice.h"
 #include "muse_wifi.h"
+#if CONFIG_MUSE_OBD_VTEC
+#include "muse_obd_doorbell.h"
+#include "muse_obd_log.h"
+#endif
 #if CONFIG_MUSE_VIDEO
 #include "muse_video.h"
 #endif
@@ -85,6 +89,9 @@ static lv_obj_t *s_home_camera;
 #endif
 #if CONFIG_MUSE_OBD_VTEC
 static lv_obj_t *s_home_obd;
+static lv_obj_t *s_home_doorbell;   /* the Send logs row's value */
+static char s_doorbell_note[24];   /* brief feedback after a tap */
+static int64_t s_doorbell_note_until_us;
 #endif
 
 /* Wi-Fi page. */
@@ -1369,6 +1376,32 @@ static void on_obd_sw(lv_event_t *e)
 {
     muse_settings_set_obd_on(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
+
+/* Stored trips announced to Muse now; the row answers on itself, briefly.
+ * Marks nothing when the session is not ready. */
+static void on_doorbell(lv_event_t *e)
+{
+    (void)e;
+    switch (muse_obd_doorbell_ring()) {
+    case MUSE_DOORBELL_SENT:
+        strlcpy(s_doorbell_note, "Sent", sizeof(s_doorbell_note));
+        break;
+    case MUSE_DOORBELL_NOT_CONNECTED:
+        strlcpy(s_doorbell_note, "Not connected", sizeof(s_doorbell_note));
+        break;
+    case MUSE_DOORBELL_ALREADY_SENT:
+        strlcpy(s_doorbell_note, "Already sent", sizeof(s_doorbell_note));
+        break;
+    case MUSE_DOORBELL_NO_LOGS:
+    default:
+        strlcpy(s_doorbell_note, "Nothing to send", sizeof(s_doorbell_note));
+        break;
+    }
+    s_doorbell_note_until_us = esp_timer_get_time() + 2000000;
+    if (s_home_doorbell) {
+        set_text(s_home_doorbell, s_doorbell_note);
+    }
+}
 #endif
 
 #if CONFIG_MUSE_VIDEO
@@ -1390,6 +1423,7 @@ static void build_home(lv_obj_t *tile)
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
 #if CONFIG_MUSE_OBD_VTEC
     s_home_obd = switch_row_icon(list, LV_SYMBOL_GPS, "OBD", muse_settings_obd_on(), on_obd_sw);
+    row(list, LV_SYMBOL_UPLOAD, "Send logs to Muse", &s_home_doorbell, on_doorbell, NULL);
 #endif
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     /* Brightness, which e-paper has none of. */
@@ -1453,6 +1487,17 @@ static void tick_home(void)
     bool obd = muse_settings_obd_on();
     if (obd != lv_obj_has_state(s_home_obd, LV_STATE_CHECKED)) {
         lv_obj_set_state(s_home_obd, LV_STATE_CHECKED, obd);
+    }
+    if (s_home_doorbell) {
+        char pending_text[64];
+        if (esp_timer_get_time() < s_doorbell_note_until_us) {
+            set_text(s_home_doorbell, s_doorbell_note);
+        } else {
+            uint32_t pending_bytes = 0;
+            int pending_count = muse_obd_doorbell_pending(&pending_bytes);
+            muse_doorbell_pending_text(pending_count, pending_bytes, pending_text, sizeof(pending_text));
+            set_text(s_home_doorbell, pending_text);
+        }
     }
 #endif
 

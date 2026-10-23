@@ -373,6 +373,7 @@ void muse_obd_log_start(void)
         ESP_LOGE(TAG, "failed to start: no trip logging");
         return;
     }
+    muse_obd_doorbell_start();
 }
 
 /* ---- The OBD task's side ---- */
