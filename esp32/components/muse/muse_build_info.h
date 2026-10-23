@@ -26,3 +26,8 @@
 
 /* The checkout's branch, "detached" for a detached HEAD, or "unknown". */
 const char *muse_build_branch(void);
+
+/* The checked-out commit's short hash (7 hex digits, read from .git at
+ * configure time like the branch: MUSE_GIT_COMMIT), or "unknown". The OBD
+ * trip log's header names it. */
+const char *muse_build_commit(void);

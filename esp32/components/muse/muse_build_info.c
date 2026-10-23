@@ -24,3 +24,12 @@ const char *muse_build_branch(void)
     return "unknown";
 #endif
 }
+
+const char *muse_build_commit(void)
+{
+#ifdef MUSE_GIT_COMMIT
+    return MUSE_GIT_COMMIT;
+#else
+    return "unknown";
+#endif
+}

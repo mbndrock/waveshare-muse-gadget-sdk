@@ -53,8 +53,10 @@ if(CONFIG_MUSE_ENABLED)
     endif()
     list(APPEND srcs "muse_chat_text.c")
     if(CONFIG_MUSE_OBD_VTEC)
-        # VTEC reaction from the car's OBD adapter, and the car data cards
-        list(APPEND srcs "muse_obd.c" "muse_obd_elm.c" "muse_obd_cards.c")
+        # VTEC reaction from the car's OBD adapter, the car data cards, and
+        # the trip log (flash and microSD stores, pulled over Link)
+        list(APPEND srcs "muse_obd.c" "muse_obd_elm.c" "muse_obd_cards.c" "muse_obd_log.c"
+             "muse_obd_log_store.c")
     endif()
     if(CONFIG_MUSE_CJK_FONT)
         list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
@@ -154,9 +156,10 @@ set(muse_priv_requires
     noise_core minimp3 muse_vstream tinyh264 libvpx_vp8
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
     esp_driver_pcnt efuse
-    # The Sticky's microSD (CONFIG_MUSE_STICKY_SD). Requirements are resolved
-    # before Kconfig values exist, so these can't depend on it; only the code does.
-    fatfs esp_driver_sdspi sdmmc)
+    # The Sticky's microSD (CONFIG_MUSE_STICKY_SD) and the OBD trip log's
+    # flash store (CONFIG_MUSE_OBD_VTEC). Requirements are resolved before
+    # Kconfig values exist, so these can't depend on it; only the code does.
+    fatfs esp_driver_sdspi sdmmc esp_partition wear_levelling)
 list(APPEND muse_priv_requires camera)
 
 idf_component_register(
@@ -203,4 +206,26 @@ if(CONFIG_MUSE_ENABLED)
     string(REGEX REPLACE "[^A-Za-z0-9._/-]" "-" muse_branch "${muse_branch}")
     string(SUBSTRING "${muse_branch}" 0 64 muse_branch)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE "MUSE_GIT_BRANCH=\"${muse_branch}\"")
+
+    # And its commit, for the OBD trip log's header: the branch's ref file
+    # (or packed-refs), or the detached HEAD itself. Only muse_build_info.c
+    # gets it, so a new commit recompiles that one file.
+    set(muse_commit "unknown")
+    if(muse_head_line MATCHES "^ref: (refs/heads/.+)$")
+        set(muse_ref "${CMAKE_MATCH_1}")
+        set(muse_ref_file "${muse_repo}/.git/${muse_ref}")
+        if(EXISTS "${muse_ref_file}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${muse_ref_file}")
+            file(STRINGS "${muse_ref_file}" muse_hash LIMIT_COUNT 1)
+        elseif(EXISTS "${muse_repo}/.git/packed-refs")
+            file(STRINGS "${muse_repo}/.git/packed-refs" muse_packed REGEX " ${muse_ref}$")
+            string(REGEX REPLACE " .*" "" muse_hash "${muse_packed}")
+        endif()
+    elseif(muse_head_line MATCHES "^[0-9a-fA-F]+$")
+        set(muse_hash "${muse_head_line}")
+    endif()
+    if(muse_hash MATCHES "^[0-9a-fA-F]+$")
+        string(SUBSTRING "${muse_hash}" 0 7 muse_commit)
+    endif()
+    set_source_files_properties("muse_build_info.c" PROPERTIES COMPILE_DEFINITIONS "MUSE_GIT_COMMIT=\"${muse_commit}\"")
 endif()

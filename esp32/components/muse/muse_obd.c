@@ -33,6 +33,7 @@
 
 #include "muse_link.h"
 #include "muse_obd_elm.h"
+#include "muse_obd_log.h"
 #include "muse_state.h"
 
 static const char *TAG = "muse_obd";
@@ -419,6 +420,17 @@ void muse_obd_status(muse_obd_status_t *out)
     coolant_at = s_coolant_at;
     memcpy(extra_at, s_extra_at, sizeof(extra_at));
     taskEXIT_CRITICAL(&s_status_lock);
+    muse_obd_log_status_t trips;
+    muse_obd_log_status(&trips);
+    out->log_card = trips.card;
+    out->log_flash = trips.flash;
+    out->log_store = trips.store;
+    out->log_active = trips.active;
+    out->log_trip_valid = trips.trip_valid;
+    out->log_trip = trips.trip;
+    out->log_pending = trips.pending;
+    out->log_dropped = trips.dropped;
+    out->log_full = trips.full;
     out->rpm_age_ms = out->rpm_valid ? now - rpm_at : UINT32_MAX;
     out->coolant_age_ms = out->coolant_valid ? now - coolant_at : UINT32_MAX;
     for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
@@ -778,6 +790,15 @@ static void got_extra(int pid)
     }
 }
 
+/* One row of the trip log: the snapshot as it stands after an RPM reply.
+ * The logger only queues it; it never waits on the store. */
+static void log_sample(void)
+{
+    muse_obd_status_t st;
+    muse_obd_status(&st);
+    muse_obd_log_sample(&st, now_ms());
+}
+
 /*
  * Asks for RPM and a secondary PID by turns, each request after the last '>':
  * RPM, coolant, RPM, the next card PID, ... (muse_elm_next_secondary). While
@@ -816,6 +837,7 @@ static bool poll_rpm(void)
         locked = res == MUSE_ELM_RPM;
         s_rpm = locked ? rpm : -1;
         set_rpm(locked, rpm);
+        log_sample();
         if (locked) {
             ESP_LOGD(TAG, "%d rpm", rpm);
             if (muse_vtec_update(&s_trigger, rpm, now_ms())) {
@@ -838,6 +860,7 @@ static bool poll_rpm(void)
 
 static void drop(void)
 {
+    muse_obd_log_trip_end();   /* the trip ends with the link: flushed and closed */
     uint16_t conn = s_conn;
     s_val = 0;
     if (conn != BLE_HS_CONN_HANDLE_NONE) {
@@ -909,6 +932,9 @@ static void obd_task(void *arg)
                         ESP_LOGI(TAG, "polling RPM, coolant and the cards' PIDs");
                         set_state("polling");
                         set_flag(&s_status.polling, true);
+                        muse_obd_status_t st;
+                        muse_obd_status(&st);
+                        muse_obd_log_trip_start(&st, now_ms());   /* a trip per polling link */
                         polled = poll_rpm();
                         set_flag(&s_status.polling, false);
                     }
@@ -947,6 +973,7 @@ void muse_obd_start(void)
     if (s_task) {
         return;
     }
+    muse_obd_log_start();   /* the trip log's stores, with OBD on or off */
     /* Before the task exists, so it can't run ahead of this. */
     taskENTER_CRITICAL(&s_status_lock);
     s_status.started = true;
@@ -955,7 +982,7 @@ void muse_obd_start(void)
     s_events = xQueueCreateWithCaps(16, sizeof(obd_ev_t), MALLOC_CAP_SPIRAM);
     s_rx_bytes = xStreamBufferCreateWithCaps(RX_BYTES, 1, MALLOC_CAP_SPIRAM);
     if (!s_events || !s_rx_bytes
-        || xTaskCreateWithCaps(obd_task, "muse_obd", 4096, NULL, 3, &s_task, MALLOC_CAP_SPIRAM) != pdPASS) {
+        || xTaskCreateWithCaps(obd_task, "muse_obd", 6144, NULL, 3, &s_task, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "failed to start");
         taskENTER_CRITICAL(&s_status_lock);
         s_status.started = false;

@@ -118,12 +118,23 @@ typedef struct {
     char protocol_name[20]; /* its short name ("CAN 11/500", "proto 13"); "" if not known */
     bool support_valid[MUSE_OBD_SUPPORT_RANGES];   /* support[i] was read */
     uint32_t support[MUSE_OBD_SUPPORT_RANGES];     /* 01 00 / 20 / 40's bitmask (A << 24 | ... | D) */
+    /* The trip log (muse_obd_log.h), which works with OBD turned off too. */
+    bool log_card;         /* a microSD card is mounted */
+    bool log_flash;        /* the obdlog flash partition is mounted */
+    const char *log_store; /* where the current or next trip goes: "sd", "flash"; NULL for nowhere */
+    bool log_active;       /* a trip file is open */
+    bool log_trip_valid;   /* log_trip is the open trip's id */
+    uint32_t log_trip;
+    uint32_t log_pending;  /* completed trips not yet deleted, both stores: Muse's doorbell */
+    uint32_t log_dropped;  /* samples dropped this trip */
+    bool log_full;         /* a store filled up and takes no more trips */
 } muse_obd_status_t;
 
 /*
  * Copies the snapshot into *out. Never blocks and never touches BLE: safe
  * from any task, before muse_obd_start() too. The obd.read Link command and
- * the bench console's ">obd" report it.
+ * the bench console's ">obd" report it. A trip that completes raises
+ * log_pending, which is the flag Muse checks for trips to pull.
  */
 void muse_obd_status(muse_obd_status_t *out);
 
