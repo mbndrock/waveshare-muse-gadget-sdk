@@ -45,7 +45,9 @@ typedef struct {
     float waking;    /* the screen came on: quick blinks, a stretch, alert (MUSE_WAKING_S) */
     float tickle;    /* tickled on the screen: startle, then squirm and giggle while it lasts, then
                       * catch his breath (MUSE_TICKLE_S; held below MUSE_TICKLE_HOLD while it continues) */
-    float vtec;      /* the car hit VTEC (muse_obd.c): excited face, buzzing, a "VTEC!" banner (MUSE_VTEC_S) */
+    float vtec;      /* the car is in VTEC (muse_obd.c): excited face, buzzing, a "VTEC!" banner (MUSE_VTEC_S;
+                      * held at MUSE_VTEC_HOLD for as long as the solenoid is on, then the settle from
+                      * MUSE_VTEC_SETTLE; animate it on `t`, not on progress, so a hold stays alive) */
     float coolant;   /* the car's coolant is too hot (muse_obd.c): worried face, sweat, steam, a "HOT!"
                       * banner (MUSE_COOLANT_S); outranks vtec */
     float warmup;    /* the car's coolant reached operating temperature (muse_obd.c): a pleased thumbs-up
@@ -60,6 +62,8 @@ typedef struct {
 #define MUSE_TICKLE_S 3.0f
 #define MUSE_TICKLE_HOLD 0.8f   /* the giggle loop runs from ~0.15 to here while tickling goes on */
 #define MUSE_VTEC_S 3.0f
+#define MUSE_VTEC_HOLD 0.5f     /* where a held VTEC waits: banner up, buzzing */
+#define MUSE_VTEC_SETTLE 0.82f  /* where it goes once let go: the settle, MUSE_VTEC_S * 0.18 long */
 #define MUSE_COOLANT_S 4.0f
 #define MUSE_WARMUP_S 3.0f
 

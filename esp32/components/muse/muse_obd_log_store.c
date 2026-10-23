@@ -36,6 +36,8 @@ const char *const MUSE_LOG_COLUMN[MUSE_LOG_CHANNELS] = {
     [MUSE_LOG_STFT] = "stft_pct",
     [MUSE_LOG_LTFT] = "ltft_pct",
     [MUSE_LOG_AMBIENT] = "ambient_c",
+    [MUSE_LOG_VTEC_SOL] = "vtec_sol",
+    [MUSE_LOG_VTEC_PSW] = "vtec_psw",
 };
 
 /* ---- Text into a bounded buffer, without printf: every length is checked
@@ -175,6 +177,9 @@ size_t muse_log_format_header(char *buf, size_t cap, const muse_log_meta_t *m)
     } else {
         put(&o, "\n# t0=boot boot_ms=");
         put_u(&o, m->boot_ms);
+    }
+    if (m->did_2612 == MUSE_LOG_DID_YES || m->did_2612 == MUSE_LOG_DID_NO) {
+        put(&o, m->did_2612 == MUSE_LOG_DID_YES ? "\n# did_2612=yes" : "\n# did_2612=no");
     }
     put(&o, "\nms");
     for (int c = 0; c < MUSE_LOG_CHANNELS; c++) {

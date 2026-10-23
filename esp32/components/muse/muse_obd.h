@@ -20,16 +20,18 @@
 #include <stdint.h>
 
 /*
- * The VTEC reaction (CONFIG_MUSE_OBD_VTEC): a BLE central, beside Link's own
+ * The car reactions (CONFIG_MUSE_OBD_VTEC): a BLE central, beside Link's own
  * peripheral, to a LELink^2 ELM327 OBD-II adapter. It finds the adapter,
- * subscribes to its FFE1 characteristic, polls engine RPM (01 0C) and, when
- * the trigger in muse_obd_elm.h fires, plays the avatar's VTEC reaction.
- * Every other request reads a secondary PID instead, in turn: coolant (01 05)
- * and then the car data cards' PIDs, less any the support scan (01 00 / 20 /
- * 40, after the ELM init) proved unsupported. When the coolant trigger fires
- * it plays the coolant warning, and when the coolant first reaches operating
- * temperature after a cold start, a thumbs-up. The reactions are visual only:
- * a spoken line would swap the reaction face for the speaking pose.
+ * subscribes to its FFE1 characteristic and polls engine RPM (01 0C), for
+ * the cards and the trip log. Every other request reads a secondary slot
+ * instead, in turn: on a CAN 29-bit link whose engine ECU answers Honda's DID
+ * 0x2612, that read first (the VTEC solenoid, which holds the VTEC reaction
+ * up while it is on: muse_obd_vtec_on), then coolant (01 05) and the car data
+ * cards' PIDs, less any the support scan (01 00 / 20 / 40, after the ELM
+ * init) proved unsupported. When the coolant trigger fires it plays the
+ * coolant warning, and when the coolant first reaches operating temperature
+ * after a cold start, a thumbs-up. The reactions are visual only: a spoken
+ * line would swap the reaction face for the speaking pose.
  *
  * Starts a task that waits for Link's BLE host, then keeps the adapter
  * connected, reconnecting with backoff. Call once, after the UI and the
@@ -52,9 +54,9 @@ bool muse_obd_enabled(void);
  * Play a reaction (visual only, no speech), as a trigger firing would,
  * without touching either trigger (no arming, sustain or cooldown) and without
  * needing the adapter. The triggers call these; so do the bench console's
- * ">vtec", ">coolant" and ">warmup". Nothing plays while OBD is turned off.
+ * ">coolant" and ">warmup". Nothing plays while OBD is turned off. VTEC has
+ * no fire: it is held, see muse_obd_vtec_on().
  */
-void muse_obd_fire_vtec(void);
 void muse_obd_fire_coolant(void);
 void muse_obd_fire_warmup(void);
 
@@ -118,6 +120,14 @@ typedef struct {
     char protocol_name[20]; /* its short name ("CAN 11/500", "proto 13"); "" if not known */
     bool support_valid[MUSE_OBD_SUPPORT_RANGES];   /* support[i] was read */
     uint32_t support[MUSE_OBD_SUPPORT_RANGES];     /* 01 00 / 20 / 40's bitmask (A << 24 | ... | D) */
+    /* Honda's DID 0x2612 (muse_obd_elm.h). did_2612 is whether the engine
+     * ECU answered it on the last connection that asked (only CAN 29-bit
+     * links ask); like the protocol it stays after the link drops. The
+     * readings are live and clear with the link. */
+    muse_obd_reading_t vtec_sol;      /* the VTEC solenoid: 1 on, 0 off */
+    muse_obd_reading_t vtec_psw;      /* the VTEC oil pressure switch: 1 on, 0 off */
+    bool did_2612;
+    muse_obd_reading_t did_2612_b23;  /* the block's data byte 23, raw (meaning unknown) */
     /* The trip log (muse_obd_log.h), which works with OBD turned off too. */
     bool log_card;         /* a microSD card is mounted */
     bool log_flash;        /* the obdlog flash partition is mounted */
@@ -142,6 +152,19 @@ void muse_obd_status(muse_obd_status_t *out);
  * (the status-row "OBD" label shows, and the card tiles and the avatar's
  * helmet are there). Never while turned off. */
 bool muse_obd_linked(const muse_obd_status_t *st);
+
+/*
+ * The VTEC reaction's level: on while *st has a fresh "on" solenoid reading
+ * (no older than MUSE_VTEC_FRESH_MS, the cards' staleness rule) and OBD is
+ * on; off on an "off" reading, no reading, or a stale one. RPM plays no part.
+ * muse_ui.c feeds it to muse_state_set_vtec() on every chrome tick.
+ */
+bool muse_obd_vtec_on(const muse_obd_status_t *st);
+
+/* The bench console's ">vtecsol <0|1>": a solenoid reading that stays fresh
+ * until the car's next real one (or a dropped link) replaces it. Does
+ * nothing while OBD is turned off. */
+void muse_obd_bench_vtec_sol(bool on);
 
 /* The support masks in *st prove that Mode 01 `pid` is not supported (the
  * car data cards show "--" for it, and the poll loop never asks). */

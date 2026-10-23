@@ -133,17 +133,21 @@ bool muse_state_tickle_hold(void);
 float muse_state_tickle(void);
 
 /*
- * VTEC: the car's engine crossed into VTEC (muse_obd.c, MUSE_VTEC_S). Shown
- * only while idle. Starting it pokes and ends drowsing quietly. Built only
- * with CONFIG_MUSE_OBD_VTEC.
+ * VTEC: a held pose that mirrors the car's VTEC solenoid. muse_ui.c calls
+ * muse_state_set_vtec() every chrome tick with muse_obd_vtec_on(): on starts
+ * it (pokes, ends drowsing quietly) and holds it at MUSE_VTEC_HOLD for as
+ * long as it stays on; off lets it go on that tick, into the short settle.
+ * On again starts it afresh, with no cooldown. The coolant warning shows
+ * over it and it comes back after. Shown only while idle. Built only with
+ * CONFIG_MUSE_OBD_VTEC.
  */
-void muse_state_start_vtec(void);
+void muse_state_set_vtec(bool on);
 float muse_state_vtec(void);
 
 /*
  * Coolant warning: the car's coolant has been too hot for a while
  * (muse_obd.c, MUSE_COOLANT_S). Shown only while idle, over VTEC if both are
- * on. Starting it pokes and ends drowsing quietly. Built only with
+ * on (a held VTEC shows again once it's over). Starting it pokes and ends drowsing quietly. Built only with
  * CONFIG_MUSE_OBD_VTEC.
  */
 void muse_state_start_coolant(void);

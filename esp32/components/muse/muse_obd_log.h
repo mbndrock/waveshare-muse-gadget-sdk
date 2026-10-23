@@ -47,9 +47,10 @@
 void muse_obd_log_start(void);
 
 /* The OBD task's side, which never blocks: polling has started (a trip
- * begins, if a store can take it); a sample, after each RPM reply (now_ms
- * on the OBD task's clock); the link dropped (the trip is closed). */
-void muse_obd_log_trip_start(const muse_obd_status_t *st, uint32_t now_ms);
+ * begins, if a store can take it; did_2612 is this connection's DID probe,
+ * MUSE_LOG_DID_*, for the header); a sample, after each RPM reply (now_ms on
+ * the OBD task's clock); the link dropped (the trip is closed). */
+void muse_obd_log_trip_start(const muse_obd_status_t *st, uint8_t did_2612, uint32_t now_ms);
 void muse_obd_log_sample(const muse_obd_status_t *st, uint32_t now_ms);
 void muse_obd_log_trip_end(void);
 

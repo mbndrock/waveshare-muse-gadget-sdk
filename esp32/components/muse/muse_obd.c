@@ -69,8 +69,9 @@ static const char *TAG = "muse_obd";
 #define BACKOFF_MAX_MS 60000
 #define RX_BYTES 512
 
-/* Requests alternate RPM (010C) with one secondary PID, in turn from
- * MUSE_ELM_SECONDARY (muse_obd_elm.c): coolant (0105) first, then the cards'. */
+/* Requests alternate RPM (010C) with one secondary slot, in turn: the DID
+ * 0x2612 read when the car answers it, then MUSE_ELM_SECONDARY's PIDs
+ * (muse_obd_elm.c): coolant (0105) first, then the cards'. */
 #define RPM 0x0C
 
 typedef enum {
@@ -111,19 +112,25 @@ static volatile bool s_enabled = true;
 static uint8_t s_props;
 static uint8_t s_own_addr;
 static muse_elm_rx_t s_rx;
-static muse_vtec_trigger_t s_trigger;
 static muse_coolant_trigger_t s_coolant;
 static muse_warmup_trigger_t s_warmup;
 static int s_rpm = -1;                /* the latest RPM; -1 when unknown (engine off, link down) */
 static muse_elm_support_t s_support;  /* this connection's support scan; all unknown until it answers */
 static unsigned s_cursor;             /* the next secondary PID in MUSE_ELM_SECONDARY */
 static bool s_have_protocol;          /* this connection has read ATDPN */
+static int s_protocol = -1;           /* and found this protocol (7: CAN 29/500) */
+/* DID 0x2612 on this connection: not asked yet, answered, or not (refused,
+ * silent, garbled, or not a CAN 29-bit link: then never asked again). */
+static enum { DID_UNPROBED, DID_YES, DID_NO } s_did;
+static const uint8_t LOG_DID[] = { MUSE_LOG_DID_UNKNOWN, MUSE_LOG_DID_YES, MUSE_LOG_DID_NO };
 
 /* muse_obd_status()'s snapshot: written by this task, read from any task. */
 static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
 static muse_obd_status_t s_status = { .state = "off", .enabled = true, .protocol = -1 };
 static uint32_t s_rpm_at, s_coolant_at;   /* now_ms() of each reading */
 static uint32_t s_extra_at[MUSE_OBD_EXTRAS];
+static uint32_t s_vtec_at;                /* now_ms() of the last DID 0x2612 reading */
+static bool s_vtec_bench;                 /* ">vtecsol": the reading is the bench's, always fresh */
 
 const muse_obd_extra_info_t MUSE_OBD_EXTRA[MUSE_OBD_EXTRAS] = {
     [MUSE_OBD_LOAD] = { 0x04, "load_pct", "load_age_ms" },
@@ -404,6 +411,31 @@ static void set_link_down(void)
     for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
         s_status.extra[i].valid = false;
     }
+    /* The DID's live bits go too; whether the car answers it stays. */
+    s_status.vtec_sol.valid = false;
+    s_status.vtec_psw.valid = false;
+    s_status.did_2612_b23.valid = false;
+    s_vtec_bench = false;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+/* A DID 0x2612 reading (or the bench's), into the snapshot. */
+static void set_vtec(const muse_vtec_did_t *v, bool bench)
+{
+    uint32_t at = now_ms();
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.vtec_sol = (muse_obd_reading_t){ .valid = true, .value = v->sol };
+    s_status.vtec_psw = (muse_obd_reading_t){ .valid = true, .value = v->psw };
+    s_status.did_2612_b23 = (muse_obd_reading_t){ .valid = !bench, .value = v->b23 };
+    s_vtec_at = at;
+    s_vtec_bench = bench;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+static void set_did_supported(bool yes)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.did_2612 = yes;
     taskEXIT_CRITICAL(&s_status_lock);
 }
 
@@ -413,9 +445,12 @@ void muse_obd_status(muse_obd_status_t *out)
         return;
     }
     uint32_t now = now_ms();
-    uint32_t rpm_at, coolant_at, extra_at[MUSE_OBD_EXTRAS];
+    uint32_t rpm_at, coolant_at, extra_at[MUSE_OBD_EXTRAS], vtec_at;
+    bool bench;
     taskENTER_CRITICAL(&s_status_lock);
     *out = s_status;
+    vtec_at = s_vtec_at;
+    bench = s_vtec_bench;
     rpm_at = s_rpm_at;
     coolant_at = s_coolant_at;
     memcpy(extra_at, s_extra_at, sizeof(extra_at));
@@ -435,6 +470,23 @@ void muse_obd_status(muse_obd_status_t *out)
     out->coolant_age_ms = out->coolant_valid ? now - coolant_at : UINT32_MAX;
     for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
         out->extra[i].age_ms = out->extra[i].valid ? now - extra_at[i] : UINT32_MAX;
+    }
+    uint32_t vtec_age = bench ? 0 : now - vtec_at;
+    out->vtec_sol.age_ms = out->vtec_sol.valid ? vtec_age : UINT32_MAX;
+    out->vtec_psw.age_ms = out->vtec_psw.valid ? vtec_age : UINT32_MAX;
+    out->did_2612_b23.age_ms = out->did_2612_b23.valid ? vtec_age : UINT32_MAX;
+}
+
+bool muse_obd_vtec_on(const muse_obd_status_t *st)
+{
+    return st->enabled && muse_vtec_engaged(st->vtec_sol.valid, st->vtec_sol.value != 0, st->vtec_sol.age_ms);
+}
+
+void muse_obd_bench_vtec_sol(bool on)
+{
+    if (s_enabled) {
+        muse_vtec_did_t v = { .sol = on, .psw = !on };
+        set_vtec(&v, true);
     }
 }
 
@@ -674,6 +726,7 @@ static void read_protocol(void)
         ESP_LOGI(TAG, "protocol %d", protocol);
         set_protocol(protocol);
         s_have_protocol = true;
+        s_protocol = protocol;
     }
 }
 
@@ -714,13 +767,6 @@ static bool scan_support(void)
     return true;
 }
 
-void muse_obd_fire_vtec(void)
-{
-    if (s_enabled) {
-        muse_state_start_vtec();
-    }
-}
-
 void muse_obd_fire_coolant(void)
 {
     if (s_enabled) {
@@ -735,12 +781,6 @@ void muse_obd_fire_warmup(void)
     }
 }
 
-static void fire(int rpm)
-{
-    ESP_LOGI(TAG, "VTEC! %d rpm", rpm);
-    muse_obd_fire_vtec();
-}
-
 static void fire_coolant(int coolant_c)
 {
     ESP_LOGW(TAG, "coolant hot: %d C at %d rpm", coolant_c, s_rpm);
@@ -751,6 +791,86 @@ static void fire_warmup(int coolant_c)
 {
     ESP_LOGI(TAG, "warmed up: %d C", coolant_c);
     muse_obd_fire_warmup();
+}
+
+/* The last response was the ELM's "OK" (an AT command took). */
+static bool elm_ok(void)
+{
+    return strstr(s_rx.resp, "OK") != NULL;
+}
+
+/* Mode 01's state back: automatic receive (no CRA filter) and the
+ * functional header (18 DB 33 F1, the ELM's own default on a 29-bit link).
+ * Tried twice: a late reply to a slow request can take the first one's
+ * prompt. False only when it can't be done, which drops the link and goes
+ * through the usual reconnect and ELM init. */
+static bool did_restore(void)
+{
+    for (int i = 0; i < 2; i++) {
+        if (elm_cmd("ATAR", CMD_MS) && elm_ok() && elm_cmd("ATSHDB33F1", CMD_MS) && elm_ok()) {
+            return true;
+        }
+        if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_enabled) {
+            return false;
+        }
+    }
+    return false;
+}
+
+/*
+ * One read of DID 0x2612, state-safe: the header and the receive filter
+ * point at the engine ECU (ATSH DA10F1, ATCRA 18DAF110) for the request
+ * only, and did_restore() puts Mode 01's back afterwards, whatever happened
+ * in between. Read only: service 0x22 in the default session, nothing is
+ * written to the car. *link is false once the link is gone (or the ELM's
+ * state couldn't be put back, so it must be dropped and initialised again).
+ */
+static muse_elm_result_t did_read(muse_vtec_did_t *out, bool *link)
+{
+    muse_elm_result_t res = MUSE_ELM_NONE;
+    if (elm_cmd("ATSHDA10F1", CMD_MS) && elm_ok() && elm_cmd("ATCRA18DAF110", CMD_MS) && elm_ok()
+        && elm_cmd(MUSE_VTEC_DID_REQ, CMD_MS)) {
+        res = muse_elm_parse_vtec_did(s_rx.resp, out);
+        if (res == MUSE_ELM_NONE) {
+            ESP_LOGW(TAG, "DID 2612: unexpected reply: %s", s_rx.resp);
+        }
+    }
+    *link = did_restore();
+    return res;
+}
+
+/* A good DID 0x2612 reading: the VTEC flags into the snapshot. */
+static void got_did(const muse_vtec_did_t *v)
+{
+    ESP_LOGD(TAG, "VTEC solenoid %s, pressure switch %s, byte 23 %02X", v->sol ? "on" : "off",
+             v->psw ? "on" : "off", v->b23);
+    set_vtec(v, false);
+}
+
+/*
+ * Once per connection, after the support scan, on a CAN 29-bit link only:
+ * does the engine ECU answer DID 0x2612? Refused, silent or garbled, it is
+ * never asked again on this connection. Nothing on any other protocol, and
+ * nothing until the protocol is known. False only when the link went down.
+ */
+static bool probe_did(void)
+{
+    if (s_did != DID_UNPROBED || s_protocol != 7) {
+        return true;
+    }
+    muse_vtec_did_t v;
+    bool link;
+    muse_elm_result_t res = did_read(&v, &link);
+    s_did = res == MUSE_ELM_VTEC_DID ? DID_YES : DID_NO;
+    set_did_supported(s_did == DID_YES);
+    if (s_did == DID_YES) {
+        ESP_LOGI(TAG, "DID 2612 answers: reading the VTEC solenoid");
+        got_did(&v);
+    } else {
+        ESP_LOGI(TAG, "DID 2612 not answered (%s): no VTEC reading on this connection",
+                 res == MUSE_ELM_NEGATIVE ? "refused" : res == MUSE_ELM_NO_DATA ? "no data" : "no reply");
+    }
+    return link;
 }
 
 /* A coolant reply: feeds the warning and the warm-up. Anything else (NO DATA,
@@ -800,23 +920,38 @@ static void log_sample(void)
 }
 
 /*
- * Asks for RPM and a secondary PID by turns, each request after the last '>':
- * RPM, coolant, RPM, the next card PID, ... (muse_elm_next_secondary). While
+ * Asks for RPM and a secondary slot by turns, each request after the last '>':
+ * RPM, the DID 0x2612 read (if the car answers it), RPM, coolant, RPM, the
+ * next card PID, ... (muse_elm_next_slot). RPM is read for the cards and the
+ * trip log only: nothing fires on it. While
  * frames come, a reply that takes over POLL_MS drops the link. Until then (the
  * first request, or after NO DATA or an error) the ELM may be searching for
  * the car's protocol, which takes seconds, so it gets SEARCH_MS. Only RPM
  * replies decide that, and the pause after a non-answer. The first RPM reply
  * also redoes whatever init couldn't learn with the engine still off: the
- * support scan and the protocol. Returns once the link is lost; true if the
- * adapter answered at all.
+ * support scan, the protocol and the DID probe. Returns once the link is
+ * lost; true if the adapter answered at all.
  */
 static bool poll_rpm(void)
 {
     bool answered = false, locked = false, retried = false;
     for (unsigned n = 0;; n++) {
-        int pid = n % 2 ? muse_elm_next_secondary(&s_support, &s_cursor) : RPM;
+        int pid = n % 2 ? muse_elm_next_slot(&s_support, &s_cursor, s_did == DID_YES) : RPM;
         if (pid < 0) {
             continue;   /* every secondary is unsupported: RPM only */
+        }
+        if (pid == MUSE_ELM_SLOT_DID) {
+            /* The rotation's first slot: one DID read. A failed one leaves
+             * the last reading to age out, never a stale "on". */
+            muse_vtec_did_t v;
+            bool link;
+            if (did_read(&v, &link) == MUSE_ELM_VTEC_DID) {
+                got_did(&v);
+            }
+            if (!link) {
+                return answered;
+            }
+            continue;
         }
         char cmd[12];
         snprintf(cmd, sizeof(cmd), "01%02X", (unsigned)(pid & 0xFF));
@@ -840,9 +975,6 @@ static bool poll_rpm(void)
         log_sample();
         if (locked) {
             ESP_LOGD(TAG, "%d rpm", rpm);
-            if (muse_vtec_update(&s_trigger, rpm, now_ms())) {
-                fire(rpm);
-            }
             if (!retried) {
                 retried = true;
                 if (!s_support.valid[0] && !scan_support()) {
@@ -850,6 +982,9 @@ static bool poll_rpm(void)
                 }
                 if (!s_have_protocol) {
                     read_protocol();
+                }
+                if (!probe_did()) {   /* if the protocol only turned up now */
+                    return answered;
                 }
             }
         } else {
@@ -868,13 +1003,14 @@ static void drop(void)
         wait_for(BIT_EV(EV_DISCONNECT), false, 2000, NULL);
         s_conn = BLE_HS_CONN_HANDLE_NONE;
     }
-    muse_vtec_disarm(&s_trigger);
     muse_coolant_reset(&s_coolant);
     muse_warmup_init(&s_warmup);   /* a new connection must see the engine cold again */
     s_rpm = -1;
     s_support = (muse_elm_support_t){ 0 };   /* the next connection scans again */
     s_cursor = 0;
     s_have_protocol = false;
+    s_protocol = -1;
+    s_did = DID_UNPROBED;   /* the next connection asks again; did_2612 keeps this one's answer */
     set_link_down();
 }
 
@@ -890,7 +1026,6 @@ static void nap(uint32_t ms)
 static void obd_task(void *arg)
 {
     (void)arg;
-    muse_vtec_init(&s_trigger);
     muse_coolant_init(&s_coolant);
     muse_warmup_init(&s_warmup);
     uint32_t backoff = BACKOFF_MIN_MS;
@@ -929,14 +1064,18 @@ static void obd_task(void *arg)
                      * ATSP0 search for the protocol. */
                     if (elm_init() && scan_support()) {
                         read_protocol();
-                        ESP_LOGI(TAG, "polling RPM, coolant and the cards' PIDs");
-                        set_state("polling");
-                        set_flag(&s_status.polling, true);
-                        muse_obd_status_t st;
-                        muse_obd_status(&st);
-                        muse_obd_log_trip_start(&st, now_ms());   /* a trip per polling link */
-                        polled = poll_rpm();
-                        set_flag(&s_status.polling, false);
+                        /* DID 0x2612 before polling, so the trip's header
+                         * can say; its exchange failing badly drops the link. */
+                        if (probe_did()) {
+                            ESP_LOGI(TAG, "polling RPM, coolant and the cards' PIDs");
+                            set_state("polling");
+                            set_flag(&s_status.polling, true);
+                            muse_obd_status_t st;
+                            muse_obd_status(&st);
+                            muse_obd_log_trip_start(&st, LOG_DID[s_did], now_ms());   /* a trip per polling link */
+                            polled = poll_rpm();
+                            set_flag(&s_status.polling, false);
+                        }
                     }
                 }
                 drop();

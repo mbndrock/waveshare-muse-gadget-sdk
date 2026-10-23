@@ -21,17 +21,19 @@
 #include <stdint.h>
 
 /*
- * The ELM327 side of the OBD reactions (muse_obd.c: VTEC, the coolant
- * temperature warning and the warm-up thumbs-up) and of the car data cards
- * (the PID support scan and the cards' PIDs), as plain C with no BLE or
- * FreeRTOS in it, so the host tests can drive it byte by byte.
+ * The ELM327 side of the OBD reactions (muse_obd.c: VTEC from Honda's DID
+ * 0x2612, the coolant temperature warning and the warm-up thumbs-up) and of
+ * the car data cards (the PID support scan and the cards' PIDs), as plain C
+ * with no BLE or FreeRTOS in it, so the host tests can drive it byte by byte.
  *
  * An ELM327 answers each command with text and then its '>' prompt. Over BLE
  * that text arrives in notifications cut anywhere, so bytes go in one at a
  * time and a response is complete at '>'.
  */
 
-#define MUSE_ELM_RESP_MAX 160
+/* Room for DID 0x2612's 57-byte reply, the longest: its length line and
+ * nine frame lines ("0:622612FFFFC0", ...), spaces too if they were on. */
+#define MUSE_ELM_RESP_MAX 320
 
 typedef struct {
     char resp[MUSE_ELM_RESP_MAX];   /* the complete response, without '>' */
@@ -62,6 +64,8 @@ typedef enum {
     MUSE_ELM_LTFT,      /* a 41 07 reply: *pct is set */
     MUSE_ELM_AMBIENT,   /* a 41 46 reply: *c is set */
     MUSE_ELM_SUPPORT,   /* a 41 00 / 20 / 40 reply: *mask is set */
+    MUSE_ELM_VTEC_DID,  /* a whole 62 26 12 reply: the VTEC flags are set */
+    MUSE_ELM_NEGATIVE,  /* 7F 22 <NRC>: the ECU refused the DID */
 } muse_elm_result_t;
 
 /* Reads engine RPM from the response to "010C": ((A * 256) + B) / 4. Spaces
@@ -142,28 +146,55 @@ extern const uint8_t MUSE_ELM_SECONDARY[MUSE_ELM_SECONDARIES];
 int muse_elm_next_secondary(const muse_elm_support_t *s, unsigned *cursor);
 
 /*
- * The trigger: armed once rpm <= MUSE_VTEC_ARM_RPM, fires once at
- * rpm >= MUSE_VTEC_FIRE_RPM, then must be armed again by dropping back down.
- * Fires are at least MUSE_VTEC_COOLDOWN_MS apart: a crossing inside the
- * cooldown is swallowed (and still needs a new drop to arm), so a fire never
- * lands late in the middle of a pull. It starts disarmed, so connecting
- * mid-pull doesn't fire.
+ * Honda's PGM-FI data block (UDS 0x22, DID 0x2612; OBDb's Honda-S2000
+ * signal set, from 2006/2007 S2000 captures), asked of the engine ECU by
+ * physical address on a CAN 29-bit/500 link: header DA10F1, replies from
+ * 18DAF110. The reply is ISO-TP, 57 bytes: 62 26 12 and 54 data bytes. With
+ * headers off the ELM prints it as its length ("039") and then the frames,
+ * "0:622612FFFFC0", "1:001E00...", and so on, the last one padded.
  */
-#define MUSE_VTEC_ARM_RPM 5500
-#define MUSE_VTEC_FIRE_RPM 6000
-#define MUSE_VTEC_COOLDOWN_MS 30000u
+#define MUSE_VTEC_DID_REQ "222612"
+#define MUSE_VTEC_DID_LEN 57          /* 62 26 12 + 54 data bytes */
+#define MUSE_VTEC_DID_FLAGS 21        /* data byte (after 62 26 12) with the flags */
+#define MUSE_VTEC_DID_SOL 0x01        /* the VTEC solenoid valve: 1 = on */
+#define MUSE_VTEC_DID_PSW 0x02        /* the VTEC oil pressure switch: 1 = on */
+#define MUSE_VTEC_DID_B23 23          /* unknown: 0 -> 1 in every captured "on" sample */
 
 typedef struct {
-    bool armed;
-    bool fired;             /* has fired since init: last_fire_ms is valid */
-    uint32_t last_fire_ms;
-} muse_vtec_trigger_t;
+    bool sol;               /* the solenoid is on: VTEC engaged */
+    bool psw;               /* the pressure switch is on */
+    uint8_t b23;            /* data byte 23, raw */
+} muse_vtec_did_t;
 
-void muse_vtec_init(muse_vtec_trigger_t *t);
-/* Back to disarmed (the link dropped); the cooldown still holds. */
-void muse_vtec_disarm(muse_vtec_trigger_t *t);
-/* One RPM reading at now_ms (any wrapping millisecond clock); true to fire. */
-bool muse_vtec_update(muse_vtec_trigger_t *t, int rpm, uint32_t now_ms);
+/*
+ * The VTEC flags from the response to "222612". Only a reply whose bytes
+ * add up (the frames in order, as many as its length line says) and that is
+ * exactly 57 bytes starting 62 26 12 is MUSE_ELM_VTEC_DID; a refusal is
+ * MUSE_ELM_NEGATIVE; NO DATA and the ELM's errors as for the PIDs; anything
+ * else (a wrong prefix, a short or out-of-order reply, another length) is
+ * MUSE_ELM_NONE, and *out is left alone.
+ */
+muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out);
+
+/*
+ * The poll loop's secondary slots once DID 0x2612 is in play: a rotation is
+ * the DID read (when `did`) and then MUSE_ELM_SECONDARY's PIDs as
+ * muse_elm_next_secondary gives them. *cursor (start it at 0) remembers the
+ * place. Returns MUSE_ELM_SLOT_DID, a PID, or -1 when there is nothing.
+ */
+#define MUSE_ELM_SLOT_DID 0x100
+int muse_elm_next_slot(const muse_elm_support_t *s, unsigned *cursor, bool did);
+
+/*
+ * The VTEC reaction is a held pose that mirrors the solenoid: up for as long
+ * as the latest DID reading says the solenoid is on and is no older than
+ * MUSE_VTEC_FRESH_MS (the cards' staleness rule), down on an "off" reading,
+ * on no reading, or once the reading goes stale. Nothing else, RPM
+ * included, ever raises it.
+ */
+#define MUSE_VTEC_FRESH_MS 3000u
+
+bool muse_vtec_engaged(bool valid, bool sol, uint32_t age_ms);
 
 /*
  * The coolant warning: fires once the coolant has read >= MUSE_COOLANT_FIRE_C
@@ -172,8 +203,8 @@ bool muse_vtec_update(muse_vtec_trigger_t *t, int rpm, uint32_t now_ms);
  * with the engine off or its RPM unknown, restarts the sustain: a hot soak
  * with the key on is not an alarm. After a fire it stays quiet until the
  * coolant has dropped to <= MUSE_COOLANT_REARM_C, and for at least
- * MUSE_COOLANT_COOLDOWN_MS. Unlike VTEC it starts armed (connecting to a car
- * that is already overheating should warn), and a fire held back only by the
+ * MUSE_COOLANT_COOLDOWN_MS. It starts armed (connecting to a car that is
+ * already overheating should warn), and a fire held back only by the
  * cooldown lands once it runs out if the coolant is still hot.
  */
 #define MUSE_COOLANT_FIRE_C 105

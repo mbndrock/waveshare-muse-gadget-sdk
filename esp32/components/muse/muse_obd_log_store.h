@@ -37,6 +37,7 @@
  *   # protocol=CAN 29/500
  *   # supported_00=BE1FA813 supported_20=80018001 supported_40=FED08000
  *   # start=2026-10-23T18:02:11Z            (or: # t0=boot boot_ms=81234)
+ *   # did_2612=yes                          (only once the probe has said, yes or no)
  *   ms,rpm,coolant_c,iat_c,...
  *   0,812,71,24,...
  *   ...
@@ -67,6 +68,8 @@ typedef enum {
     MUSE_LOG_STFT,
     MUSE_LOG_LTFT,
     MUSE_LOG_AMBIENT,
+    MUSE_LOG_VTEC_SOL,        /* DID 0x2612's VTEC solenoid, 1/0 */
+    MUSE_LOG_VTEC_PSW,        /* and its pressure switch, 1/0 */
     MUSE_LOG_CHANNELS,
 } muse_log_channel_t;
 
@@ -96,7 +99,12 @@ typedef struct {
     uint32_t support[3];
     int64_t started;          /* Unix seconds; < 0 when the clock isn't set */
     uint32_t boot_ms;         /* ms since boot at the start */
+    uint8_t did_2612;         /* MUSE_LOG_DID_*: does the engine ECU answer DID 0x2612? */
 } muse_log_meta_t;
+
+#define MUSE_LOG_DID_UNKNOWN 0    /* not asked (yet): no line */
+#define MUSE_LOG_DID_YES 1
+#define MUSE_LOG_DID_NO 2
 
 #define MUSE_LOG_HEADER_MAX 512
 

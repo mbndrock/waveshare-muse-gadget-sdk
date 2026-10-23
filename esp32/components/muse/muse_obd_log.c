@@ -397,9 +397,13 @@ void muse_obd_log_sample_of(const muse_obd_status_t *st, uint32_t ms, muse_log_s
         out->has[EXTRAS[i].ch] = st->extra[EXTRAS[i].extra].valid;
         out->value[EXTRAS[i].ch] = st->extra[EXTRAS[i].extra].value;
     }
+    out->has[MUSE_LOG_VTEC_SOL] = st->vtec_sol.valid;
+    out->value[MUSE_LOG_VTEC_SOL] = st->vtec_sol.value != 0;
+    out->has[MUSE_LOG_VTEC_PSW] = st->vtec_psw.valid;
+    out->value[MUSE_LOG_VTEC_PSW] = st->vtec_psw.value != 0;
 }
 
-void muse_obd_log_trip_start(const muse_obd_status_t *st, uint32_t now_ms)
+void muse_obd_log_trip_start(const muse_obd_status_t *st, uint8_t did_2612, uint32_t now_ms)
 {
     muse_obd_log_trip_end();   /* never two at once */
     muse_obd_log_status_t ls;
@@ -419,6 +423,7 @@ void muse_obd_log_trip_start(const muse_obd_status_t *st, uint32_t now_ms)
     time_t now = time(NULL);
     m->started = now >= CLOCK_SET ? (int64_t)now : -1;
     m->boot_ms = now_ms;
+    m->did_2612 = did_2612;
     atomic_store(&s_lost, 0);
     s_t0 = now_ms;
     s_logging = xQueueSend(s_queue, &it, 0) == pdTRUE;

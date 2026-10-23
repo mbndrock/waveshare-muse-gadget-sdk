@@ -357,35 +357,181 @@ int muse_elm_next_secondary(const muse_elm_support_t *s, unsigned *cursor)
     return -1;
 }
 
-void muse_vtec_init(muse_vtec_trigger_t *t)
+int muse_elm_next_slot(const muse_elm_support_t *s, unsigned *cursor, bool did)
 {
-    memset(t, 0, sizeof(*t));
+    /* Position 0 of a rotation is the DID read; 1.. are MUSE_ELM_SECONDARY. */
+    for (unsigned tried = 0; tried <= MUSE_ELM_SECONDARIES; tried++) {
+        unsigned at = *cursor % (MUSE_ELM_SECONDARIES + 1);
+        *cursor = (at + 1) % (MUSE_ELM_SECONDARIES + 1);
+        if (at == 0) {
+            if (did) {
+                return MUSE_ELM_SLOT_DID;
+            }
+            continue;
+        }
+        int pid = MUSE_ELM_SECONDARY[at - 1];
+        if (muse_elm_pid_support(s, pid) != MUSE_ELM_PID_UNSUPPORTED) {
+            return pid;
+        }
+    }
+    return -1;
 }
 
-void muse_vtec_disarm(muse_vtec_trigger_t *t)
+/* Hex digits of a line, spaces left out, as bytes; -1 for anything else (or
+ * an odd count, or more than cap). */
+static int line_bytes(const char *line, size_t n, uint8_t *out, size_t cap)
 {
-    t->armed = false;
+    size_t k = 0;
+    int hi = -1;
+    for (size_t i = 0; i < n; i++) {
+        if (line[i] == ' ') {
+            continue;
+        }
+        int v = hex_val(line[i]);
+        if (v < 0) {
+            return -1;
+        }
+        if (hi < 0) {
+            hi = v;
+            continue;
+        }
+        if (k == cap) {
+            return -1;
+        }
+        out[k++] = (uint8_t)(hi << 4 | v);
+        hi = -1;
+    }
+    return hi < 0 ? (int)k : -1;
 }
 
-bool muse_vtec_update(muse_vtec_trigger_t *t, int rpm, uint32_t now_ms)
+/* How many hex digits the line has, spaces left out; -1 if it has anything else. */
+static int hex_digits(const char *line, size_t n)
 {
-    if (rpm < 0) {
-        return false;
+    int d = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (line[i] == ' ') {
+            continue;
+        }
+        if (hex_val(line[i]) < 0) {
+            return -1;
+        }
+        d++;
     }
-    if (rpm <= MUSE_VTEC_ARM_RPM) {
-        t->armed = true;
-        return false;
+    return d;
+}
+
+/*
+ * The bytes of a CAN reply with headers off and CAN formatting on: one line
+ * for a single frame ("7F2231"), or a length line of three hex digits and
+ * then frames "0:" .. "F:" (and round again) for a longer one, cut at that
+ * length. Lines that aren't data ("SEARCHING...") are skipped. -1 when the
+ * data doesn't add up: frames out of order or without a length, fewer bytes
+ * than the length says, or more than cap.
+ */
+static int can_reply_bytes(const char *resp, uint8_t *out, size_t cap)
+{
+    int total = -1;     /* the length line's, once read */
+    size_t n = 0;
+    unsigned next = 0;  /* the frame index expected next */
+    bool single = false;
+    const char *p = resp;
+    while (*p) {
+        const char *end = strchr(p, '\n');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        const char *colon = memchr(p, ':', len);
+        if (colon) {
+            /* A frame: its index, then its bytes. */
+            int idx = -1;
+            for (const char *c = p; c < colon; c++) {
+                if (*c == ' ') {
+                    continue;
+                }
+                if (idx >= 0 || hex_val(*c) < 0) {
+                    return -1;
+                }
+                idx = hex_val(*c);
+            }
+            if (total < 0 || single || idx != (int)(next & 0xF)) {
+                return -1;
+            }
+            next++;
+            int got = line_bytes(colon + 1, len - (size_t)(colon + 1 - p), out + n, cap - n);
+            if (got < 0) {
+                return -1;
+            }
+            n += (size_t)got;
+        } else {
+            int digits = hex_digits(p, len);
+            if (digits == 3 && total < 0 && n == 0 && !single) {
+                total = hex_val(p[strspn(p, " ")]);
+                for (const char *c = p + strspn(p, " ") + 1; c < p + len; c++) {
+                    if (*c != ' ') {
+                        total = total << 4 | hex_val(*c);
+                    }
+                }
+            } else if (digits > 0) {
+                if (total >= 0 || single || n) {
+                    return -1;
+                }
+                int got = line_bytes(p, len, out, cap);
+                if (got < 0) {
+                    return -1;
+                }
+                n = (size_t)got;
+                single = true;
+            }
+        }
+        p += len;
+        if (*p == '\n') {
+            p++;
+        }
     }
-    if (rpm < MUSE_VTEC_FIRE_RPM || !t->armed) {
-        return false;
+    if (total >= 0) {
+        if (n < (size_t)total) {
+            return -1;   /* frames missing */
+        }
+        n = (size_t)total;   /* the last frame's padding */
     }
-    t->armed = false;
-    if (t->fired && now_ms - t->last_fire_ms < MUSE_VTEC_COOLDOWN_MS) {
-        return false;   /* too soon: swallowed */
+    return (int)n;
+}
+
+muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out)
+{
+    /* An error anywhere spoils the whole reply; NO DATA is the ECU's silence. */
+    muse_elm_result_t lines = parse_pid(resp, -1, 0, NULL, MUSE_ELM_NONE);
+    const char *p = resp;
+    while (*p) {
+        const char *end = strchr(p, '\n');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len && p[strspn(p, " ")] == '<') {
+            return MUSE_ELM_ERROR;   /* "<RX ERROR", "<DATA ERROR": a broken frame */
+        }
+        p += len;
+        if (*p == '\n') {
+            p++;
+        }
     }
-    t->fired = true;
-    t->last_fire_ms = now_ms;
-    return true;
+    if (lines == MUSE_ELM_ERROR) {
+        return MUSE_ELM_ERROR;
+    }
+    uint8_t b[64];
+    int n = can_reply_bytes(resp, b, sizeof(b));
+    if (n >= 3 && b[0] == 0x7F && b[1] == 0x22) {
+        return MUSE_ELM_NEGATIVE;
+    }
+    if (n == MUSE_VTEC_DID_LEN && b[0] == 0x62 && b[1] == 0x26 && b[2] == 0x12) {
+        const uint8_t *data = b + 3;
+        out->sol = data[MUSE_VTEC_DID_FLAGS] & MUSE_VTEC_DID_SOL;
+        out->psw = data[MUSE_VTEC_DID_FLAGS] & MUSE_VTEC_DID_PSW;
+        out->b23 = data[MUSE_VTEC_DID_B23];
+        return MUSE_ELM_VTEC_DID;
+    }
+    return n <= 0 && lines == MUSE_ELM_NO_DATA ? MUSE_ELM_NO_DATA : MUSE_ELM_NONE;
+}
+
+bool muse_vtec_engaged(bool valid, bool sol, uint32_t age_ms)
+{
+    return valid && sol && age_ms <= MUSE_VTEC_FRESH_MS;
 }
 
 void muse_coolant_init(muse_coolant_trigger_t *t)

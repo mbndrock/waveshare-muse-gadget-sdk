@@ -54,6 +54,8 @@ static int64_t s_tickle_us;
 static int64_t s_tickle_held_us;   /* the last touch of the tickling */
 #if CONFIG_MUSE_OBD_VTEC
 static int64_t s_vtec_us;
+static bool s_vtec_held;          /* the solenoid is on (muse_state_set_vtec) */
+static int64_t s_vtec_off_us;     /* when it went off: the settle runs from there */
 static int64_t s_coolant_us;
 static int64_t s_warmup_us;
 #endif
@@ -450,20 +452,57 @@ float muse_state_tickle(void)
 }
 
 #if CONFIG_MUSE_OBD_VTEC
-void muse_state_start_vtec(void)
+/*
+ * VTEC's progress, the tickle reaction's way: it runs in at 1/MUSE_VTEC_S,
+ * then waits at MUSE_VTEC_HOLD (banner up, buzzing; the renderer animates on
+ * the clock, so it stays alive) for as long as the solenoid is on. Let go,
+ * it plays the settle from MUSE_VTEC_SETTLE to 1. 0 when not happening.
+ */
+static float vtec_locked(int64_t now)
+{
+    if (!s_vtec_us) {
+        return 0;
+    }
+    float t;
+    if (s_vtec_held) {
+        t = (float)(now - s_vtec_us) / 1e6f / MUSE_VTEC_S;
+        return t < 0 ? 0 : (t > MUSE_VTEC_HOLD ? MUSE_VTEC_HOLD : t);
+    }
+    t = MUSE_VTEC_SETTLE + (float)(now - s_vtec_off_us) / 1e6f / MUSE_VTEC_S;
+    if (t >= 1) {
+        s_vtec_us = 0;
+        return 0;
+    }
+    return t;
+}
+
+void muse_state_set_vtec(bool on)
 {
     int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&s_lock);
-    end_drowse_locked(now, false);
-    s_dizzy_us = s_waking_us = s_tickle_us = 0;
-    s_vtec_us = now;
-    s_last_poke_us = now;
+    if (on && (!s_vtec_held || !s_vtec_us)) {
+        /* Engaged (again: no cooldown): from the top, like a fresh fire. */
+        end_drowse_locked(now, false);
+        s_dizzy_us = s_waking_us = s_tickle_us = 0;
+        s_vtec_us = now;
+        s_last_poke_us = now;
+    } else if (!on && s_vtec_held && s_vtec_us) {
+        s_vtec_off_us = now;   /* the hold ends on this tick; the settle follows */
+    }
+    s_vtec_held = on;
     portEXIT_CRITICAL(&s_lock);
 }
 
 float muse_state_vtec(void)
 {
-    return idle_reaction(&s_vtec_us, MUSE_VTEC_S);
+    if (s_mode != MUSE_MODE_IDLE) {
+        return 0;
+    }
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_lock);
+    float t = vtec_locked(now);
+    portEXIT_CRITICAL(&s_lock);
+    return t;
 }
 
 /* Leaves a VTEC reaction running: the renderer shows the warning over it. */

@@ -1779,6 +1779,8 @@ static void update_chrome(float now)
     muse_obd_status(&o);
     s_obd_linked = muse_obd_linked(&o);
     sync_cards(s_obd_linked);
+    /* VTEC is held while the solenoid reads on, freshly: this tick decides. */
+    muse_state_set_vtec(muse_obd_vtec_on(&o));
 #endif
     if (s_tv) {
         int tiles = tile_count();
