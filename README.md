@@ -136,6 +136,12 @@ Muse now reacts to the world a little, like a toy that gets dizzy when you shake
     <td align="center"><img src="docs/images/jollybot/jollybot-waking.gif" width="180" alt="Jollybot pops his eyes open, blinks twice, stretches with arms up and does a happy bounce"><br><b>Waking</b><br><sub>When the screen comes back on</sub></td>
     <td align="center"><img src="docs/images/jollybot/jollybot-tickle.gif" width="180" alt="Jollybot startles, then squirms and laughs with squeezed eyes, tears of joy and HA marks, and catches his breath"><br><b>Tickled</b><br><sub>Rub his face quickly, or tap fast</sub></td>
   </tr>
+  <tr>
+    <td align="center"><img src="docs/images/jollybot/jollybot-vtec.gif" width="180" alt="Jollybot buzzes side to side with a wide grin under a red VTEC! banner"><br><b>VTEC!</b><br><sub>While the VTEC solenoid is on (car, AMOLED-1.8)</sub></td>
+    <td align="center"><img src="docs/images/jollybot/jollybot-coolant.gif" width="180" alt="Jollybot frets with sweat drops and steam under an orange HOT! banner"><br><b>HOT!</b><br><sub>Coolant too hot, or a misfire (car, AMOLED-1.8)</sub></td>
+    <td align="center"><img src="docs/images/jollybot/jollybot-warmup.gif" width="180" alt="Jollybot smiles with closed eyes and one paw raised in a thumbs-up"><br><b>Warm-up</b><br><sub>Coolant reaches operating temperature (car, AMOLED-1.8)</sub></td>
+    <td align="center"><br><b>Racing helmet</b><br><sub>Worn while the OBD adapter is linked (car, AMOLED-1.8); no preview yet</sub></td>
+  </tr>
 </table>
 
 - **Dizzy** needs the QMI8658 accelerometer. The firmware probes for it at boot: the AMOLED 1.8 has one, and the log says whether the others do. Three quick back-and-forth swings count as a shake; a tap or picking it up doesn't.
@@ -143,7 +149,7 @@ Muse now reacts to the world a little, like a toy that gets dizzy when you shake
 - **Waking** plays for 1.5 s every time the screen turns on.
 - **Tickled**: rub his face quickly back and forth, or tap it four times fast. He giggles for as long as you keep going, then catches his breath. A single tap still gives hearts.
 
-On the AMOLED-1.8 in the car there are three more, drawn the same way (no previews yet — the renderer tests in `esp32/tests/test_muse_pixel_*.py` pin them). They rank above the ones above: coolant first, then VTEC, then warm-up. See [In the car](#in-the-car-the-obd-reactions-and-readout) for the triggers.
+On the AMOLED-1.8 in the car there are three more, drawn the same way (second row above; the renderer tests in `esp32/tests/test_muse_pixel_*.py` pin them). They rank above the ones above: coolant first, then VTEC, then warm-up. See [In the car](#in-the-car-the-obd-reactions-and-readout) for the triggers.
 
 - **VTEC!**: an excited, buzzing banner for as long as the VTEC solenoid is on — a held pose, not a flash. It settles when the solenoid goes off or the reading goes stale.
 - **HOT!**: a worried face with sweat and steam when the coolant is too hot. A misfire count going up plays this same pose, so there is no separate misfire drawing.
