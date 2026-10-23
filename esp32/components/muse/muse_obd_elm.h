@@ -140,12 +140,16 @@ void muse_elm_protocol_name(int protocol, char *buf, size_t cap);
  * A multi-PID Mode 01 reply, parsed for the batch the poll pipeline asked
  * for: pids[0..n) (n <= MUSE_ELM_BATCH_MAX, no support PIDs, no DID), with
  * each PID's value in values[i] and got[i] set, converted exactly as the
- * single-PID parsers convert. MUSE_ELM_BATCH when at least one PID read a
- * value; MUSE_ELM_NO_DATA or MUSE_ELM_ERROR when the request as a whole was
- * refused that way (nothing read a value); MUSE_ELM_NONE when no line
- * answered any asked PID and nothing refused either (garbled lines: each
- * asked PID is simply missing). A line that doesn't parse for its PID is a
- * miss for that PID only; the others still read.
+ * single-PID parsers convert. A CAN ECU answers a batch with one message
+ * (J1979; the ELM327 datasheet's "Multiple PID Requests"): 41 once, then
+ * each PID it answers and that PID's data, in any order. Over seven bytes
+ * the ELM prints it as a length line and ISO-TP frames ("00A", "0:41...",
+ * "1:..."), the last one padded. Each message read (one per answering ECU)
+ * contributes; a PID it leaves out is a miss for that PID only.
+ * MUSE_ELM_BATCH when at least one PID read a value; MUSE_ELM_NO_DATA or
+ * MUSE_ELM_ERROR when the request as a whole was refused that way (nothing
+ * read a value); MUSE_ELM_NONE when nothing answered any asked PID and
+ * nothing refused either (garbled: each asked PID is simply missing).
  */
 #define MUSE_ELM_BATCH_MAX 6
 muse_elm_result_t muse_elm_parse_batch(const char *resp, const uint8_t *pids, int n, int *values, bool *got);

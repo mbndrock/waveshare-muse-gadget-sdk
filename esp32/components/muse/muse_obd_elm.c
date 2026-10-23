@@ -146,6 +146,8 @@ static muse_elm_result_t parse_pid(const char *resp, int pid, int nbytes, int *d
 /* How many data bytes a Mode 01 PID's reply carries (only RPM takes two),
  * and its whole-unit value from them: the one place the conversions the
  * header lists live, shared by the single-PID parsers and the batch one. */
+#define MUSE_ELM_PID_BYTES_MAX 2   /* the most data bytes pid_nbytes() says */
+
 static int pid_nbytes(int pid)
 {
     return pid == 0x0C ? 2 : 1;
@@ -277,28 +279,6 @@ muse_elm_result_t muse_elm_parse_ambient(const char *resp, int *c)
         *c = pid_value(0x46, &a);
     }
     return res;
-}
-
-muse_elm_result_t muse_elm_parse_batch(const char *resp, const uint8_t *pids, int n, int *values, bool *got)
-{
-    if (n > MUSE_ELM_BATCH_MAX) {
-        n = MUSE_ELM_BATCH_MAX;
-    }
-    int found = 0;
-    for (int i = 0; i < n; i++) {
-        int data[2];
-        got[i] = parse_pid(resp, pids[i], pid_nbytes(pids[i]), data, MUSE_ELM_BATCH) == MUSE_ELM_BATCH;
-        if (got[i]) {
-            values[i] = pid_value(pids[i], data);
-            found++;
-        }
-    }
-    if (found) {
-        return MUSE_ELM_BATCH;
-    }
-    /* Nothing read a value: the request as a whole was refused (NO DATA or
-     * an error), or no line answered any asked PID (all garbled). */
-    return parse_pid(resp, -1, 0, NULL, MUSE_ELM_NONE);
 }
 
 muse_elm_result_t muse_elm_parse_support(const char *resp, int base, uint32_t *mask)
@@ -770,6 +750,132 @@ static int can_reply_bytes(const char *resp, uint8_t *out, size_t cap)
         n = (size_t)total;   /* the last frame's padding */
     }
     return (int)n;
+}
+
+/*
+ * One Mode 01 response message's bytes, as J1979 shapes a multi-PID answer
+ * on CAN (ISO 15765-4; the ELM327 datasheet's "Multiple PID Requests"): 41
+ * once, then each answered PID followed by its data bytes, in any order.
+ * Each asked PID found takes its value (the first answer wins when several
+ * ECUs answer). It stops at a PID it didn't ask for, or one cut short: past
+ * that it can't know where the next PID starts. Returns how many it read.
+ */
+static int batch_message(const uint8_t *b, size_t n, const uint8_t *pids, int np, int *values, bool *got)
+{
+    if (n < 1 || b[0] != 0x41) {
+        return 0;
+    }
+    int found = 0;
+    size_t i = 1;
+    while (i < n) {
+        int k = -1;
+        for (int j = 0; j < np; j++) {
+            if (pids[j] == b[i]) {
+                k = j;
+                break;
+            }
+        }
+        if (k < 0) {
+            break;
+        }
+        size_t nb = (size_t)pid_nbytes(b[i]);
+        if (i + 1 + nb > n) {
+            break;
+        }
+        if (!got[k]) {
+            int data[MUSE_ELM_PID_BYTES_MAX];
+            for (size_t d = 0; d < nb; d++) {
+                data[d] = b[i + 1 + d];
+            }
+            values[k] = pid_value(b[i], data);
+            got[k] = true;
+            found++;
+        }
+        i += 1 + nb;
+    }
+    return found;
+}
+
+muse_elm_result_t muse_elm_parse_batch(const char *resp, const uint8_t *pids, int n, int *values, bool *got)
+{
+    if (n > MUSE_ELM_BATCH_MAX) {
+        n = MUSE_ELM_BATCH_MAX;
+    }
+    for (int i = 0; i < n; i++) {
+        got[i] = false;
+    }
+    /* With headers off and CAN formatting on, each message is either a
+     * single-frame line ("410C1AF80D00") or a length line ("00A") and its
+     * frames ("0:410C1AF80D00", "1:0544..."), cut at that length. Lines that
+     * aren't data ("SEARCHING...", a garbled line) are skipped; a frame out
+     * of order loses its message only. */
+    uint8_t msg[64];
+    size_t have = 0;
+    int total = -1;     /* the pending multi-frame message's length; -1: none */
+    unsigned next = 0;  /* its frame index expected next */
+    int found = 0;
+    const char *p = resp;
+    while (*p) {
+        const char *end = strchr(p, '\n');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        const char *colon = memchr(p, ':', len);
+        if (colon) {
+            int idx = -1;
+            bool ok = true;
+            for (const char *c = p; c < colon && ok; c++) {
+                if (*c == ' ') {
+                    continue;
+                }
+                ok = idx < 0 && hex_val(*c) >= 0;
+                idx = hex_val(*c);
+            }
+            int got_n = -1;
+            if (ok && total >= 0 && idx == (int)(next & 0xF)) {
+                got_n = line_bytes(colon + 1, len - (size_t)(colon + 1 - p), msg + have, sizeof(msg) - have);
+            }
+            if (got_n < 0) {
+                total = -1;   /* stray, out of order or garbled: the message is lost */
+            } else {
+                have += (size_t)got_n;
+                next++;
+                if (have >= (size_t)total) {
+                    found += batch_message(msg, (size_t)total, pids, n, values, got);   /* padding cut */
+                    total = -1;
+                }
+            }
+        } else {
+            int digits = hex_digits(p, len);
+            if (digits == 3) {
+                total = 0;
+                for (const char *c = p; c < p + len; c++) {
+                    if (*c != ' ') {
+                        total = total << 4 | hex_val(*c);
+                    }
+                }
+                if ((size_t)total > sizeof(msg)) {
+                    total = -1;   /* longer than any batch's answer: not ours */
+                }
+                have = 0;
+                next = 0;
+            } else if (digits > 0) {
+                uint8_t one[8];
+                int bytes = line_bytes(p, len, one, sizeof(one));
+                if (bytes > 0) {
+                    found += batch_message(one, (size_t)bytes, pids, n, values, got);
+                }
+            }
+        }
+        p += len;
+        if (*p == '\n') {
+            p++;
+        }
+    }
+    if (found) {
+        return MUSE_ELM_BATCH;
+    }
+    /* Nothing read a value: the request as a whole was refused (NO DATA or
+     * an error), or no message answered any asked PID (all garbled). */
+    return parse_pid(resp, -1, 0, NULL, MUSE_ELM_NONE);
 }
 
 muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out)

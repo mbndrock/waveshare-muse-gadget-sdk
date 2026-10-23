@@ -813,6 +813,46 @@ static void test_batch_parse(void)
     CHECK(muse_elm_parse_batch("?\r\r>", pids, 6, values, got) == MUSE_ELM_ERROR);
     /* Nothing that answers and nothing that refuses: NONE. */
     CHECK(muse_elm_parse_batch("GARBAGE\r\r>", pids, 6, values, got) == MUSE_ELM_NONE);
+
+    /* What a CAN ECU really sends (the ELM327 datasheet's "Multiple PID
+     * Requests", verbatim): one message, 41 once, then each PID and its
+     * data; ten bytes, so a length line and two ISO-TP frames, the last
+     * padded. Asked 01 04 05 0B 0C. */
+    static const uint8_t ds_pids[4] = { 0x04, 0x05, 0x0B, 0x0C };
+    static const char *const DS[] = {
+        "00A\n0: 41 04 3F 05 44 0B\n1: 21 0C 17 B8 00 00 00\n",
+        "00A\n0: 41 0B 21 04 3F 0C\n1: 17 B8 05 44 00 00 00\n",   /* answered in another order */
+        "00A\n0:41043F05440B\n1:210C17B8000000\n",                /* ATS0: no spaces */
+        "SEARCHING...\n00A\n0:41043F05440B\n1:210C17B8000000\n\n>",
+    };
+    for (size_t k = 0; k < sizeof(DS) / sizeof(DS[0]); k++) {
+        CHECK(muse_elm_parse_batch(DS[k], ds_pids, 4, values, got) == MUSE_ELM_BATCH);
+        CHECK(got[0] && got[1] && got[2] && got[3]);
+        CHECK(values[0] == 0x3F * 100 / 255);   /* load 24% */
+        CHECK(values[1] == 0x44 - 40);          /* coolant 28 C */
+        CHECK(values[2] == 0x21);               /* MAP 33 kPa */
+        CHECK(values[3] == 0x17B8 / 4);         /* 1518 rpm */
+    }
+    /* A short answer fits one frame: a single line, no length. */
+    static const uint8_t two[3] = { 0x0C, 0x0D, 0x11 };
+    CHECK(muse_elm_parse_batch("410C1AF80D3C\n", two, 3, values, got) == MUSE_ELM_BATCH);
+    CHECK(got[0] && values[0] == 1726 && got[1] && values[1] == 0x3C && !got[2]);   /* 11 left out: its miss only */
+    /* Two ECUs answering apart: each message counts, the first answer wins. */
+    CHECK(muse_elm_parse_batch("410D3C\n410C1AF80D50\n", two, 3, values, got) == MUSE_ELM_BATCH);
+    CHECK(got[0] && values[0] == 1726 && got[1] && values[1] == 0x3C && !got[2]);
+    /* A frame missing, or out of order: that message is lost, nothing guessed. */
+    CHECK(muse_elm_parse_batch("00A\n0:41043F05440B\n", ds_pids, 4, values, got) == MUSE_ELM_NONE);
+    CHECK(!got[0] && !got[1] && !got[2] && !got[3]);
+    CHECK(muse_elm_parse_batch("00A\n1:210C17B8000000\n0:41043F05440B\n", ds_pids, 4, values, got) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_batch("0:41043F05440B\n1:210C17B8000000\n", ds_pids, 4, values, got) == MUSE_ELM_NONE);
+    /* A PID that wasn't asked for ends the walk: its length can't be trusted. */
+    CHECK(muse_elm_parse_batch("410C1AF8330D3C\n", two, 3, values, got) == MUSE_ELM_BATCH);
+    CHECK(got[0] && !got[1]);
+    /* Cut short inside a PID's data: what came before it still reads. */
+    CHECK(muse_elm_parse_batch("410D3C0C1A\n", two, 3, values, got) == MUSE_ELM_BATCH);
+    CHECK(!got[0] && got[1]);
+    /* A message that isn't a Mode 01 answer reads nothing. */
+    CHECK(muse_elm_parse_batch("7F0112\n", two, 3, values, got) == MUSE_ELM_NONE);
 }
 
 static bool req_has(const muse_sched_req_t *r, int pid)

@@ -137,6 +137,11 @@ Deviations and notes:
   whole-batch error is not counted as one (it latches batching instead).
 - The console's >obd printout is unchanged; only obd.read gained the
   link object.
+- Correction (Claude Code, 2026-10-23): the batch parser as first built
+  read one 41 line per PID, which no CAN ECU sends; a batch is one J1979
+  message (41 once, then PID/data pairs, ISO-TP frames past seven bytes).
+  Fixed and tested against the ELM327 datasheet's own example; see
+  OBD-PIPELINE-HANDOFF.md, "A second defect".
 - Host QA only on this VM, as ever: the Mac IDF build remains the
   toolchain gate. The poll path adds no snprintf (the batch command and
   the ATST command are built digit by digit, sized by construction).

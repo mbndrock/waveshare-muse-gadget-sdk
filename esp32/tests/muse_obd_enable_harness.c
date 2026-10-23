@@ -509,30 +509,63 @@ static const char *pid_line(int pid)
     }
 }
 
-/* A Mode 01 request, one PID or a batch of up to six: a line per PID this
- * car answers, in the order asked; NO DATA when it answers none of them. A
- * single-PID reply is byte for byte what the car always answered. */
+/* A Mode 01 request, one PID or a batch of up to six. One PID: its line,
+ * byte for byte what the car always answered. A batch: one J1979 message,
+ * as a CAN ECU answers one (the ELM327 datasheet's "Multiple PID
+ * Requests"): 41 once, then each PID this car answers with its data, in the
+ * order asked. Up to seven bytes it is a single line; past that the ELM
+ * prints the length and the ISO-TP frames ("00A", "0:...", "1:..."), the
+ * last padded with 00. NO DATA when it answers none of them. */
 static const char *answer_mode01(const char *cmd)
 {
     static char reply[256];
-    size_t at = 0;
-    reply[0] = '\0';
+    if (strlen(cmd) == 4) {
+        const char *line = pid_line(hex_byte(cmd + 2));
+        if (!line) {
+            return "NO DATA\r\r>";
+        }
+        snprintf(reply, sizeof(reply), "%s\r\r>", line);
+        return reply;
+    }
+    uint8_t msg[64];
+    size_t n = 0;
+    msg[n++] = 0x41;
     for (int i = 2; cmd[i] && cmd[i + 1]; i += 2) {
         const char *line = pid_line(hex_byte(cmd + i));
-        if (!line || at + strlen(line) + 3 >= sizeof(reply)) {
+        if (!line) {
             continue;
         }
-        strcpy(reply + at, line);
-        at += strlen(line);
-        reply[at++] = '\r';
-        reply[at] = '\0';
+        /* The line's bytes after its 41: the PID and its data. */
+        for (const char *c = line + 2; *c;) {
+            if (*c == ' ') {
+                c++;
+                continue;
+            }
+            if (n < sizeof(msg)) {
+                msg[n++] = (uint8_t)hex_byte(c);
+            }
+            c += 2;
+        }
     }
-    if (!at) {
+    if (n == 1) {
         return "NO DATA\r\r>";
     }
-    reply[at++] = '\r';
-    reply[at++] = '>';
-    reply[at] = '\0';
+    size_t at = 0;
+    if (n <= 7) {
+        for (size_t i = 0; i < n; i++) {
+            at += (size_t)snprintf(reply + at, sizeof(reply) - at, "%02X", msg[i]);
+        }
+    } else {
+        at += (size_t)snprintf(reply + at, sizeof(reply) - at, "%03X", (unsigned)n);
+        size_t i = 0;
+        for (int frame = 0; i < n; frame++) {
+            at += (size_t)snprintf(reply + at, sizeof(reply) - at, "\r%X:", frame & 0xF);
+            for (int b = 0; b < (frame == 0 ? 6 : 7); b++, i++) {
+                at += (size_t)snprintf(reply + at, sizeof(reply) - at, "%02X", i < n ? msg[i] : 0);
+            }
+        }
+    }
+    snprintf(reply + at, sizeof(reply) - at, "\r\r>");
     return reply;
 }
 

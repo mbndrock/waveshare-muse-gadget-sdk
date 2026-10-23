@@ -182,3 +182,35 @@ signature against the IDF v6.0.1 headers on the Mac in one pass.
   cJSON-environment ones), 10 skipped. OBD subset: 52 tests, all pass.
 - Still unverified: the Mac build (`tools/muse/board.sh build s18`) is the
   real compiler gate, and remains Derek's step.
+
+### A second defect, found by the same audit: batch replies (follow-up commit)
+
+- The pipeline's batch parser expected a CAN ECU to answer a multi-PID
+  Mode 01 request with one `41 <pid> <data>` line per PID, and the host
+  fake car answered that way. That is not what J1979 sends. The ELM327
+  datasheet (ELM327DSJ, "Multiple PID Requests", p.45, read from
+  elmelectronics.com) shows the real answer to `01 04 05 0B 0C`: one
+  message, `41` once, then PID/data pairs in any order, ten bytes printed as
+  `00A` / `0: 41 04 3F 05 44 0B` / `1: 21 0C 17 B8 00 00 00`.
+- On the car (protocol 7) the old parser would have read a multi-frame
+  batch as nothing at all (the `0:` prefix fails every line, no NO DATA,
+  so batching never latched off and RPM read as unknown), and a
+  single-frame batch (`410C1AF80D3C`) as its first PID only, evicting the
+  rest after two misses against a "live" ECU.
+- Fixed: `muse_elm_parse_batch` now reads the reply as J1979 messages
+  (single-frame lines, or a length line and its in-order `N:` frames cut at
+  that length), walks `41` + PID/data pairs using each PID's byte count,
+  stops at an unasked PID or a cut-short one, and lets each answering ECU's
+  message contribute (first answer wins). The old line-per-PID shape still
+  parses, since each such line is a one-PID message. Single-PID requests
+  are unchanged.
+- Tests: the ELM harness has the datasheet reply verbatim (two orders,
+  with and without spaces, after SEARCHING...), a single-frame batch, two
+  ECUs, a missing and an out-of-order frame, an unasked PID and a cut-short
+  one. The enable harness's fake car now answers batches as one J1979
+  message (multi-frame past seven bytes); against the old parser it fails
+  (`batch 0%`), against the new one it passes.
+- Still unverified on the car: whether the LELink passes multi-PID
+  requests through. If it doesn't, the existing latch (whole-batch NO DATA
+  or error: single-PID for the connection) covers it.
+- Host suite after the batch fix: 706 tests, 0 failures, 6 errors (known cJSON), 10 skipped; OBD subset 52, all pass.
