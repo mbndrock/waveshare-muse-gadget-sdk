@@ -4,7 +4,7 @@ Written by Muse (spec), for Claude Code to implement, Muse QAs after. Read the r
 
 ## Why
 
-The VTEC reaction currently fires on an RPM proxy (arm <= 5500, fire >= 6000) because generic Mode 01 has no VTEC signal. Research on 2026-10-22 (full report: ~/workspace/projects/vtec-did-research.md) found the real thing in the OBDb open signal database, backed by CAN captures from 2006 and 2007 S2000s: Honda's PGM-FI data block, UDS service 0x22, DID 0x2612, carries the VTEC solenoid valve state and the VTEC oil pressure switch state. Derek's original spec for the reaction was "either solenoid OR RPM over 6000"; this task finally wires the solenoid half. It also doubles as the verification for Derek's 2008 car, for which no capture exists: if his ECU answers, we learn it from obd.read; if it does not, the firmware must behave exactly as it does today.
+The VTEC reaction currently fires on an RPM proxy (arm <= 5500, fire >= 6000) because generic Mode 01 has no VTEC signal. Research on 2026-10-22 (full report: ~/workspace/projects/vtec-did-research.md) found the real thing in the OBDb open signal database, backed by CAN captures from 2006 and 2007 S2000s: Honda's PGM-FI data block, UDS service 0x22, DID 0x2612, carries the VTEC solenoid valve state and the VTEC oil pressure switch state. Derek's decision (2026-10-22, superseding his earlier either/or idea): **the reaction triggers on the solenoid only.** The 6000 RPM trigger is removed, not kept as a backup: if the DID does not answer on his car, the reaction simply never fires, and that honesty is the point. This task also doubles as the verification for Derek's 2008 car, for which no capture exists: if his ECU answers, we learn it from obd.read and from the new card readout (Part 4).
 
 ## The read (from OBDb Honda-S2000, captures verified by Muse)
 
@@ -26,24 +26,30 @@ The VTEC reaction currently fires on an RPM proxy (arm <= 5500, fire >= 6000) be
 ## Part 2: snapshot, trigger, and obd.read
 
 - `muse_obd_status()` gains: `vtec_sol` and `vtec_psw` readings (valid/value/age, same shape as the extras), `did_2612` (bool: supported on this connection), and `did_2612_b23` (raw byte 23 value or null). DID *availability* is retained in RAM after the link drops, exactly like the protocol and support masks; the live bits clear on drop, like every other reading.
-- **Trigger (Derek's original either/or spec):** the VTEC reaction fires when (RPM valid and >= 6000, armed as today) **OR** (vtec_sol valid, fresh under the same 3 s staleness rule the cards use, and == ON). Arming extends symmetrically: seeing the solenoid OFF also arms. Cooldown stays 30,000 ms; warmup and coolant reactions untouched; thresholds in muse_obd_elm.h for RPM/coolant/warmup do not move.
+- **Trigger (solenoid only, Derek 2026-10-22):** the VTEC reaction fires on a **fresh OFF-to-ON transition** of vtec_sol (fresh under the same 3 s staleness rule the cards use). It re-arms on the next fresh OFF reading. The 30,000 ms cooldown stays as a floor between fires. The RPM-based fire path is DELETED: no code path may fire the VTEC reaction from RPM, at any threshold, armed or not (RPM polling itself is untouched; cards and logging still consume it). The old RPM arm/fire constants come out with it. If the DID is unsupported or the value is stale or unknown, the reaction never fires. Warmup and coolant reactions and their thresholds do not move.
 - `obd.read` gains `vtec_sol`, `vtec_psw`, `did_2612`, `did_2612_b23` with the usual null semantics.
-- Bench: extend the existing bench pattern with `>vtecsol <0|1>` driving the trigger input directly (keeping `>vtec` working as today), if the bench structure allows it as cleanly as the existing commands; if not, say so in Results rather than forcing it.
+- Bench: extend the existing bench pattern with `>vtecsol <0|1>` driving the trigger input directly, if the bench structure allows it as cleanly as the existing commands. The old `>vtec` simulator exercised the deleted RPM path: remove it or repurpose it, and say which in Results.
 
 ## Part 3: trip log columns (the log parts land earlier in this same session)
 
 - The CSV from OBD-LOG-TASK gains two trailing columns, `vtec_sol` and `vtec_psw` (1/0, empty when unknown), sampled from the same snapshot values the logger already consumes. No other format change; the header comment notes the block DID when known.
 
+## Part 4: VTEC status on the Engine card (Derek: "for me to see if this is working")
+
+- The Engine card (as relaid out by OBD-LOG-TASK Part 5, earlier in this same session) gains a VTEC solenoid status readout: the word VTEC with **OFF** or **ON** beside it. Placement: a status line inside or directly under the RPM hero cell, so it reads as part of the RPM cluster; final placement is yours within that constraint, note it in Results.
+- ON renders in the accent color (unmissable at a glance); OFF renders dim. When the DID is unsupported or no fresh value exists, it renders **--** dim, so Derek can tell "no signal" apart from "solenoid off" at a glance.
+- It follows the card rules: updates only on change, dims with staleness like the other values, and the link-state takeover still replaces the whole card when not polling.
+
 ## Tests
 
 - DID response parser against the REAL captured frames from the research report (~/workspace/projects/vtec-did-research.md): the 2007 VTEC-ON sample (byte 21 = 0x01) and a typical OFF sample (byte 21 = 0x02), plus truncated and wrong-prefix negatives.
-- Trigger: solenoid-ON fires without RPM reaching 6000; solenoid stale does not fire; DID-unsupported connections behave byte-identically to today (RPM path only); arming via solenoid-OFF.
+- Trigger: a fresh OFF-to-ON transition fires; RPM at any value (including 9000) with the solenoid OFF, absent, or stale never fires; re-arm requires a fresh OFF; the cooldown floor holds between fires.
 - Exchange safety: a simulated failed DID exchange leaves the poll schedule and RPM parsing intact.
 - Baseline to beat: the post-logging suite (673 pre-log tests, 0 failures, 6 known cJSON-environment errors, 10 skipped, plus whatever the log build added). Same rules as every round: provably-sized snprintf for the Mac toolchain gate; user-visible text says Muse, never Hatch.
 
 ## Out of scope
 
-No other enhanced DIDs (2611 AFR, 2662 knock/VTC, 2663 misfires are a future round). No writes to the car of any kind; this is a read. No change to the RPM thresholds, the poll order for Mode 01, the cards, the helmet, or the kill switch. No change to the reaction's visuals.
+No other enhanced DIDs (2611 AFR, 2662 knock/VTC, 2663 misfires are a future round). No writes to the car of any kind; this is a read. No change to the Mode 01 poll order, the helmet, or the kill switch. The only card change is the Part 4 VTEC readout; the only trigger change is the Part 2 solenoid-only swap. No change to the reaction's visuals.
 
 ## Results (Claude fills in)
 
