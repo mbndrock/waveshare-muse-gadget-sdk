@@ -22,16 +22,19 @@
 /*
  * The car reactions (CONFIG_MUSE_OBD_VTEC): a BLE central, beside Link's own
  * peripheral, to a LELink^2 ELM327 OBD-II adapter. It finds the adapter,
- * subscribes to its FFE1 characteristic and polls engine RPM (01 0C), for
- * the cards and the trip log. Every other request reads a secondary slot
- * instead, in turn: on a CAN 29-bit link whose engine ECU answers Honda's DID
- * 0x2612, that read first (the VTEC solenoid, which holds the VTEC reaction
- * up while it is on: muse_obd_vtec_on), then coolant (01 05) and the car data
- * cards' PIDs, less any the support scan (01 00 / 20 / 40, after the ELM
- * init) proved unsupported. When the coolant trigger fires it plays the
- * coolant warning, and when the coolant first reaches operating temperature
- * after a cold start, a thumbs-up. The reactions are visual only: a spoken
- * line would swap the reaction face for the speaking pose.
+ * subscribes to its FFE1 characteristic and polls the car data cards' PIDs,
+ * engine RPM (01 0C) first among them, for the cards and the trip log. The
+ * poll loop is response-driven and scheduled (muse_obd_elm.h): the next
+ * request goes out the moment the last reply is parsed, the scheduler asks
+ * for the most overdue signal against soft freshness targets, and due PIDs
+ * share one multi-PID Mode 01 request. On a CAN 29-bit link whose engine
+ * ECU answers Honda's DID 0x2612, the DID is in the schedule too (the VTEC
+ * solenoid, which holds the VTEC reaction up while it is on:
+ * muse_obd_vtec_on), less any PID the support scan (01 00 / 20 / 40, after
+ * the ELM init) proved unsupported. When the coolant trigger fires it plays
+ * the coolant warning, and when the coolant first reaches operating
+ * temperature after a cold start, a thumbs-up. The reactions are visual
+ * only: a spoken line would swap the reaction face for the speaking pose.
  *
  * Starts a task that waits for Link's BLE host, then keeps the adapter
  * connected, reconnecting with backoff. Call once, after the UI and the
@@ -128,6 +131,15 @@ typedef struct {
     muse_obd_reading_t vtec_psw;      /* the VTEC oil pressure switch: 1 on, 0 off */
     bool did_2612;
     muse_obd_reading_t did_2612_b23;  /* the block's data byte 23, raw (meaning unknown) */
+    /* The poll link's numbers (muse_obd_elm.h's muse_link_stats_t), this
+     * connection only: they start over with each connection and read as
+     * zeroes (and a -1 batch share) while no link is polling. */
+    uint32_t link_exchanges;   /* exchanges completed (a prompt came back) */
+    uint32_t link_timeouts;    /* asked exchanges the ECU didn't answer in time */
+    uint32_t link_last_rtt_ms; /* the last completed exchange's round trip */
+    uint32_t link_rate_x100;   /* rolling exchanges per second, x100 */
+    int link_batch_pct;        /* Mode 01 readings that arrived via batch, %; -1: none yet */
+    bool link_batch_off;       /* batching refused on this connection: single-PID */
     /* The trip log (muse_obd_log.h), which works with OBD turned off too. */
     bool log_card;         /* a microSD card is mounted */
     bool log_flash;        /* the obdlog flash partition is mounted */

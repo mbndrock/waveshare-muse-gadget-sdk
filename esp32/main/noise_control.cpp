@@ -1553,7 +1553,12 @@ static char *build_register_json(void) {
                 "vtec_sol and vtec_psw are the VTEC solenoid and pressure "
                 "switch (1/0) from Honda DID 2612; did_2612 says whether "
                 "the ECU answers it. log_* fields describe the trip log; "
-                "log_pending counts trips waiting to be pulled.",
+                "log_pending counts trips waiting to be pulled. link "
+                "reports the poll link's numbers for this connection: "
+                "exchanges completed, per_sec (rolling exchanges per "
+                "second), last_rtt_ms, timeouts, batch_pct (share of "
+                "readings that arrived in a multi-PID batch, null until "
+                "one does) and batch_off (batching refused; single-PID).",
                 nullptr, nullptr);
     add_command(commands, "obd.trips",
                 "List the logged car trips waiting to be pulled: id, store "

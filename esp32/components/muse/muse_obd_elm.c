@@ -143,12 +143,38 @@ static muse_elm_result_t parse_pid(const char *resp, int pid, int nbytes, int *d
     return res;
 }
 
+/* How many data bytes a Mode 01 PID's reply carries (only RPM takes two),
+ * and its whole-unit value from them: the one place the conversions the
+ * header lists live, shared by the single-PID parsers and the batch one. */
+static int pid_nbytes(int pid)
+{
+    return pid == 0x0C ? 2 : 1;
+}
+
+static int pid_value(int pid, const int *data)
+{
+    switch (pid) {
+    case 0x0C: return (data[0] * 256 + data[1]) / 4;
+    case 0x05: return data[0] - 40;
+    case 0x04: return data[0] * 100 / 255;
+    case 0x0B: return data[0];
+    case 0x0D: return data[0];
+    case 0x0E: return data[0] / 2 - 64;
+    case 0x0F: return data[0] - 40;
+    case 0x11: return data[0] * 100 / 255;
+    case 0x06: return (data[0] - 128) * 100 / 128;
+    case 0x07: return (data[0] - 128) * 100 / 128;
+    case 0x46: return data[0] - 40;
+    default: return 0;
+    }
+}
+
 muse_elm_result_t muse_elm_parse_rpm(const char *resp, int *rpm)
 {
     int ab[2];
     muse_elm_result_t res = parse_pid(resp, 0x0C, 2, ab, MUSE_ELM_RPM);
     if (res == MUSE_ELM_RPM) {
-        *rpm = (ab[0] * 256 + ab[1]) / 4;
+        *rpm = pid_value(0x0C, ab);
     }
     return res;
 }
@@ -158,7 +184,7 @@ muse_elm_result_t muse_elm_parse_coolant(const char *resp, int *coolant_c)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x05, 1, &a, MUSE_ELM_COOLANT);
     if (res == MUSE_ELM_COOLANT) {
-        *coolant_c = a - 40;
+        *coolant_c = pid_value(0x05, &a);
     }
     return res;
 }
@@ -168,7 +194,7 @@ muse_elm_result_t muse_elm_parse_load(const char *resp, int *pct)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x04, 1, &a, MUSE_ELM_LOAD);
     if (res == MUSE_ELM_LOAD) {
-        *pct = a * 100 / 255;
+        *pct = pid_value(0x04, &a);
     }
     return res;
 }
@@ -178,7 +204,7 @@ muse_elm_result_t muse_elm_parse_map(const char *resp, int *kpa)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x0B, 1, &a, MUSE_ELM_MAP);
     if (res == MUSE_ELM_MAP) {
-        *kpa = a;
+        *kpa = pid_value(0x0B, &a);
     }
     return res;
 }
@@ -188,7 +214,7 @@ muse_elm_result_t muse_elm_parse_speed(const char *resp, int *kmh)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x0D, 1, &a, MUSE_ELM_SPEED);
     if (res == MUSE_ELM_SPEED) {
-        *kmh = a;
+        *kmh = pid_value(0x0D, &a);
     }
     return res;
 }
@@ -198,7 +224,7 @@ muse_elm_result_t muse_elm_parse_timing(const char *resp, int *deg)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x0E, 1, &a, MUSE_ELM_TIMING);
     if (res == MUSE_ELM_TIMING) {
-        *deg = a / 2 - 64;
+        *deg = pid_value(0x0E, &a);
     }
     return res;
 }
@@ -208,7 +234,7 @@ muse_elm_result_t muse_elm_parse_iat(const char *resp, int *c)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x0F, 1, &a, MUSE_ELM_IAT);
     if (res == MUSE_ELM_IAT) {
-        *c = a - 40;
+        *c = pid_value(0x0F, &a);
     }
     return res;
 }
@@ -218,7 +244,7 @@ muse_elm_result_t muse_elm_parse_throttle(const char *resp, int *pct)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x11, 1, &a, MUSE_ELM_THROTTLE);
     if (res == MUSE_ELM_THROTTLE) {
-        *pct = a * 100 / 255;
+        *pct = pid_value(0x11, &a);
     }
     return res;
 }
@@ -228,7 +254,7 @@ muse_elm_result_t muse_elm_parse_stft(const char *resp, int *pct)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x06, 1, &a, MUSE_ELM_STFT);
     if (res == MUSE_ELM_STFT) {
-        *pct = (a - 128) * 100 / 128;
+        *pct = pid_value(0x06, &a);
     }
     return res;
 }
@@ -238,7 +264,7 @@ muse_elm_result_t muse_elm_parse_ltft(const char *resp, int *pct)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x07, 1, &a, MUSE_ELM_LTFT);
     if (res == MUSE_ELM_LTFT) {
-        *pct = (a - 128) * 100 / 128;
+        *pct = pid_value(0x07, &a);
     }
     return res;
 }
@@ -248,9 +274,31 @@ muse_elm_result_t muse_elm_parse_ambient(const char *resp, int *c)
     int a;
     muse_elm_result_t res = parse_pid(resp, 0x46, 1, &a, MUSE_ELM_AMBIENT);
     if (res == MUSE_ELM_AMBIENT) {
-        *c = a - 40;
+        *c = pid_value(0x46, &a);
     }
     return res;
+}
+
+muse_elm_result_t muse_elm_parse_batch(const char *resp, const uint8_t *pids, int n, int *values, bool *got)
+{
+    if (n > MUSE_ELM_BATCH_MAX) {
+        n = MUSE_ELM_BATCH_MAX;
+    }
+    int found = 0;
+    for (int i = 0; i < n; i++) {
+        int data[2];
+        got[i] = parse_pid(resp, pids[i], pid_nbytes(pids[i]), data, MUSE_ELM_BATCH) == MUSE_ELM_BATCH;
+        if (got[i]) {
+            values[i] = pid_value(pids[i], data);
+            found++;
+        }
+    }
+    if (found) {
+        return MUSE_ELM_BATCH;
+    }
+    /* Nothing read a value: the request as a whole was refused (NO DATA or
+     * an error), or no line answered any asked PID (all garbled). */
+    return parse_pid(resp, -1, 0, NULL, MUSE_ELM_NONE);
 }
 
 muse_elm_result_t muse_elm_parse_support(const char *resp, int base, uint32_t *mask)
@@ -341,40 +389,269 @@ void muse_elm_protocol_name(int protocol, char *buf, size_t cap)
     }
 }
 
-const uint8_t MUSE_ELM_SECONDARY[MUSE_ELM_SECONDARIES] = {
-    0x05, 0x0F, 0x0E, 0x0B, 0x04, 0x11, 0x0D, 0x06, 0x07, 0x46,
+/* The scheduler's items: RPM and the DID, then the secondaries in tier
+ * order. rank breaks overdue ties (the lower rank asks first); within a
+ * rank the table's order does. -1 is the DID: not a Mode 01 PID. */
+static const struct {
+    int pid;
+    uint32_t target_ms;
+    int rank;
+} SCHED[MUSE_SCHED_ITEMS] = {
+    { 0x0C, 0, 0 },        /* RPM: always due, the standing filler */
+    { -1, 1000, 1 },       /* DID 0x2612 */
+    { 0x0B, 1000, 2 },     /* fast: MAP */
+    { 0x11, 1000, 2 },     /* fast: throttle */
+    { 0x04, 1000, 2 },     /* fast: load */
+    { 0x0D, 1000, 2 },     /* fast: speed */
+    { 0x06, 2000, 3 },     /* mid: STFT */
+    { 0x07, 2000, 3 },     /* mid: LTFT */
+    { 0x0E, 2000, 3 },     /* mid: timing */
+    { 0x05, 3000, 4 },     /* slow: coolant */
+    { 0x0F, 3000, 4 },     /* slow: IAT */
+    { 0x46, 3000, 4 },     /* slow: ambient */
 };
 
-int muse_elm_next_secondary(const muse_elm_support_t *s, unsigned *cursor)
+#define SCHED_DID 1   /* SCHED's index of the DID item */
+
+static bool sched_eligible(const muse_sched_t *s, int i, uint32_t now_ms)
 {
-    for (unsigned tried = 0; tried < MUSE_ELM_SECONDARIES; tried++) {
-        int pid = MUSE_ELM_SECONDARY[*cursor % MUSE_ELM_SECONDARIES];
-        *cursor = (*cursor + 1) % MUSE_ELM_SECONDARIES;
-        if (muse_elm_pid_support(s, pid) != MUSE_ELM_PID_UNSUPPORTED) {
-            return pid;
-        }
+    if (!s->present[i] || s->evicted[i]) {
+        return false;
     }
-    return -1;
+    if (SCHED[i].pid < 0) {
+        /* The DID's floor: at most one read per MUSE_SCHED_DID_MIN_MS. */
+        return s->did_on && (!s->did_have || now_ms - s->did_last_ms >= MUSE_SCHED_DID_MIN_MS);
+    }
+    return true;
 }
 
-int muse_elm_next_slot(const muse_elm_support_t *s, unsigned *cursor, bool did)
+/* How far past its freshness target an item is; never attempted counts as
+ * as overdue as it gets, so a new connection sweeps everything at once. */
+static int32_t sched_overdue(const muse_sched_t *s, int i, uint32_t now_ms)
 {
-    /* Position 0 of a rotation is the DID read; 1.. are MUSE_ELM_SECONDARY. */
-    for (unsigned tried = 0; tried <= MUSE_ELM_SECONDARIES; tried++) {
-        unsigned at = *cursor % (MUSE_ELM_SECONDARIES + 1);
-        *cursor = (at + 1) % (MUSE_ELM_SECONDARIES + 1);
-        if (at == 0) {
-            if (did) {
-                return MUSE_ELM_SLOT_DID;
-            }
-            continue;
-        }
-        int pid = MUSE_ELM_SECONDARY[at - 1];
-        if (muse_elm_pid_support(s, pid) != MUSE_ELM_PID_UNSUPPORTED) {
-            return pid;
+    if (!s->have[i]) {
+        return INT32_MAX / 2;
+    }
+    return (int32_t)(now_ms - s->last_ms[i]) - (int32_t)SCHED[i].target_ms;
+}
+
+void muse_sched_init(muse_sched_t *s, const muse_elm_support_t *sup, bool did, uint32_t now_ms)
+{
+    memset(s, 0, sizeof(*s));
+    for (int i = 0; i < MUSE_SCHED_ITEMS; i++) {
+        s->present[i] = SCHED[i].pid < 0
+            || muse_elm_pid_support(sup, SCHED[i].pid) != MUSE_ELM_PID_UNSUPPORTED;
+    }
+    s->did_on = did;
+    if (did) {
+        /* The probe just read it: its floor, and its freshness, run from now. */
+        s->did_have = true;
+        s->did_last_ms = now_ms;
+        s->have[SCHED_DID] = true;
+        s->last_ms[SCHED_DID] = now_ms;
+    }
+}
+
+void muse_sched_apply_support(muse_sched_t *s, const muse_elm_support_t *sup)
+{
+    for (int i = 0; i < MUSE_SCHED_ITEMS; i++) {
+        if (SCHED[i].pid >= 0) {
+            s->present[i] = muse_elm_pid_support(sup, SCHED[i].pid) != MUSE_ELM_PID_UNSUPPORTED;
         }
     }
-    return -1;
+}
+
+void muse_sched_set_did(muse_sched_t *s, bool did, uint32_t now_ms)
+{
+    s->did_on = did;
+    if (did && !s->did_have) {
+        s->did_have = true;
+        s->did_last_ms = now_ms;
+        s->have[SCHED_DID] = true;
+        s->last_ms[SCHED_DID] = now_ms;
+    }
+}
+
+void muse_sched_pick(const muse_sched_t *s, uint32_t now_ms, muse_sched_req_t *req)
+{
+    req->did = false;
+    req->n = 0;
+    /* The most overdue eligible item; ties by rank, then by table order. */
+    int best = -1;
+    int32_t best_over = 0;
+    for (int i = 0; i < MUSE_SCHED_ITEMS; i++) {
+        if (!sched_eligible(s, i, now_ms)) {
+            continue;
+        }
+        int32_t over = sched_overdue(s, i, now_ms);
+        if (best < 0 || over > best_over || (over == best_over && SCHED[i].rank < SCHED[best].rank)) {
+            best = i;
+            best_over = over;
+        }
+    }
+    if (best < 0) {
+        req->pids[0] = 0x0C;   /* nothing eligible: RPM on its own */
+        req->n = 1;
+        return;
+    }
+    if (SCHED[best].pid < 0) {
+        req->did = true;
+        return;
+    }
+    bool in[MUSE_SCHED_ITEMS] = { 0 };
+    req->pids[req->n++] = (uint8_t)SCHED[best].pid;
+    in[best] = true;
+    /* Fill the batch with the most overdue of what's due (RPM's target is
+     * 0, so it rides along whenever there is room). */
+    while (!s->batch_off && req->n < MUSE_ELM_BATCH_MAX) {
+        int bi = -1;
+        int32_t bo = 0;
+        for (int i = 0; i < MUSE_SCHED_ITEMS; i++) {
+            if (in[i] || SCHED[i].pid < 0 || !sched_eligible(s, i, now_ms)) {
+                continue;
+            }
+            int32_t over = sched_overdue(s, i, now_ms);
+            if (over < 0) {
+                continue;   /* not due: a batch carries due items only */
+            }
+            if (bi < 0 || over > bo || (over == bo && SCHED[i].rank < SCHED[bi].rank)) {
+                bi = i;
+                bo = over;
+            }
+        }
+        if (bi < 0) {
+            break;
+        }
+        req->pids[req->n++] = (uint8_t)SCHED[bi].pid;
+        in[bi] = true;
+    }
+    /* RPM leads the request when it is in it. */
+    for (int i = 1; i < req->n; i++) {
+        if (req->pids[i] == 0x0C) {
+            memmove(&req->pids[1], &req->pids[0], (size_t)i);
+            req->pids[0] = 0x0C;
+            break;
+        }
+    }
+}
+
+void muse_sched_done_pid(muse_sched_t *s, int pid, bool got, bool ecu_live, uint32_t now_ms)
+{
+    for (int i = 0; i < MUSE_SCHED_ITEMS; i++) {
+        if (SCHED[i].pid != pid) {
+            continue;
+        }
+        s->last_ms[i] = now_ms;
+        s->have[i] = true;
+        if (got) {
+            s->misses[i] = 0;
+        } else if (ecu_live && pid != 0x0C && ++s->misses[i] >= 2) {
+            s->evicted[i] = true;   /* asked twice against a live ECU, never answered */
+        }
+        return;
+    }
+}
+
+void muse_sched_done_did(muse_sched_t *s, uint32_t now_ms)
+{
+    s->did_have = true;
+    s->did_last_ms = now_ms;
+    s->have[SCHED_DID] = true;
+    s->last_ms[SCHED_DID] = now_ms;
+}
+
+void muse_sched_latch_batch_off(muse_sched_t *s)
+{
+    s->batch_off = true;
+}
+
+void muse_link_stats_reset(muse_link_stats_t *s)
+{
+    memset(s, 0, sizeof(*s));
+}
+
+void muse_link_stats_exchange(muse_link_stats_t *s, uint32_t now_ms, uint32_t rtt_ms, int readings, bool via_batch)
+{
+    s->exchanges++;
+    s->last_rtt_ms = rtt_ms;
+    s->times[s->t_head] = now_ms;
+    s->t_head = (s->t_head + 1) % MUSE_LINK_TIMES;
+    if (s->t_count < MUSE_LINK_TIMES) {
+        s->t_count++;
+    }
+    if (readings > 0) {
+        s->readings += (uint32_t)readings;
+        if (via_batch) {
+            s->batch_readings += (uint32_t)readings;
+        }
+    }
+}
+
+void muse_link_stats_timeout(muse_link_stats_t *s)
+{
+    s->timeouts++;
+}
+
+uint32_t muse_link_stats_rate_x100(const muse_link_stats_t *s)
+{
+    if (s->t_count < 2) {
+        return 0;
+    }
+    uint32_t newest = s->times[(s->t_head + MUSE_LINK_TIMES - 1) % MUSE_LINK_TIMES];
+    uint32_t oldest = s->times[(s->t_head + MUSE_LINK_TIMES - s->t_count) % MUSE_LINK_TIMES];
+    uint32_t span = newest - oldest;
+    return span ? (uint32_t)((uint64_t)(s->t_count - 1) * 100000 / span) : 0;
+}
+
+int muse_link_stats_batch_pct(const muse_link_stats_t *s)
+{
+    return s->readings ? (int)(s->batch_readings * 100 / s->readings) : -1;
+}
+
+void muse_tune_init(muse_tune_t *t)
+{
+    memset(t, 0, sizeof(*t));
+    t->atst = MUSE_TUNE_ATST_MAX;   /* the ELM's default is what's in force */
+}
+
+int muse_tune_observe_value(muse_tune_t *t, uint32_t rtt_ms)
+{
+    t->consec = 0;
+    if (t->trimmed) {
+        return -1;
+    }
+    t->rtt_sum += rtt_ms;
+    if (++t->rtt_n < MUSE_TUNE_MEASURE) {
+        return -1;
+    }
+    t->trimmed = true;
+    /* Twice the mean round trip, in the byte's 4 ms units, clamped. */
+    uint32_t byte = (t->rtt_sum / (uint32_t)t->rtt_n * 2 + 3) / 4;
+    if (byte < MUSE_TUNE_ATST_MIN) {
+        byte = MUSE_TUNE_ATST_MIN;
+    }
+    if (byte > MUSE_TUNE_ATST_MAX) {
+        byte = MUSE_TUNE_ATST_MAX;
+    }
+    if (byte == t->atst) {
+        return -1;
+    }
+    t->atst = (uint8_t)byte;
+    return (int)byte;
+}
+
+int muse_tune_observe_timeout(muse_tune_t *t)
+{
+    if (++t->consec < MUSE_TUNE_TIMEOUTS) {
+        return -1;
+    }
+    t->consec = 0;
+    if (t->atst >= MUSE_TUNE_ATST_MAX) {
+        return -1;
+    }
+    uint32_t byte = (uint32_t)t->atst + MUSE_TUNE_ATST_STEP;
+    t->atst = (uint8_t)(byte > MUSE_TUNE_ATST_MAX ? MUSE_TUNE_ATST_MAX : byte);
+    return t->atst;
 }
 
 /* Hex digits of a line, spaces left out, as bytes; -1 for anything else (or

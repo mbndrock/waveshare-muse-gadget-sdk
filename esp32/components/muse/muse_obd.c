@@ -64,14 +64,14 @@ static const char *TAG = "muse_obd";
 #define CMD_MS 1500
 #define POLL_MS 1500                  /* no '>' for this long: drop and reconnect */
 #define SEARCH_MS 12000               /* while the ELM may be searching for the car's protocol */
-#define NO_RPM_PAUSE_MS 500           /* after NO DATA or an error, before asking again */
 #define BACKOFF_MIN_MS 2000
 #define BACKOFF_MAX_MS 60000
 #define RX_BYTES 512
 
-/* Requests alternate RPM (010C) with one secondary slot, in turn: the DID
- * 0x2612 read when the car answers it, then MUSE_ELM_SECONDARY's PIDs
- * (muse_obd_elm.c): coolant (0105) first, then the cards'. */
+/* Polling is response-driven and scheduled (muse_obd_elm.h): each request
+ * goes out the moment the last reply is parsed, the scheduler picks the
+ * most overdue signal, and due PIDs share one multi-PID Mode 01 request,
+ * RPM (010C) first among them and the standing filler between targets. */
 #define RPM 0x0C
 
 typedef enum {
@@ -116,7 +116,11 @@ static muse_coolant_trigger_t s_coolant;
 static muse_warmup_trigger_t s_warmup;
 static int s_rpm = -1;                /* the latest RPM; -1 when unknown (engine off, link down) */
 static muse_elm_support_t s_support;  /* this connection's support scan; all unknown until it answers */
-static unsigned s_cursor;             /* the next secondary PID in MUSE_ELM_SECONDARY */
+static muse_sched_t s_sched;          /* the poll pipeline's schedule, per connection */
+static muse_link_stats_t s_link;      /* the poll link's numbers (muse_obd_elm.h) */
+static muse_tune_t s_tune;            /* the ATST policy's state */
+static bool s_tuned;                  /* this connection has had its ATAT2 */
+static uint32_t s_elm_rtt_ms;         /* the last elm_cmd exchange's round trip */
 static bool s_have_protocol;          /* this connection has read ATDPN */
 static int s_protocol = -1;           /* and found this protocol (7: CAN 29/500) */
 /* DID 0x2612 on this connection: not asked yet, answered, or not (refused,
@@ -216,6 +220,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         ev.status = event->disconnect.reason;
         ev.conn = event->disconnect.conn.conn_handle;
         post(&ev);
+        break;
+    case BLE_GAP_EVENT_CONN_UPDATE:
+        /* The answer to connect()'s fast-parameter request, when it comes. */
+        ESP_LOGI(TAG, "connection parameters update: status %d", event->conn_update.status);
         break;
     case BLE_GAP_EVENT_NOTIFY_RX: {
         if (!s_val || event->notify_rx.conn_handle != s_conn || event->notify_rx.attr_handle != s_val) {
@@ -416,6 +424,13 @@ static void set_link_down(void)
     s_status.vtec_psw.valid = false;
     s_status.did_2612_b23.valid = false;
     s_vtec_bench = false;
+    /* The link's numbers were that connection's; the next one starts over. */
+    s_status.link_exchanges = 0;
+    s_status.link_timeouts = 0;
+    s_status.link_last_rtt_ms = 0;
+    s_status.link_rate_x100 = 0;
+    s_status.link_batch_pct = -1;
+    s_status.link_batch_off = false;
     taskEXIT_CRITICAL(&s_status_lock);
 }
 
@@ -439,6 +454,29 @@ static void set_did_supported(bool yes)
     taskEXIT_CRITICAL(&s_status_lock);
 }
 
+/* The poll loop's exchanges, into the link's numbers (s_link is this task's;
+ * the lock is for muse_obd_status()'s copy). */
+static void note_exchange(uint32_t rtt_ms, int readings, bool via_batch)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    muse_link_stats_exchange(&s_link, now_ms(), rtt_ms, readings, via_batch);
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+static void note_timeout(void)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    muse_link_stats_timeout(&s_link);
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+static void note_batch_off(void)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.link_batch_off = true;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
 void muse_obd_status(muse_obd_status_t *out)
 {
     if (!out) {
@@ -447,6 +485,7 @@ void muse_obd_status(muse_obd_status_t *out)
     uint32_t now = now_ms();
     uint32_t rpm_at, coolant_at, extra_at[MUSE_OBD_EXTRAS], vtec_at;
     bool bench;
+    muse_link_stats_t link;
     taskENTER_CRITICAL(&s_status_lock);
     *out = s_status;
     vtec_at = s_vtec_at;
@@ -454,7 +493,13 @@ void muse_obd_status(muse_obd_status_t *out)
     rpm_at = s_rpm_at;
     coolant_at = s_coolant_at;
     memcpy(extra_at, s_extra_at, sizeof(extra_at));
+    link = s_link;
     taskEXIT_CRITICAL(&s_status_lock);
+    out->link_exchanges = link.exchanges;
+    out->link_timeouts = link.timeouts;
+    out->link_last_rtt_ms = link.last_rtt_ms;
+    out->link_rate_x100 = muse_link_stats_rate_x100(&link);
+    out->link_batch_pct = muse_link_stats_batch_pct(&link);
     muse_obd_log_status_t trips;
     muse_obd_log_status(&trips);
     out->log_card = trips.card;
@@ -617,6 +662,15 @@ static bool connect(const ble_addr_t *addr)
     s_conn = ev.conn;
     set_flag(&s_status.connected, true);
     ESP_LOGI(TAG, "adapter connected");
+    /* The poll loop keeps one request outstanding at all times, so ask for
+     * the fastest connection interval on offer (7.5-15 ms): the radio
+     * shouldn't be the idle party either. A refusal (the adapter's or the
+     * stack's) leaves the defaults in force and changes nothing else. */
+    static const struct ble_gap_conn_params FAST = {
+        .itvl_min = 6, .itvl_max = 12, .latency = 0, .supervision_timeout = 400,   /* 7.5 ms, 15 ms, 4 s */
+    };
+    int urc = ble_gap_update_params(ev.conn, &FAST);
+    ESP_LOGI(TAG, "fast connection parameters requested: %d", urc);
     return true;
 }
 
@@ -673,7 +727,8 @@ static bool subscribe(void)
     return true;
 }
 
-/* Sends an ELM command and waits for its '>': the response is in s_rx. */
+/* Sends an ELM command and waits for its '>': the response is in s_rx and
+ * the exchange's round trip in s_elm_rtt_ms. */
 static bool elm_cmd(const char *cmd, uint32_t timeout_ms)
 {
     if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_enabled) {
@@ -682,7 +737,8 @@ static bool elm_cmd(const char *cmd, uint32_t timeout_ms)
     /* Anything that came unasked (a prompt on connect, a late reply) goes. */
     drain_rx();
 
-    char line[16];
+    uint32_t t0 = now_ms();
+    char line[24];   /* the longest command is a six-PID request: 14 + '\r' + NUL */
     int n = snprintf(line, sizeof(line), "%s\r", cmd);
     int rc = (s_props & BLE_GATT_CHR_PROP_WRITE)
         ? ble_gattc_write_flat(s_conn, s_val, line, n, on_write, NULL)
@@ -692,11 +748,13 @@ static bool elm_cmd(const char *cmd, uint32_t timeout_ms)
         return false;
     }
     if (wait_for(0, true, timeout_ms, NULL) != -1) {
+        s_elm_rtt_ms = now_ms() - t0;
         if (s_conn != BLE_HS_CONN_HANDLE_NONE && s_enabled) {
             ESP_LOGW(TAG, "%s: no '>' in %u ms", cmd, (unsigned)timeout_ms);
         }
         return false;
     }
+    s_elm_rtt_ms = now_ms() - t0;
     return true;
 }
 
@@ -799,6 +857,44 @@ static bool elm_ok(void)
     return strstr(s_rx.resp, "OK") != NULL;
 }
 
+/* The ATST byte the tune policy picked, sent to the adapter (the ELM's
+ * response timeout, byte x 4 ms). Tuning only ever sends this one command
+ * and only ever logs a step: it never wedges or reconnects the session,
+ * which stays the init/retry machinery's business. */
+static void apply_atst(int byte)
+{
+    static const char HEX[] = "0123456789ABCDEF";
+    char cmd[8] = { 'A', 'T', 'S', 'T', HEX[(byte >> 4) & 0xF], HEX[byte & 0xF], '\0' };
+    if (elm_cmd(cmd, CMD_MS) && elm_ok()) {
+        ESP_LOGI(TAG, "ATST %02X: response timeout %d ms", byte, byte * 4);
+    }
+}
+
+/* Once per connection, once the protocol is known: aggressive adaptive
+ * timing (ATAT2) and a fresh ATST policy to trim from the exchanges. */
+static void tune_link(void)
+{
+    if (s_tuned || !s_have_protocol) {
+        return;
+    }
+    s_tuned = true;
+    muse_tune_init(&s_tune);
+    if (elm_cmd("ATAT2", CMD_MS) && elm_ok()) {
+        ESP_LOGI(TAG, "adaptive timing: ATAT2");
+    }
+}
+
+/* One Mode 01 exchange's outcome, fed to the tune policy: a valued one may
+ * trim ATST (once, from the measured round trips); an answerless one may
+ * step it back. Anything it decides is sent at once. */
+static void tune_observe(bool valued, uint32_t rtt_ms)
+{
+    int byte = valued ? muse_tune_observe_value(&s_tune, rtt_ms) : muse_tune_observe_timeout(&s_tune);
+    if (byte >= 0) {
+        apply_atst(byte);
+    }
+}
+
 /* Mode 01's state back: automatic receive (no CRA filter) and the
  * functional header (18 DB 33 F1, the ELM's own default on a 29-bit link).
  * Tried twice: a late reply to a slow request can take the first one's
@@ -873,15 +969,10 @@ static bool probe_did(void)
     return link;
 }
 
-/* A coolant reply: feeds the warning and the warm-up. Anything else (NO DATA,
- * an ECU without PID 05) is skipped without slowing the RPM polling. */
-static void got_coolant(void)
+/* A coolant reading, from a single-PID reply or out of a batch: into the
+ * snapshot, and to the warning and the warm-up. */
+static void coolant_reading(int coolant_c)
 {
-    int coolant_c = 0;
-    if (muse_elm_parse_coolant(s_rx.resp, &coolant_c) != MUSE_ELM_COOLANT) {
-        ESP_LOGD(TAG, "no coolant reading");
-        return;
-    }
     ESP_LOGD(TAG, "coolant %d C", coolant_c);
     set_coolant(coolant_c);
     if (muse_coolant_update(&s_coolant, coolant_c, s_rpm, now_ms())) {
@@ -892,10 +983,24 @@ static void got_coolant(void)
     }
 }
 
+/* A coolant reply: feeds the warning and the warm-up. Anything else (NO DATA,
+ * an ECU without PID 05) is skipped without slowing the RPM polling. True
+ * when a reading came in. */
+static bool got_coolant(void)
+{
+    int coolant_c = 0;
+    if (muse_elm_parse_coolant(s_rx.resp, &coolant_c) != MUSE_ELM_COOLANT) {
+        ESP_LOGD(TAG, "no coolant reading");
+        return false;
+    }
+    coolant_reading(coolant_c);
+    return true;
+}
+
 /* A reply to one of the cards' PIDs: into the snapshot. NO DATA (an ECU
  * without it, or nothing yet) is skipped like coolant's, keeping the last
- * reading, which ages. */
-static void got_extra(int pid)
+ * reading, which ages. True when a reading came in. */
+static bool got_extra(int pid)
 {
     for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
         if (MUSE_OBD_EXTRA[i].pid != pid) {
@@ -905,8 +1010,26 @@ static void got_extra(int pid)
         if (EXTRA_PARSE[i].parse(s_rx.resp, &value) == EXTRA_PARSE[i].ok) {
             ESP_LOGD(TAG, "%s %d", MUSE_OBD_EXTRA[i].key, value);
             set_extra((muse_obd_extra_t)i, value);
+            return true;
         }
+        return false;
+    }
+    return false;
+}
+
+/* One reading out of a batch reply: where a single-PID reply's would go. */
+static void batch_reading(int pid, int value)
+{
+    if (pid == 0x05) {
+        coolant_reading(value);
         return;
+    }
+    for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
+        if (MUSE_OBD_EXTRA[i].pid == pid) {
+            ESP_LOGD(TAG, "%s %d", MUSE_OBD_EXTRA[i].key, value);
+            set_extra((muse_obd_extra_t)i, value);
+            return;
+        }
     }
 }
 
@@ -920,75 +1043,166 @@ static void log_sample(void)
 }
 
 /*
- * Asks for RPM and a secondary slot by turns, each request after the last '>':
- * RPM, the DID 0x2612 read (if the car answers it), RPM, coolant, RPM, the
- * next card PID, ... (muse_elm_next_slot). RPM is read for the cards and the
- * trip log only: nothing fires on it. While
- * frames come, a reply that takes over POLL_MS drops the link. Until then (the
- * first request, or after NO DATA or an error) the ELM may be searching for
- * the car's protocol, which takes seconds, so it gets SEARCH_MS. Only RPM
- * replies decide that, and the pause after a non-answer. The first RPM reply
- * also redoes whatever init couldn't learn with the engine still off: the
- * support scan, the protocol and the DID probe. Returns once the link is
- * lost; true if the adapter answered at all.
+ * The poll loop: response-driven and scheduled (muse_obd_elm.h). Each
+ * request is picked and sent the moment the last reply is parsed; there is
+ * no delay anywhere in the loop, so the link idles only while the adapter
+ * is still answering. RPM is read for the cards and the trip log only:
+ * nothing fires on it. While frames come, a reply that takes over POLL_MS
+ * drops the link. Until the first RPM reply (the first request, or after
+ * NO DATA or an error) the ELM may be searching for the car's protocol,
+ * which takes seconds, so requests get SEARCH_MS; only RPM replies decide
+ * that. The first RPM reply also redoes whatever init couldn't learn with
+ * the engine still off: the support scan, the protocol, the tuning and the
+ * DID probe. Returns once the link is lost; true if the adapter answered
+ * at all.
  */
 static bool poll_rpm(void)
 {
     bool answered = false, locked = false, retried = false;
-    for (unsigned n = 0;; n++) {
-        int pid = n % 2 ? muse_elm_next_slot(&s_support, &s_cursor, s_did == DID_YES) : RPM;
-        if (pid < 0) {
-            continue;   /* every secondary is unsupported: RPM only */
-        }
-        if (pid == MUSE_ELM_SLOT_DID) {
-            /* The rotation's first slot: one DID read. A failed one leaves
-             * the last reading to age out, never a stale "on". */
+    muse_sched_init(&s_sched, &s_support, s_did == DID_YES, now_ms());
+    taskENTER_CRITICAL(&s_status_lock);
+    muse_link_stats_reset(&s_link);
+    taskEXIT_CRITICAL(&s_status_lock);
+    for (;;) {
+        muse_sched_req_t req;
+        muse_sched_pick(&s_sched, now_ms(), &req);
+        if (req.did) {
+            /* One DID read. A failed one leaves the last reading to age
+             * out, never a stale "on". */
             muse_vtec_did_t v;
             bool link;
-            if (did_read(&v, &link) == MUSE_ELM_VTEC_DID) {
+            uint32_t t0 = now_ms();
+            muse_elm_result_t res = did_read(&v, &link);
+            if (res == MUSE_ELM_VTEC_DID) {
                 got_did(&v);
+                answered = true;
+            } else if (res == MUSE_ELM_NO_DATA) {
+                note_timeout();
             }
+            if (link) {
+                note_exchange(now_ms() - t0, 0, false);
+            }
+            muse_sched_done_did(&s_sched, now_ms());
             if (!link) {
                 return answered;
             }
             continue;
         }
-        char cmd[12];
-        snprintf(cmd, sizeof(cmd), "01%02X", (unsigned)(pid & 0xFF));
+        /* The Mode 01 request: "01" and the batch's PIDs, two hex digits
+         * each, straight into the buffer (its size is the batch's). */
+        static const char HEX[] = "0123456789ABCDEF";
+        char cmd[2 + 2 * MUSE_ELM_BATCH_MAX + 1];
+        int len = 0;
+        cmd[len++] = '0';
+        cmd[len++] = '1';
+        bool rpm_in = false;
+        for (int i = 0; i < req.n; i++) {
+            cmd[len++] = HEX[(req.pids[i] >> 4) & 0xF];
+            cmd[len++] = HEX[req.pids[i] & 0xF];
+            rpm_in = rpm_in || req.pids[i] == RPM;
+        }
+        cmd[len] = '\0';
         if (!elm_cmd(cmd, locked ? POLL_MS : SEARCH_MS)) {
+            note_timeout();
+            tune_observe(false, 0);
             return answered;
         }
         answered = true;
-        if (pid == 0x05) {
-            got_coolant();
-            continue;
-        }
-        if (pid != RPM) {
-            got_extra(pid);
-            continue;
-        }
-        int rpm = 0;
-        muse_elm_result_t res = muse_elm_parse_rpm(s_rx.resp, &rpm);
-        locked = res == MUSE_ELM_RPM;
-        s_rpm = locked ? rpm : -1;
-        set_rpm(locked, rpm);
-        log_sample();
-        if (locked) {
-            ESP_LOGD(TAG, "%d rpm", rpm);
-            if (!retried) {
-                retried = true;
-                if (!s_support.valid[0] && !scan_support()) {
-                    return answered;
+        uint32_t rtt = s_elm_rtt_ms, now = now_ms();
+        int readings = 0;
+        bool rpm_got = false, no_data = strstr(s_rx.resp, "NO DATA") != NULL;
+        if (req.n == 1) {
+            int pid = req.pids[0];
+            bool got;
+            if (pid == RPM) {
+                int rpm = 0;
+                muse_elm_result_t res = muse_elm_parse_rpm(s_rx.resp, &rpm);
+                locked = res == MUSE_ELM_RPM;
+                s_rpm = locked ? rpm : -1;
+                set_rpm(locked, rpm);
+                got = locked;
+                if (got) {
+                    ESP_LOGD(TAG, "%d rpm", rpm);
+                    rpm_got = true;
                 }
-                if (!s_have_protocol) {
-                    read_protocol();
+            } else if (pid == 0x05) {
+                got = got_coolant();
+            } else {
+                got = got_extra(pid);
+            }
+            readings = got ? 1 : 0;
+            muse_sched_done_pid(&s_sched, pid, got, locked || got, now);
+        } else {
+            int values[MUSE_ELM_BATCH_MAX];
+            bool got[MUSE_ELM_BATCH_MAX];
+            muse_elm_result_t res = muse_elm_parse_batch(s_rx.resp, req.pids, req.n, values, got);
+            if (res == MUSE_ELM_NO_DATA || res == MUSE_ELM_ERROR) {
+                /* The batch as a whole was refused: latch batching off for
+                 * the connection and carry on single-PID, never retrying
+                 * the batch. Its PIDs weren't answered, but weren't
+                 * individually refused either: no misses. */
+                ESP_LOGI(TAG, "batch refused (%s): single-PID for this connection",
+                         res == MUSE_ELM_NO_DATA ? "NO DATA" : "error");
+                muse_sched_latch_batch_off(&s_sched);
+                note_batch_off();
+                for (int i = 0; i < req.n; i++) {
+                    muse_sched_done_pid(&s_sched, req.pids[i], false, false, now);
                 }
-                if (!probe_did()) {   /* if the protocol only turned up now */
-                    return answered;
+            } else {
+                for (int i = 0; i < req.n; i++) {
+                    if (!got[i]) {
+                        continue;
+                    }
+                    readings++;
+                    if (req.pids[i] == RPM) {
+                        s_rpm = values[i];
+                        set_rpm(true, values[i]);
+                        ESP_LOGD(TAG, "%d rpm", values[i]);
+                        rpm_got = true;
+                    } else {
+                        batch_reading(req.pids[i], values[i]);
+                    }
+                }
+                if (rpm_in) {
+                    locked = rpm_got;
+                    if (!rpm_got) {
+                        s_rpm = -1;
+                        set_rpm(false, 0);
+                    }
+                }
+                /* A PID missing from the reply is a miss for that PID only,
+                 * against an ECU this exchange proved is answering. */
+                for (int i = 0; i < req.n; i++) {
+                    muse_sched_done_pid(&s_sched, req.pids[i], got[i], readings > 0 || locked, now);
                 }
             }
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(NO_RPM_PAUSE_MS));
+        }
+        if (rpm_in) {
+            log_sample();
+        }
+        note_exchange(rtt, readings, req.n > 1);
+        if (readings > 0) {
+            tune_observe(true, rtt);
+        } else if (no_data) {
+            note_timeout();
+            tune_observe(false, 0);
+        }
+        if (rpm_got && !retried) {
+            retried = true;
+            if (!s_support.valid[0] && !scan_support()) {
+                return answered;
+            }
+            muse_sched_apply_support(&s_sched, &s_support);
+            if (!s_have_protocol) {
+                read_protocol();
+                tune_link();
+            }
+            if (!probe_did()) {   /* if the protocol only turned up now */
+                return answered;
+            }
+            if (s_did == DID_YES) {
+                muse_sched_set_did(&s_sched, true, now_ms());
+            }
         }
     }
 }
@@ -1007,7 +1221,7 @@ static void drop(void)
     muse_warmup_init(&s_warmup);   /* a new connection must see the engine cold again */
     s_rpm = -1;
     s_support = (muse_elm_support_t){ 0 };   /* the next connection scans again */
-    s_cursor = 0;
+    s_tuned = false;   /* the next connection tunes its link again */
     s_have_protocol = false;
     s_protocol = -1;
     s_did = DID_UNPROBED;   /* the next connection asks again; did_2612 keeps this one's answer */
@@ -1064,6 +1278,7 @@ static void obd_task(void *arg)
                      * ATSP0 search for the protocol. */
                     if (elm_init() && scan_support()) {
                         read_protocol();
+                        tune_link();   /* ATAT2 + the ATST policy, now the protocol is known */
                         /* DID 0x2612 before polling, so the trip's header
                          * can say; its exchange failing badly drops the link. */
                         if (probe_did()) {

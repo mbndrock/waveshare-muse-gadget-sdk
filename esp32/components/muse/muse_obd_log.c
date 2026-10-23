@@ -42,7 +42,9 @@ static const char *TAG = "muse_obd_log";
 #define NVS_NS "muse"                 /* beside Settings' obd_on (muse_settings.c) */
 #define NVS_NEXT_ID "obd_trip"        /* the next trip id; ids are never reused */
 #define BLOCK 4096                    /* rows reach the file in blocks this big */
-#define QUEUE_LEN 64                  /* rows waiting for the writer: ~8 s of polling */
+#define QUEUE_LEN 256                 /* rows waiting for the writer (in PSRAM): ~25 s even at the
+                                       * pipeline's fastest sample rate, so a slow block write
+                                       * (a flash stall) can't starve it into drops */
 #define RESERVE (64 * 1024)           /* kept free in a store: the trailer, the manifest */
 #define MIN_TRIP (16 * 1024)          /* less room than RESERVE + this: the store is full */
 #define LOCK_MS 2000                  /* a pull command waits this long for the writer */

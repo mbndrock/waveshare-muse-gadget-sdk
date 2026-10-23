@@ -1949,6 +1949,25 @@ static cJSON *obd_read_command(void) {
     cJSON_AddNumberToObject(payload, "log_pending", st.log_pending);
     cJSON_AddNumberToObject(payload, "log_dropped", st.log_dropped);
     cJSON_AddBoolToObject(payload, "log_full", st.log_full);
+    // The poll link's numbers for this connection: the achieved rate lives
+    // here (per_sec), with the last round trip, the timeouts, and how much
+    // of the Mode 01 traffic arrives batched (batch_pct, null until a
+    // reading does; batch_off once a batch was refused and the connection
+    // fell back to single-PID).
+    cJSON *link = cJSON_CreateObject();
+    if (link) {
+        cJSON_AddNumberToObject(link, "exchanges", st.link_exchanges);
+        cJSON_AddNumberToObject(link, "per_sec", (double)st.link_rate_x100 / 100.0);
+        cJSON_AddNumberToObject(link, "last_rtt_ms", st.link_last_rtt_ms);
+        cJSON_AddNumberToObject(link, "timeouts", st.link_timeouts);
+        if (st.link_batch_pct >= 0) {
+            cJSON_AddNumberToObject(link, "batch_pct", st.link_batch_pct);
+        } else {
+            cJSON_AddNullToObject(link, "batch_pct");
+        }
+        cJSON_AddBoolToObject(link, "batch_off", st.link_batch_off);
+        cJSON_AddItemToObject(payload, "link", link);
+    }
     cJSON_AddBoolToObject(result, "ok", true);
     cJSON_AddItemToObject(result, "payload", payload);
     return result;

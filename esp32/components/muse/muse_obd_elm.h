@@ -66,6 +66,7 @@ typedef enum {
     MUSE_ELM_SUPPORT,   /* a 41 00 / 20 / 40 reply: *mask is set */
     MUSE_ELM_VTEC_DID,  /* a whole 62 26 12 reply: the VTEC flags are set */
     MUSE_ELM_NEGATIVE,  /* 7F 22 <NRC>: the ECU refused the DID */
+    MUSE_ELM_BATCH,     /* a multi-PID reply: at least one asked PID read a value */
 } muse_elm_result_t;
 
 /* Reads engine RPM from the response to "010C": ((A * 256) + B) / 4. Spaces
@@ -136,14 +137,18 @@ int muse_elm_parse_protocol(const char *resp);
 void muse_elm_protocol_name(int protocol, char *buf, size_t cap);
 
 /*
- * The poll loop alternates RPM with one secondary PID, taken in turn from
- * MUSE_ELM_SECONDARY: coolant first, then the cards' PIDs. *cursor (start
- * it at 0) remembers the place. PIDs the scan proved unsupported are skipped;
- * unknown ones are kept. Returns the next PID, or -1 when none is left.
+ * A multi-PID Mode 01 reply, parsed for the batch the poll pipeline asked
+ * for: pids[0..n) (n <= MUSE_ELM_BATCH_MAX, no support PIDs, no DID), with
+ * each PID's value in values[i] and got[i] set, converted exactly as the
+ * single-PID parsers convert. MUSE_ELM_BATCH when at least one PID read a
+ * value; MUSE_ELM_NO_DATA or MUSE_ELM_ERROR when the request as a whole was
+ * refused that way (nothing read a value); MUSE_ELM_NONE when no line
+ * answered any asked PID and nothing refused either (garbled lines: each
+ * asked PID is simply missing). A line that doesn't parse for its PID is a
+ * miss for that PID only; the others still read.
  */
-#define MUSE_ELM_SECONDARIES 10
-extern const uint8_t MUSE_ELM_SECONDARY[MUSE_ELM_SECONDARIES];
-int muse_elm_next_secondary(const muse_elm_support_t *s, unsigned *cursor);
+#define MUSE_ELM_BATCH_MAX 6
+muse_elm_result_t muse_elm_parse_batch(const char *resp, const uint8_t *pids, int n, int *values, bool *got);
 
 /*
  * Honda's PGM-FI data block (UDS 0x22, DID 0x2612; OBDb's Honda-S2000
@@ -177,13 +182,137 @@ typedef struct {
 muse_elm_result_t muse_elm_parse_vtec_did(const char *resp, muse_vtec_did_t *out);
 
 /*
- * The poll loop's secondary slots once DID 0x2612 is in play: a rotation is
- * the DID read (when `did`) and then MUSE_ELM_SECONDARY's PIDs as
- * muse_elm_next_secondary gives them. *cursor (start it at 0) remembers the
- * place. Returns MUSE_ELM_SLOT_DID, a PID, or -1 when there is nothing.
+ * The poll pipeline's scheduler (OBD-PIPELINE-TASK): what the response-driven
+ * loop asks next, replacing the fixed RPM/secondary rotation. Producers hold
+ * soft freshness targets, not an order: RPM (target 0, the standing filler,
+ * top priority), DID 0x2612 (about 1 s), the fast secondaries MAP, throttle,
+ * load and speed (about 1 s), the mid STFT, LTFT and timing (about 2 s) and
+ * the slow coolant, IAT and ambient (about 3 s). muse_sched_pick() chooses
+ * the most overdue item; ties break by priority. Targets are floors on
+ * freshness, never rate caps: a faster link simply refreshes everything
+ * sooner, and nothing is ever delayed to meet a target.
+ *
+ * A Mode 01 pick carries up to MUSE_ELM_BATCH_MAX due PIDs in one request,
+ * RPM first when it is among them; the DID is always a pick of its own. A
+ * signal already queued or in flight is never picked twice: a pick is the
+ * only request outstanding, and an item leaves the due set the moment its
+ * exchange completes (muse_sched_done_pid / muse_sched_done_did).
+ *
+ * One shaping rule, tunable: the DID keeps MUSE_SCHED_DID_MIN_MS between
+ * reads (the probe before polling counts as one). Its multi-frame exchange
+ * is the longest on the link; without the floor it could crowd out Mode 01
+ * when everything is overdue at connect time.
+ *
+ * A PID that misses twice against a live ECU (muse_sched_done_pid's
+ * ecu_live: another PID in its exchange read a value, or RPM is locked on)
+ * leaves the schedule for the connection, like a scan-proven unsupported
+ * one. Misses against a silent ECU prove nothing (the engine is off, most
+ * likely) and never evict. RPM is never evicted: it is the filler and the
+ * engine-start detector. Times are any wrapping millisecond clock.
  */
-#define MUSE_ELM_SLOT_DID 0x100
-int muse_elm_next_slot(const muse_elm_support_t *s, unsigned *cursor, bool did);
+#define MUSE_SCHED_DID_MIN_MS 1000u   /* tunable: DID 0x2612's minimum interval */
+
+typedef struct {
+    bool did;               /* the pick is the DID 0x2612 read, never batched */
+    uint8_t pids[MUSE_ELM_BATCH_MAX];
+    int n;                  /* Mode 01: how many of pids[] the request carries */
+} muse_sched_req_t;
+
+#define MUSE_SCHED_ITEMS 12   /* RPM, the DID and the ten secondaries */
+
+typedef struct {
+    uint32_t last_ms[MUSE_SCHED_ITEMS];   /* the last completed attempt */
+    bool have[MUSE_SCHED_ITEMS];          /* last_ms holds an attempt */
+    bool present[MUSE_SCHED_ITEMS];       /* the support scan didn't rule it out */
+    bool evicted[MUSE_SCHED_ITEMS];       /* missed out of the schedule */
+    uint8_t misses[MUSE_SCHED_ITEMS];
+    uint32_t did_last_ms;                 /* the last DID attempt (the floor) */
+    bool did_have;
+    bool did_on;                          /* this connection reads the DID */
+    bool batch_off;                       /* latched: single-PID for the connection */
+} muse_sched_t;
+
+/* Starts a connection's schedule: the scan's proven-unsupported PIDs are
+ * absent, the rest present and all due; the DID only when `did`, with its
+ * floor running from now_ms (the probe just read it). */
+void muse_sched_init(muse_sched_t *s, const muse_elm_support_t *sup, bool did, uint32_t now_ms);
+/* A support scan that landed after polling started (the first-RPM retry):
+ * proven-unsupported PIDs leave; evictions and attempts stand. */
+void muse_sched_apply_support(muse_sched_t *s, const muse_elm_support_t *sup);
+/* The DID probe answered after polling started: it joins the schedule. */
+void muse_sched_set_did(muse_sched_t *s, bool did, uint32_t now_ms);
+/* The next request: the most overdue eligible item, a batch of due Mode 01
+ * PIDs, the DID on its own, or RPM alone when nothing is due (the filler). */
+void muse_sched_pick(const muse_sched_t *s, uint32_t now_ms, muse_sched_req_t *req);
+/* A Mode 01 exchange for `pid` completed: got says a value was read;
+ * ecu_live says the ECU demonstrably answers (see above). */
+void muse_sched_done_pid(muse_sched_t *s, int pid, bool got, bool ecu_live, uint32_t now_ms);
+/* A DID exchange completed, answered or not: the floor runs from here. */
+void muse_sched_done_did(muse_sched_t *s, uint32_t now_ms);
+/* A batch request was refused as a whole: single-PID for the connection. */
+void muse_sched_latch_batch_off(muse_sched_t *s);
+
+/*
+ * The link's numbers for one connection (obd.read's "link"): exchanges
+ * completed (a prompt came back), the timeouts among what was asked (no
+ * prompt, or a NO DATA: the ECU didn't answer in time), the last round trip,
+ * and how many Mode 01 readings arrived, and of those how many via a batch.
+ * The rolling rate is computed over the last MUSE_LINK_TIMES exchanges.
+ */
+#define MUSE_LINK_TIMES 16
+
+typedef struct {
+    uint32_t exchanges;
+    uint32_t timeouts;
+    uint32_t last_rtt_ms;
+    uint32_t times[MUSE_LINK_TIMES];   /* completion times, a ring */
+    unsigned t_head;                   /* the next slot to write */
+    unsigned t_count;                  /* how many slots hold a time */
+    uint32_t readings;
+    uint32_t batch_readings;
+} muse_link_stats_t;
+
+void muse_link_stats_reset(muse_link_stats_t *s);
+/* One completed exchange at now_ms that took rtt_ms; readings Mode 01 values
+ * were read, via_batch when the request carried more than one PID. */
+void muse_link_stats_exchange(muse_link_stats_t *s, uint32_t now_ms, uint32_t rtt_ms, int readings, bool via_batch);
+/* One asked exchange that timed out (no prompt, or NO DATA). */
+void muse_link_stats_timeout(muse_link_stats_t *s);
+/* Rolling exchanges per second, x100; 0 until two exchanges complete. */
+uint32_t muse_link_stats_rate_x100(const muse_link_stats_t *s);
+/* Batch share of the Mode 01 readings, percent; -1 until one arrives. */
+int muse_link_stats_batch_pct(const muse_link_stats_t *s);
+
+/*
+ * The ATST policy: the ELM's response timeout, trimmed from its 200 ms
+ * default toward the car's measured reply latency, with a bounded step
+ * back. In force is an ATST byte (the timeout is the byte x 4 ms). After
+ * MUSE_TUNE_MEASURE valued exchanges, muse_tune_observe_value() returns
+ * the trimmed byte once (twice the mean round trip, clamped), or -1 when
+ * there is nothing to send. MUSE_TUNE_TIMEOUTS answerless Mode 01
+ * exchanges in a row make muse_tune_observe_timeout() return the byte one
+ * step up, or -1 at the cap. Tuning only ever sends ATST: it never wedges
+ * or reconnects the session.
+ */
+#define MUSE_TUNE_ATST_MIN 0x08   /* 32 ms */
+#define MUSE_TUNE_ATST_MAX 0x32   /* 200 ms: the ELM's default, and the cap */
+#define MUSE_TUNE_ATST_STEP 0x04  /* 16 ms per step back */
+#define MUSE_TUNE_MEASURE 4       /* valued exchanges before the trim */
+#define MUSE_TUNE_TIMEOUTS 3      /* answerless in a row before a step back */
+
+typedef struct {
+    uint8_t atst;          /* the byte in force */
+    bool trimmed;          /* the measured trim has been decided */
+    int consec;            /* answerless Mode 01 exchanges in a row */
+    uint32_t rtt_sum;      /* the measured round trips, for the trim */
+    int rtt_n;
+} muse_tune_t;
+
+void muse_tune_init(muse_tune_t *t);
+/* A Mode 01 exchange read at least one value, in rtt_ms. */
+int muse_tune_observe_value(muse_tune_t *t, uint32_t rtt_ms);
+/* A Mode 01 exchange read nothing (NO DATA, an error, no prompt). */
+int muse_tune_observe_timeout(muse_tune_t *t);
 
 /*
  * The VTEC reaction is a held pose that mirrors the solenoid: up for as long
