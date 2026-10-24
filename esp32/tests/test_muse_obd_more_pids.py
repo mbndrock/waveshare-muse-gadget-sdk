@@ -42,7 +42,7 @@ class MorePidsTest(unittest.TestCase):
         for pid, target, rank in ((0x34, 1000, 2), (0x49, 1000, 2), (0x4A, 1000, 2),
                                   (0x2F, 2000, 3), (0x42, 3000, 4), (0x33, 3000, 4)):
             self.assertIn(f"{{ 0x{pid:02X}, {target}, {rank} }},", elm)
-        self.assertIn("#define MUSE_SCHED_ITEMS 20", (MUSE / "muse_obd_elm.h").read_text())   # + 2610, 2663
+        self.assertIn("#define MUSE_SCHED_ITEMS 22", (MUSE / "muse_obd_elm.h").read_text())   # + 2610, 2663, 4004, 4005
         # The wide PIDs' byte counts, which a batch's walk depends on.
         nbytes = function_body(elm, "static int pid_nbytes(int pid)")
         self.assertIn("case 0x34: return 4;", nbytes)
@@ -120,9 +120,10 @@ int main(void)
                 continue
             run[card] = 0
             units[card] += 2 if ".hero = true" in rest else 1
-        # Engine and Drive as before this task (5 and 4); Temps 4 since
-        # OBD-DID-CARDS-TASK's A/C cell (it had 3).
-        self.assertEqual(units, [4, 5, 4])
+        # Engine as before this task (5); Temps 4 since OBD-DID-CARDS-TASK's
+        # A/C cell (it had 3); Drive 5 since OBD-STEERING-ANGLE-TASK's BRAKE
+        # cell (it had 4: five halves make three pair slots under the hero).
+        self.assertEqual(units, [4, 5, 5])
         # The AFR reads in tenths: "14.7".
         tick = function_body(cards, "void muse_obd_cards_tick(void)")
         self.assertIn('snprintf(text, sizeof(text), "%d.%d", shown / 10, shown % 10);', tick)

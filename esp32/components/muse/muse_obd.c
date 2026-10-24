@@ -132,14 +132,22 @@ static const uint8_t LOG_DID[] = { MUSE_LOG_DID_UNKNOWN, MUSE_LOG_DID_YES, MUSE_
 static muse_misfire_trigger_t s_misfire;   /* this task's and the bench's: under s_status_lock */
 
 _Static_assert(MUSE_OBD_MISFIRE_CYLS == MUSE_MISFIRE_CYLS, "the snapshot holds every cylinder 0x2663 counts");
+_Static_assert(MUSE_VSA_SCAN_TOTAL == MUSE_VSA_SCAN_DIDS_N, "obd.read's scan total is the elm scan list's");
 
 /* muse_obd_status()'s snapshot: written by this task, read from any task. */
 static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
-static muse_obd_status_t s_status = { .state = "off", .enabled = true, .protocol = -1 };
+static muse_obd_status_t s_status = { .state = "off", .enabled = true, .protocol = -1, .vsa = -1,
+                                       .vsa_scan = "idle" };
 static uint32_t s_rpm_at, s_coolant_at;   /* now_ms() of each reading */
 static uint32_t s_extra_at[MUSE_OBD_EXTRAS];
 static uint32_t s_vtec_at;                /* now_ms() of the last DID 0x2612 reading */
 static uint32_t s_2610_at, s_2663_at;     /* and of the last 0x2610 and 0x2663 ones */
+static uint32_t s_4004_at, s_4005_at;     /* and of the last VSA 0x4004 and 0x4005 ones */
+/* The VSA raw scan's stored outcomes and where it has got to, under
+ * s_status_lock (the Link commands read them from another task). The
+ * scan's state itself lives in the snapshot (s_status.vsa_scan). */
+static muse_vsa_raw_t s_scan_raw[MUSE_VSA_SCAN_DIDS_N];
+static int s_scan_idx;   /* the next MUSE_VSA_SCAN_DIDS entry to read */
 static bool s_vtec_bench;                 /* ">vtecsol": the reading is the bench's, always fresh */
 
 const muse_obd_extra_info_t MUSE_OBD_EXTRA[MUSE_OBD_EXTRAS] = {
@@ -451,6 +459,8 @@ static void set_link_down(void)
     s_status.misfire_rose = 0;
     s_status.ac_clutch.valid = false;
     s_status.generator_pct.valid = false;
+    s_status.vsa_brk_sw.valid = false;
+    s_status.vsa_brk_p.valid = false;
     /* The link's numbers were that connection's; the next one starts over. */
     s_status.link_exchanges = 0;
     s_status.link_timeouts = 0;
@@ -501,8 +511,29 @@ static bool set_2663(const muse_did_2663_t *v, int rpm)
     return fire;
 }
 
-/* Whether the engine ECU answers a DID; like the protocol it stays after
- * the link drops. */
+/* A VSA DID 0x4004 reading, into the snapshot. */
+static void set_4004(const muse_vsa_4004_t *v)
+{
+    uint32_t at = now_ms();
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.vsa_brk_sw = (muse_obd_reading_t){ .valid = true, .value = v->brk };
+    s_4004_at = at;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+/* A VSA DID 0x4005 reading, into the snapshot. */
+static void set_4005(const muse_vsa_4005_t *v)
+{
+    uint32_t at = now_ms();
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status.vsa_brk_p = (muse_obd_reading_t){ .valid = true, .value = v->brake_p };
+    s_4005_at = at;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+/* Whether an ECU answers a DID; like the protocol it stays after the link
+ * drops. The VSA's presence is DID 0x4004's verdict (the probe reads it;
+ * 0x4005 is never separately probed and has no flag of its own). */
 static void set_did_supported(muse_did_t d, bool yes)
 {
     taskENTER_CRITICAL(&s_status_lock);
@@ -510,6 +541,7 @@ static void set_did_supported(muse_did_t d, bool yes)
     case MUSE_DID_2612: s_status.did_2612 = yes; break;
     case MUSE_DID_2610: s_status.did_2610 = yes; break;
     case MUSE_DID_2663: s_status.did_2663 = yes; break;
+    case MUSE_DID_4004: s_status.vsa = yes ? 1 : 0; break;
     default: break;
     }
     taskEXIT_CRITICAL(&s_status_lock);
@@ -544,7 +576,7 @@ void muse_obd_status(muse_obd_status_t *out)
         return;
     }
     uint32_t now = now_ms();
-    uint32_t rpm_at, coolant_at, extra_at[MUSE_OBD_EXTRAS], vtec_at, at_2610, at_2663;
+    uint32_t rpm_at, coolant_at, extra_at[MUSE_OBD_EXTRAS], vtec_at, at_2610, at_2663, at_4004, at_4005;
     bool bench;
     muse_link_stats_t link;
     taskENTER_CRITICAL(&s_status_lock);
@@ -552,6 +584,8 @@ void muse_obd_status(muse_obd_status_t *out)
     vtec_at = s_vtec_at;
     at_2610 = s_2610_at;
     at_2663 = s_2663_at;
+    at_4004 = s_4004_at;
+    at_4005 = s_4005_at;
     bench = s_vtec_bench;
     rpm_at = s_rpm_at;
     coolant_at = s_coolant_at;
@@ -588,6 +622,8 @@ void muse_obd_status(muse_obd_status_t *out)
     }
     out->ac_clutch.age_ms = out->ac_clutch.valid ? now - at_2610 : UINT32_MAX;
     out->generator_pct.age_ms = out->generator_pct.valid ? now - at_2610 : UINT32_MAX;
+    out->vsa_brk_sw.age_ms = out->vsa_brk_sw.valid ? now - at_4004 : UINT32_MAX;
+    out->vsa_brk_p.age_ms = out->vsa_brk_p.valid ? now - at_4005 : UINT32_MAX;
 }
 
 bool muse_obd_vtec_on(const muse_obd_status_t *st)
@@ -1026,6 +1062,8 @@ typedef union {
     muse_vtec_did_t vtec;     /* 0x2612 */
     muse_did_2610_t ac;       /* 0x2610 */
     muse_did_2663_t misfire;  /* 0x2663 */
+    muse_vsa_4004_t brk_sw;   /* 0x4004 */
+    muse_vsa_4005_t brk_p;    /* 0x4005 */
 } did_reading_t;
 
 /* The parse result that means DID d read. */
@@ -1033,22 +1071,26 @@ static const muse_elm_result_t DID_OK[MUSE_DIDS] = {
     [MUSE_DID_2612] = MUSE_ELM_VTEC_DID,
     [MUSE_DID_2610] = MUSE_ELM_DID_2610,
     [MUSE_DID_2663] = MUSE_ELM_DID_2663,
+    [MUSE_DID_4004] = MUSE_ELM_DID_4004,
+    [MUSE_DID_4005] = MUSE_ELM_DID_4005,
 };
 
 /*
  * A DID header session (MUSE_DID_INFO), state-safe: did_begin() points the
- * header and the receive filter at the engine ECU (ATSH DA10F1, ATCRA
- * 18DAF110), did_ask() reads one DID per call inside it, and did_restore()
- * puts Mode 01's state back afterwards, whatever happened in between. Read
- * only: service 0x22 in the default session, nothing is written to the car.
- * One request at a time, and never inside a Mode 01 exchange: the poll loop
- * has one request outstanding. Reading every due DID in one session (the
- * poll loop) pays the ATSH/ATCRA setup and restore once instead of per DID:
- * four ELM round trips saved for each extra DID.
+ * header and the receive filter at DID d's ECU (its table row's ATSH/ATCRA:
+ * the engine ECU at DA10F1/18DAF110, the VSA unit at DA28F1/18DAF128),
+ * did_ask() reads one DID per call inside it, and did_restore() puts Mode
+ * 01's state back afterwards, whatever happened in between. Read only:
+ * service 0x22 in the default session, nothing is written to the car. One
+ * request at a time, and never inside a Mode 01 exchange: the poll loop has
+ * one request outstanding. Reading every due DID of the session's ECU in
+ * one session (the poll loop) pays the ATSH/ATCRA setup and restore once
+ * instead of per DID: four ELM round trips saved for each extra DID. A
+ * session never carries the other ECU's DID.
  */
-static bool did_begin(void)
+static bool did_begin(muse_did_t d)
 {
-    return elm_cmd("ATSHDA10F1", CMD_MS) && elm_ok() && elm_cmd("ATCRA18DAF110", CMD_MS) && elm_ok();
+    return elm_cmd(MUSE_DID_INFO[d].atsh, CMD_MS) && elm_ok() && elm_cmd(MUSE_DID_INFO[d].atcra, CMD_MS) && elm_ok();
 }
 
 static muse_elm_result_t did_ask(muse_did_t d, did_reading_t *out)
@@ -1059,6 +1101,8 @@ static muse_elm_result_t did_ask(muse_did_t d, did_reading_t *out)
         case MUSE_DID_2612: res = muse_elm_parse_vtec_did(s_rx.resp, &out->vtec); break;
         case MUSE_DID_2610: res = muse_elm_parse_did_2610(s_rx.resp, &out->ac); break;
         case MUSE_DID_2663: res = muse_elm_parse_did_2663(s_rx.resp, &out->misfire); break;
+        case MUSE_DID_4004: res = muse_elm_parse_vsa_4004(s_rx.resp, &out->brk_sw); break;
+        case MUSE_DID_4005: res = muse_elm_parse_vsa_4005(s_rx.resp, &out->brk_p); break;
         default: break;
         }
         if (res == MUSE_ELM_NONE) {
@@ -1073,7 +1117,7 @@ static muse_elm_result_t did_ask(muse_did_t d, did_reading_t *out)
  * dropped and initialised again). */
 static muse_elm_result_t did_read(muse_did_t d, did_reading_t *out, bool *link)
 {
-    muse_elm_result_t res = did_begin() ? did_ask(d, out) : MUSE_ELM_NONE;
+    muse_elm_result_t res = did_begin(d) ? did_ask(d, out) : MUSE_ELM_NONE;
     *link = did_restore();
     return res;
 }
@@ -1101,6 +1145,14 @@ static void got_did(muse_did_t d, const did_reading_t *v)
             muse_obd_fire_misfire();
         }
         break;
+    case MUSE_DID_4004:
+        ESP_LOGD(TAG, "brake switch %s", v->brk_sw.brk ? "pressed" : "released");
+        set_4004(&v->brk_sw);
+        break;
+    case MUSE_DID_4005:
+        ESP_LOGD(TAG, "brake pressure %d bar x100", v->brk_p.brake_p);
+        set_4005(&v->brk_p);
+        break;
     default:
         break;
     }
@@ -1116,20 +1168,22 @@ static unsigned did_mask(void)
     return mask;
 }
 
+static bool probe_vsa(void);
+
 /*
  * Once per connection, after the support scan, on a CAN 29-bit link only:
  * does the engine ECU answer each DID (0x2612, then 0x2610 and 0x2663)?
  * One exchange at a time, each with did_read()'s choreography. Refused,
  * silent or garbled, a DID is never asked again on this connection. Nothing
- * on any other protocol, and nothing until the protocol is known. False
- * only when the link went down.
+ * on any other protocol, and nothing until the protocol is known. Then the
+ * VSA presence probe (probe_vsa). False only when the link went down.
  */
 static bool probe_did(void)
 {
     if (s_protocol != 7) {
         return true;
     }
-    for (int i = 0; i < MUSE_DIDS; i++) {
+    for (int i = 0; i < MUSE_DID_4004; i++) {   /* the DA10 DIDs; the VSA pair is probe_vsa's */
         muse_did_t d = (muse_did_t)i;
         if (s_did[d] != DID_UNPROBED) {
             continue;
@@ -1150,7 +1204,39 @@ static bool probe_did(void)
             return false;
         }
     }
-    return true;
+    return probe_vsa();
+}
+
+/*
+ * The VSA presence probe, once per connection after the DA10 DID probes:
+ * one DA28 session reading DID 0x4004, with did_read()'s choreography. A
+ * parseable positive reply confirms DA28: both VSA DIDs join the schedule
+ * (0x4005 is not separately probed; the grouped session reads it first).
+ * Refused (a well-formed negative still records the verdict), silent or
+ * garbled, the address costs this one exchange per connection and neither
+ * DID is asked again on it: no retry storm, and nothing in the UI. False
+ * only when the link went down.
+ */
+static bool probe_vsa(void)
+{
+    if (s_did[MUSE_DID_4004] != DID_UNPROBED) {
+        return true;
+    }
+    did_reading_t v;
+    bool link;
+    muse_elm_result_t res = did_read(MUSE_DID_4004, &v, &link);
+    bool yes = res == DID_OK[MUSE_DID_4004];
+    s_did[MUSE_DID_4004] = yes ? DID_YES : DID_NO;
+    s_did[MUSE_DID_4005] = s_did[MUSE_DID_4004];
+    set_did_supported(MUSE_DID_4004, yes);
+    if (yes) {
+        ESP_LOGI(TAG, "VSA at DA28 answers: reading DIDs 4004 and 4005");
+        got_did(MUSE_DID_4004, &v);
+    } else {
+        ESP_LOGI(TAG, "VSA at DA28 not answered (%s): not read on this connection",
+                 res == MUSE_ELM_NEGATIVE ? "refused" : res == MUSE_ELM_NO_DATA ? "no data" : "no reply");
+    }
+    return link;
 }
 
 /* A coolant reading, from a single-PID reply or out of a batch: into the
@@ -1243,6 +1329,118 @@ static void log_sample(void)
     muse_obd_log_sample(&st, now_ms());
 }
 
+/* ---- The VSA raw scan (obd.vsa_scan, obd.vsa_raw) ---- */
+
+bool muse_obd_vsa_scan_start(void)
+{
+    if (!s_enabled) {
+        return false;   /* off means no VSA requests, ever */
+    }
+    taskENTER_CRITICAL(&s_status_lock);
+    if (strcmp(s_status.vsa_scan, "running") != 0) {
+        memset(s_scan_raw, 0, sizeof(s_scan_raw));
+        s_scan_idx = 0;
+        s_status.vsa_scan_answered = 0;
+        s_status.vsa_scan = "running";
+    }
+    taskEXIT_CRITICAL(&s_status_lock);
+    if (s_task) {
+        xTaskNotifyGive(s_task);
+    }
+    return true;
+}
+
+int muse_obd_vsa_raw(uint16_t did, muse_vsa_raw_t *out)
+{
+    if (!out) {
+        return -1;
+    }
+    for (int i = 0; i < MUSE_VSA_SCAN_DIDS_N; i++) {
+        if (MUSE_VSA_SCAN_DIDS[i] == did) {
+            taskENTER_CRITICAL(&s_status_lock);
+            *out = s_scan_raw[i];
+            taskEXIT_CRITICAL(&s_status_lock);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static bool vsa_scan_running(void)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    bool running = strcmp(s_status.vsa_scan, "running") == 0;
+    taskEXIT_CRITICAL(&s_status_lock);
+    return running;
+}
+
+/* The link dropped: the scan and what it read were that connection's. */
+static void vsa_scan_reset(void)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    memset(s_scan_raw, 0, sizeof(s_scan_raw));
+    s_scan_idx = 0;
+    s_status.vsa_scan_answered = 0;
+    s_status.vsa_scan = "idle";
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+/*
+ * One scan DID, in its own DA28 header session (did_begin/did_restore, the
+ * VSA rows' headers), its outcome stored for obd.vsa_raw: the positive
+ * reply's bytes, the refusal's code, or a timeout for anything without a
+ * parseable answer. The poll loop calls this once per iteration while a
+ * scan runs, so driving polls keep every other slot at worst. False only
+ * when the link is gone (or the ELM's state couldn't be put back). On a
+ * link that isn't CAN 29-bit there is no DA28 to ask: the scan ends at
+ * once, done with nothing answered.
+ */
+static bool vsa_scan_step(void)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    int idx = s_scan_idx;
+    taskEXIT_CRITICAL(&s_status_lock);
+    if (s_protocol != 7 || idx >= MUSE_VSA_SCAN_DIDS_N) {
+        taskENTER_CRITICAL(&s_status_lock);
+        s_status.vsa_scan = "done";
+        taskEXIT_CRITICAL(&s_status_lock);
+        return true;
+    }
+    static const char HEX[] = "0123456789ABCDEF";
+    uint16_t did = MUSE_VSA_SCAN_DIDS[idx];
+    char req[7] = { '2', '2', HEX[(did >> 12) & 0xF], HEX[(did >> 8) & 0xF], HEX[(did >> 4) & 0xF],
+                    HEX[did & 0xF], '\0' };
+    muse_vsa_raw_t slot = { .kind = MUSE_VSA_RAW_TIMEOUT };
+    uint32_t t0 = now_ms();
+    if (did_begin(MUSE_DID_4004) && elm_cmd(req, CMD_MS)) {
+        int n = 0, nrc = -1;
+        muse_elm_result_t res = muse_elm_parse_did_raw(s_rx.resp, did, slot.bytes, sizeof(slot.bytes), &n, &nrc);
+        if (res == MUSE_ELM_DID_RAW) {
+            slot.kind = MUSE_VSA_RAW_POSITIVE;
+            slot.len = (uint16_t)n;
+        } else if (res == MUSE_ELM_NEGATIVE) {
+            slot.kind = MUSE_VSA_RAW_NEGATIVE;
+            slot.nrc = (uint8_t)(nrc < 0 ? 0 : nrc);
+            slot.len = 0;
+            memset(slot.bytes, 0, sizeof(slot.bytes));
+        }
+    }
+    bool link = did_restore();
+    note_exchange(now_ms() - t0, 0, false);
+    ESP_LOGD(TAG, "vsa scan %04X: kind %d, %u bytes", did, slot.kind, (unsigned)slot.len);
+    taskENTER_CRITICAL(&s_status_lock);
+    s_scan_raw[idx] = slot;
+    if (slot.kind == MUSE_VSA_RAW_POSITIVE) {
+        s_status.vsa_scan_answered++;
+    }
+    if (++s_scan_idx >= MUSE_VSA_SCAN_DIDS_N) {
+        s_status.vsa_scan = "done";
+        ESP_LOGI(TAG, "vsa scan done: %d of %d answered", s_status.vsa_scan_answered, MUSE_VSA_SCAN_DIDS_N);
+    }
+    taskEXIT_CRITICAL(&s_status_lock);
+    return link;
+}
+
 /*
  * The poll loop: response-driven and scheduled (muse_obd_elm.h). Each
  * request is picked and sent the moment the last reply is parsed; there is
@@ -1265,22 +1463,32 @@ static bool poll_rpm(void)
     muse_link_stats_reset(&s_link);
     taskEXIT_CRITICAL(&s_status_lock);
     for (;;) {
+        /* A running VSA scan takes one DID per pass through the loop, in
+         * its own DA28 session, so the driving polls below are never
+         * starved by it. */
+        if (vsa_scan_running() && !vsa_scan_step()) {
+            return answered;
+        }
         muse_sched_req_t req;
         muse_sched_pick(&s_sched, now_ms(), &req);
         if (req.did) {
-            /* Every due DID in one header session, the picked one first: the
-             * ATSH/ATCRA setup and restore are paid once per session, not per
-             * DID. A failed or short read leaves the last reading to age
-             * out: never a stale "on", never a made-up count. */
+            /* Every due DID of the picked one's ECU in one header session,
+             * the picked one first: the ATSH/ATCRA setup and restore are
+             * paid once per session, not per DID, and a session never
+             * carries the other ECU's DID (DA10's three group together,
+             * DA28's pair together). A failed or short read leaves the
+             * last reading to age out: never a stale "on", never a
+             * made-up count. */
             muse_did_t due[MUSE_DIDS];
             int n_due = 0;
             due[n_due++] = (muse_did_t)req.which;
             for (int d = 0; d < MUSE_DIDS; d++) {
-                if (d != (int)req.which && muse_sched_did_due(&s_sched, (muse_did_t)d, now_ms())) {
+                if (d != (int)req.which && muse_sched_did_due(&s_sched, (muse_did_t)d, now_ms())
+                    && strcmp(MUSE_DID_INFO[d].atsh, MUSE_DID_INFO[req.which].atsh) == 0) {
                     due[n_due++] = (muse_did_t)d;
                 }
             }
-            bool began = did_begin();
+            bool began = did_begin((muse_did_t)req.which);
             for (int i = 0; i < n_due; i++) {
                 muse_did_t d = due[i];
                 did_reading_t v;
@@ -1444,6 +1652,7 @@ static void drop(void)
     taskENTER_CRITICAL(&s_status_lock);
     muse_misfire_reset(&s_misfire);   /* the next connection's first read is a baseline */
     taskEXIT_CRITICAL(&s_status_lock);
+    vsa_scan_reset();   /* the scan's results were this connection's */
     set_link_down();
 }
 

@@ -418,6 +418,8 @@ void muse_obd_log_sample_of(const muse_obd_status_t *st, uint32_t ms, muse_log_s
     out->value[MUSE_LOG_AC_CLUTCH] = st->ac_clutch.value != 0;
     out->has[MUSE_LOG_GENERATOR] = st->generator_pct.valid;
     out->value[MUSE_LOG_GENERATOR] = st->generator_pct.value;
+    out->has[MUSE_LOG_BRAKE_P] = st->vsa_brk_p.valid;
+    out->value[MUSE_LOG_BRAKE_P] = st->vsa_brk_p.value;
 }
 
 void muse_obd_log_trip_start(const muse_obd_status_t *st, uint8_t did_2612, uint32_t now_ms)

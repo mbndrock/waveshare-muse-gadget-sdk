@@ -1274,8 +1274,10 @@ static void test_protocol(void)
  * as the S2000's ECU pads. */
 static char *elm_bytes(char *out, size_t cap, const uint8_t *b, size_t n)
 {
-    /* At most 64 bytes: 10 frames, <= 17 chars each, length + prompt + NUL < 180. */
-    if (n > 64 || cap < 180) {
+    /* At most 128 bytes: 19 frames, <= 17 chars each, plus the length
+     * line, the prompt and the NUL. */
+    size_t frames = n <= 6 ? 1 : 1 + (n - 6 + 6) / 7;
+    if (n > 128 || cap < 4 + frames * 17 + 3) {
         abort();
     }
     size_t at = 0;
@@ -1428,6 +1430,156 @@ static void test_did_cards_parse(void)
     CHECK(muse_elm_parse_did_2663(fed(broken), &m) == MUSE_ELM_ERROR);
     CHECK(muse_elm_parse_did_2610("", &a) == MUSE_ELM_NONE);
     CHECK(muse_elm_parse_did_2663("41 0C 1A F8\n", &m) == MUSE_ELM_NONE);
+}
+
+/* OBD-STEERING-ANGLE-TASK Phase 1: the VSA (DA28) decodes, the raw reply
+ * the scan stores, its DID list, and the 500 ms schedule tier. The 4004 /
+ * 4005 layouts are OBDb's for other Hondas — provisional until the car —
+ * so these blocks are built from the spec's offsets, not captured frames. */
+static void test_vsa_parse(void)
+{
+    char text[512];
+    muse_vsa_4004_t s;
+    muse_vsa_4005_t p;
+
+    /* The generalised table: five DIDs, two header sessions, the floors. */
+    CHECK(MUSE_DID_INFO[MUSE_DID_4004].did == 0x4004 && !strcmp(MUSE_DID_INFO[MUSE_DID_4004].req, "224004"));
+    CHECK(MUSE_DID_INFO[MUSE_DID_4005].did == 0x4005 && !strcmp(MUSE_DID_INFO[MUSE_DID_4005].req, "224005"));
+    CHECK(MUSE_DID_INFO[MUSE_DID_4004].min_data == 16 && MUSE_DID_INFO[MUSE_DID_4005].min_data == 9);
+    CHECK(MUSE_DID_INFO[MUSE_DID_4004].min_ms == 500 && MUSE_DID_INFO[MUSE_DID_4005].min_ms == 500);
+    for (int d = 0; d < MUSE_DID_4004; d++) {
+        CHECK(!strcmp(MUSE_DID_INFO[d].atsh, "ATSHDA10F1") && !strcmp(MUSE_DID_INFO[d].atcra, "ATCRA18DAF110"));
+    }
+    for (int d = MUSE_DID_4004; d < MUSE_DIDS; d++) {
+        CHECK(!strcmp(MUSE_DID_INFO[d].atsh, "ATSHDA28F1") && !strcmp(MUSE_DID_INFO[d].atcra, "ATCRA18DAF128"));
+    }
+    /* Every request in the table is a UDS 0x22 read, nothing else. */
+    for (int d = 0; d < MUSE_DIDS; d++) {
+        CHECK(!strncmp(MUSE_DID_INFO[d].req, "22", 2) && strlen(MUSE_DID_INFO[d].req) == 6);
+    }
+
+    /* The brake switch is data byte 15's 0x80, and only that bit. */
+    uint8_t b[96];
+    did_block(b, 0x4004, 3 + 20);
+    b[3 + 15] = 0x80;
+    CHECK(muse_elm_parse_vsa_4004(fed(elm_bytes(text, sizeof(text), b, 3 + 20)), &s) == MUSE_ELM_DID_4004 && s.brk);
+    b[3 + 15] = 0x7F;
+    b[3 + 14] = b[3 + 16] = 0x80;
+    CHECK(muse_elm_parse_vsa_4004(fed(elm_bytes(text, sizeof(text), b, 3 + 20)), &s) == MUSE_ELM_DID_4004 && !s.brk);
+    /* 16 data bytes are enough, 15 are not (and the last reading stands). */
+    did_block(b, 0x4004, 3 + 16);
+    b[3 + 15] = 0x80;
+    CHECK(muse_elm_parse_vsa_4004(fed(elm_bytes(text, sizeof(text), b, 3 + 16)), &s) == MUSE_ELM_DID_4004 && s.brk);
+    s.brk = false;
+    CHECK(muse_elm_parse_vsa_4004(fed(elm_bytes(text, sizeof(text), b, 3 + 15)), &s) == MUSE_ELM_NONE && !s.brk);
+    /* The VSA block sizes are unknown (the scan stores up to 128 reply
+     * bytes): a block longer than the DA10 parsers' 64 still reads. */
+    did_block(b, 0x4004, 3 + 80);
+    b[3 + 15] = 0x80;
+    CHECK(muse_elm_parse_vsa_4004(fed(elm_bytes(text, sizeof(text), b, 3 + 80)), &s) == MUSE_ELM_DID_4004 && s.brk);
+    did_block(b, 0x4005, 3 + 80);
+    b[3 + 7] = 0x80;
+    b[3 + 8] = 0x00;
+    CHECK(muse_elm_parse_vsa_4005(fed(elm_bytes(text, sizeof(text), b, 3 + 80)), &p) == MUSE_ELM_DID_4005
+          && p.brake_p == 4750);
+
+    /* The pressure scale: -25..120 bar linear over the raw count. */
+    CHECK(muse_vsa_brake_centibar(0) == -2500);
+    CHECK(muse_vsa_brake_centibar(0xFFFF) == 12000);
+    CHECK(muse_vsa_brake_centibar(0x8000) == 4750);
+    CHECK(muse_vsa_brake_centibar(11299) == 0 || muse_vsa_brake_centibar(11299) == 1);
+    /* Big-endian at data bytes 7-8; the bytes either side play no part. */
+    did_block(b, 0x4005, 3 + 12);
+    b[3 + 7] = 0x80;
+    b[3 + 8] = 0x00;
+    b[3 + 6] = b[3 + 9] = 0xEE;
+    CHECK(muse_elm_parse_vsa_4005(fed(elm_bytes(text, sizeof(text), b, 3 + 12)), &p) == MUSE_ELM_DID_4005
+          && p.brake_p == 4750);
+    /* 9 data bytes are enough, 8 are not. */
+    CHECK(muse_elm_parse_vsa_4005(fed(elm_bytes(text, sizeof(text), b, 3 + 9)), &p) == MUSE_ELM_DID_4005
+          && p.brake_p == 4750);
+    p.brake_p = 999;
+    CHECK(muse_elm_parse_vsa_4005(fed(elm_bytes(text, sizeof(text), b, 3 + 8)), &p) == MUSE_ELM_NONE
+          && p.brake_p == 999);
+    /* Each block is nobody else's. */
+    muse_did_2610_t a;
+    muse_did_2663_t m;
+    muse_vtec_did_t v;
+    CHECK(muse_elm_parse_vsa_4004(fed(elm_bytes(text, sizeof(text), b, 3 + 12)), &s) == MUSE_ELM_NONE);
+    did_block(b, 0x4004, 3 + 20);
+    CHECK(muse_elm_parse_vsa_4005(fed(elm_bytes(text, sizeof(text), b, 3 + 20)), &p) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_vtec_did(fed(elm_bytes(text, sizeof(text), b, 3 + 20)), &v) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_did_2610(fed(elm_bytes(text, sizeof(text), b, 3 + 20)), &a) == MUSE_ELM_NONE);
+    CHECK(muse_elm_parse_did_2663(fed(elm_bytes(text, sizeof(text), b, 3 + 20)), &m) == MUSE_ELM_NONE);
+
+    /* Refused, silent, garbled, as for the DA10 blocks. */
+    CHECK(muse_elm_parse_vsa_4004("7F2231\n", &s) == MUSE_ELM_NEGATIVE);
+    CHECK(muse_elm_parse_vsa_4005("7F 22 14\n", &p) == MUSE_ELM_NEGATIVE);
+    CHECK(muse_elm_parse_vsa_4004("NO DATA\n", &s) == MUSE_ELM_NO_DATA);
+    CHECK(muse_elm_parse_vsa_4005("CAN ERROR\n", &p) == MUSE_ELM_ERROR);
+    CHECK(muse_elm_parse_vsa_4004("", &s) == MUSE_ELM_NONE);
+
+    /* The scan's raw read: the reply's bytes out, the refusal's code out. */
+    uint8_t raw[128];
+    int n = 0, nrc = 99;
+    did_block(b, 0x4031, 3 + 5);
+    b[3] = 0x12, b[4] = 0x34, b[5] = 0x56, b[6] = 0x78, b[7] = 0x9A;
+    CHECK(muse_elm_parse_did_raw(fed(elm_bytes(text, sizeof(text), b, 3 + 5)), 0x4031, raw, sizeof(raw), &n, &nrc)
+          == MUSE_ELM_DID_RAW);
+    CHECK(n == 8 && raw[0] == 0x62 && raw[1] == 0x40 && raw[2] == 0x31 && raw[3] == 0x12 && raw[7] == 0x9A);
+    CHECK(muse_elm_parse_did_raw(fed(elm_bytes(text, sizeof(text), b, 3 + 5)), 0x4032, raw, sizeof(raw), &n, &nrc)
+          == MUSE_ELM_NONE);
+    nrc = -1;
+    CHECK(muse_elm_parse_did_raw("7F2231\n", 0x4031, raw, sizeof(raw), &n, &nrc) == MUSE_ELM_NEGATIVE && nrc == 0x31);
+    CHECK(muse_elm_parse_did_raw("NO DATA\n", 0x4031, raw, sizeof(raw), &n, &nrc) == MUSE_ELM_NO_DATA && nrc == -1);
+    CHECK(muse_elm_parse_did_raw("CAN ERROR\n", 0x4031, raw, sizeof(raw), &n, &nrc) == MUSE_ELM_ERROR);
+    /* A reply longer than the slot does not add up: no reading. */
+    did_block(b, 0x4031, 3 + 20);
+    CHECK(muse_elm_parse_did_raw(fed(elm_bytes(text, sizeof(text), b, 3 + 20)), 0x4031, raw, 10, &n, &nrc)
+          == MUSE_ELM_NONE);
+
+    /* The scan list: OBDb's DA28 space, in order, nothing twice. */
+    static const uint16_t WANT[] = { 0x4000, 0x4001, 0x4002, 0x4003, 0x4004, 0x4005, 0x4006, 0x4007, 0x4008, 0x4009,
+                                     0x4030, 0x4031, 0x4032, 0x4033, 0x4034, 0x4035, 0x4036, 0x4037, 0x4038, 0x4039,
+                                     0x4070, 0x4071, 0x4072, 0x4073, 0xE600, 0xE602 };
+    CHECK(MUSE_VSA_SCAN_DIDS_N == (int)(sizeof(WANT) / sizeof(WANT[0])));
+    CHECK(!memcmp(MUSE_VSA_SCAN_DIDS, WANT, sizeof(WANT)));
+
+    /* The 500 ms tier: with only the VSA pair on, each is picked on its
+     * floor (never inside it, the probe counting as a read), the pair is
+     * due together for its grouped session, and no DA10 DID ever is. */
+    muse_elm_support_t sup = { 0 };
+    muse_sched_t sc;
+    muse_sched_init(&sc, &sup, (1u << MUSE_DID_4004) | (1u << MUSE_DID_4005), 1000);
+    CHECK(!muse_sched_did_due(&sc, MUSE_DID_4004, 1499));
+    CHECK(muse_sched_did_due(&sc, MUSE_DID_4004, 1500) && muse_sched_did_due(&sc, MUSE_DID_4005, 1500));
+    CHECK(!muse_sched_did_due(&sc, MUSE_DID_2612, 100000));   /* never probed on: never due */
+    int picks[MUSE_DIDS] = { 0 };
+    uint32_t done[MUSE_DIDS] = { 0 };
+    for (int d = 0; d < MUSE_DIDS; d++) {
+        done[d] = 1000;   /* each DID's floor runs from its probe at 1000 */
+    }
+    muse_sched_req_t r;
+    for (uint32_t t = 1000; t < 11000;) {
+        muse_sched_pick(&sc, t, &r);
+        if (r.did) {
+            CHECK(r.which == MUSE_DID_4004 || r.which == MUSE_DID_4005);
+            CHECK(t - done[r.which] >= 500);   /* the floor holds */
+            picks[r.which]++;
+            t += 100;
+            muse_sched_done_did(&sc, (muse_did_t)r.which, t);
+            done[r.which] = t;
+        } else {
+            t += 50;
+            serve(&sc, &r, t);
+        }
+    }
+    CHECK(picks[MUSE_DID_4004] >= 15 && picks[MUSE_DID_4005] >= 15);
+    CHECK(picks[MUSE_DID_2612] == 0 && picks[MUSE_DID_2610] == 0 && picks[MUSE_DID_2663] == 0);
+    /* Off in the schedule (probe failed): never picked, however late. */
+    muse_sched_init(&sc, &sup, 0, 1000);
+    muse_sched_pick(&sc, 100000, &r);
+    CHECK(!r.did);
 }
 
 /* The misfire warning's trigger, read by read. */
@@ -1611,6 +1763,7 @@ int main(void)
     test_batch_parse();
     test_scheduler();
     test_did_cards_parse();
+    test_vsa_parse();
     test_misfire_trigger();
     test_did_schedule();
     test_link_stats();

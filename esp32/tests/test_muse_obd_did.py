@@ -117,31 +117,42 @@ class MuseObdDidContractTest(unittest.TestCase):
     def test_exchange_is_read_only_and_puts_the_state_back(self):
         obd = (MUSE / "muse_obd.c").read_text()
         read = function_body(obd, "static muse_elm_result_t did_read(")
-        begin = function_body(obd, "static bool did_begin(void)")
-        self.assertIn('elm_cmd("ATSHDA10F1", CMD_MS)', begin)
-        self.assertIn('elm_cmd("ATCRA18DAF110", CMD_MS)', begin)
+        # OBD-STEERING-ANGLE-TASK generalises the session: did_begin takes
+        # the DID and sends its ECU's header pair from the table, so the
+        # header literals live in muse_obd_elm.c (checked below), nowhere else.
+        begin = function_body(obd, "static bool did_begin(muse_did_t d)")
+        self.assertIn("elm_cmd(MUSE_DID_INFO[d].atsh, CMD_MS)", begin)
+        self.assertIn("elm_cmd(MUSE_DID_INFO[d].atcra, CMD_MS)", begin)
+        elm = (MUSE / "muse_obd_elm.c").read_text()
+        self.assertIn('#define DID_HDR_DA10 "ATSHDA10F1", "ATCRA18DAF110"', elm)
+        self.assertIn('#define DID_HDR_DA28 "ATSHDA28F1", "ATCRA18DAF128"', elm)
+        self.assertEqual(set(re.findall(r'AT(?:SH|CRA)[0-9A-F]+', elm)),
+                         {"ATSHDA10F1", "ATCRA18DAF110", "ATSHDA28F1", "ATCRA18DAF128"})
         ask = function_body(obd, "static muse_elm_result_t did_ask(")
         self.assertIn("elm_cmd(MUSE_DID_INFO[d].req, CMD_MS)", ask)   # OBD-DID-CARDS-TASK: one table
         self.assertIn("*link = did_restore();", read)   # whatever happened before it
         # Every DID the table asks is a UDS 0x22 read (ReadDataByIdentifier):
-        # 2612, 2610 and 2663, nothing else.
+        # 2612, 2610, 2663 and the VSA pair 4004/4005, nothing else.
         header = (MUSE / "muse_obd_elm.h").read_text()
         reqs = dict(re.findall(r'#define (MUSE_\w+_REQ) "([0-9A-F]+)"', header))
         self.assertEqual(reqs, {"MUSE_VTEC_DID_REQ": "222612", "MUSE_DID_2610_REQ": "222610",
-                                "MUSE_DID_2663_REQ": "222663"})
-        table = (MUSE / "muse_obd_elm.c").read_text()
-        table = table[table.index("const muse_did_info_t MUSE_DID_INFO[MUSE_DIDS] = {"):]
+                                "MUSE_DID_2663_REQ": "222663", "MUSE_DID_4004_REQ": "224004",
+                                "MUSE_DID_4005_REQ": "224005"})
+        table = elm[elm.index("const muse_did_info_t MUSE_DID_INFO[MUSE_DIDS] = {"):]
         table = table[:table.index("};")]
         self.assertEqual(re.findall(r"(MUSE_\w+_REQ)", table), ["MUSE_VTEC_DID_REQ", "MUSE_DID_2610_REQ",
-                                                               "MUSE_DID_2663_REQ"])
+                                                               "MUSE_DID_2663_REQ", "MUSE_DID_4004_REQ",
+                                                               "MUSE_DID_4005_REQ"])
         restore = function_body(obd, "static bool did_restore(void)")
         self.assertIn('elm_cmd("ATAR", CMD_MS)', restore)
         self.assertIn('elm_cmd("ATSHDB33F1", CMD_MS)', restore)
         self.assertIn('#define MUSE_VTEC_DID_REQ "222612"', (MUSE / "muse_obd_elm.h").read_text())
-        # Every command the task sends: ELM setup, Mode 01 PIDs, and the one
-        # 0x22 read. Nothing that writes to, resets or unlocks the car.
+        # Every command literal the task sends: ELM setup and the session
+        # restore (the per-ECU headers come from the table, the 0x22 reads
+        # from the table and the scan). Nothing that writes to, resets or
+        # unlocks the car.
         sent = set(re.findall(r'elm_cmd\("([^"]+)"', obd))
-        self.assertEqual(sent, {"ATDPN", "ATAR", "ATSHDB33F1", "ATSHDA10F1", "ATCRA18DAF110", "ATAT2"})
+        self.assertEqual(sent, {"ATDPN", "ATAR", "ATSHDB33F1", "ATAT2"})
         # ATST's byte varies, so the command is built into a buffer by
         # apply_atst(), never sent as a literal; the batch's Mode 01 string
         # is built the same way in the poll loop.

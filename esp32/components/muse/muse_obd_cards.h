@@ -26,8 +26,10 @@
  * (DID 0x2610: ON, OFF or "--"). "Engine": RPM, timing advance beside the
  * air-fuel ratio, load beside MAP, and the four cylinders' misfire counts
  * (DID 0x2663, "--" until the first read, amber while a count went up on the
- * latest read). "Drive": speed (km/h and mph), throttle beside fuel level,
- * short- and long-term fuel trim.
+ * latest read). "Drive": speed (km/h and mph), brake pressure (VSA DID
+ * 0x4005) beside throttle, fuel level beside short-term fuel trim, and
+ * long-term fuel trim. The BRAKE cell appears only once the DA28 presence
+ * probe has confirmed the VSA unit, and reads "--" until its first read.
  *
  * A reading keeps its full colour until it is replaced (no stale dimming);
  * one not received yet reads "...", and one the support scan proved

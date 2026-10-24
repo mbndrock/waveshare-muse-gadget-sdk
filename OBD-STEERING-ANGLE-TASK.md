@@ -133,4 +133,125 @@ session group rather than paying for its own header setup.
 
 ## Results
 
-(to be filled by the builder, with Muse's QA appended)
+Built by Muse Code; the first run was killed by a VM restart ~47 minutes
+in with nothing committed, and a second run audited its working tree item by
+item against this spec, finished it, and committed.
+
+**State of the inherited work.** Essentially complete. All seven Phase 1
+items were implemented in the tree and the full host suite already passed
+on it as inherited (737 tests, 0 failures, the 6 known cJSON-environment
+errors, 10 skips). The audit found one defect worth fixing and made that
+one change (plus its test); everything else was verified as built and
+committed as the first run left it.
+
+**What was built** (by spec item; `CLAUDE.md`'s VSA bullets are the
+architecture record):
+
+1. Generalised DID sessions: `MUSE_DID_INFO` rows carry their ECU's
+   (tx header, rx filter); `did_begin(d)` sends them. DA10's three DIDs and
+   DA28's two group only within their own ECU's session (grouping keyed on
+   the row's `atsh`), one restore (`ATAR`, `ATSHDB33F1`) per session, one
+   request outstanding, read-only 0x22 throughout. OBD off means no VSA
+   traffic: the poll loop stops, and `obd.vsa_scan` is refused outright.
+2. Presence probe: `probe_vsa()`, once per connection inside `probe_did()`
+   after the DA10 probes (so the first-RPM protocol retry covers it),
+   protocol 7 only, one DA28 session reading DID 4004. A parseable positive
+   records `vsa = 1` and schedules both VSA DIDs (4005 is not separately
+   probed). Refused (a well-formed negative still records the verdict),
+   silent or garbled records `vsa = 0` and neither DID is asked again on
+   that connection; `-1`/null while no connection has asked. The verdict
+   survives a drop like `did_2612`; the readings clear. One interpretation
+   to note: the spec said "any parseable reply" records the answered
+   state; as built, a negative records `vsa = false` (the verdict is kept,
+   per-connection, no retry) and only a positive starts polling — the
+   `did_2612` pattern.
+3. Raw scan: `obd.vsa_scan {}` (refused while OBD is off) runs
+   `MUSE_VSA_SCAN_DIDS` (4000-4009, 4030-4039, 4070-4073, E600, E602; 26
+   DIDs) at DA28, one DID per poll-loop pass in its own header session
+   (`vsa_scan_step`, `muse_elm_parse_did_raw`, replies up to 128 bytes),
+   storing positive bytes / the refusal's NRC / timeout per DID.
+   `obd.vsa_raw {did}` takes a hex string or a number and returns one
+   stored outcome (`result`, `nrc`, `bytes`, `hex`). `obd.read`'s
+   `vsa_scan` is `{state: idle|running|done, answered, total}` (answered
+   counts positives). A dropped link forgets the scan and its results; a
+   non-CAN-29 link ends it done with nothing answered. The scan makes
+   progress only while the link polls.
+4. Provisional decodes in `obd.read` (and `>obd` on the console):
+   `vsa_brk_sw` (4004 data byte 15 mask 0x80, needs >= 16 data bytes) and
+   `vsa_brk_p` (4005 data bytes 7-8 big-endian, needs >= 9; bar, 2
+   decimals), each with its `_age_ms`, plus `vsa` (true/false/null).
+   Scaling: `muse_vsa_brake_centibar` maps the raw count linearly over
+   OBDb's -25..120 bar range, so raw 0 is -25.00 bar and 0 bar sits at raw
+   11299 — provisional like the layouts, to be confirmed by Derek's pedal
+   press.
+5. Scheduled VSA polling: once presence is confirmed, 4004+4005 join the
+   scheduler on a 500 ms floor, grouped in one DA28 session with the most
+   overdue first; nothing before confirmation, nothing while OBD is off.
+6. Drive card BRAKE cell (final layout): halves pair BRAKE/THROTTLE then
+   FUEL/STFT, with LTFT a lone half in its own row, so Drive is five
+   height units where it was four. `fit_font` steps Drive's bar cells
+   (BRAKE, THROTTLE, FUEL) to the ladder's 28 minimum; SPEED keeps 48 and
+   the trims 40. BRAKE reads tenths of a bar (`47.5`, negatives as `-2.5`)
+   with a thin 0-120 bar gauge. It is hidden until `vsa` is confirmed and
+   reads `--` until the first 4005 read. One deviation from "before that
+   the card is exactly as today": pairing is build-time, so before
+   confirmation the same five values already ride the five-unit layout
+   (THROTTLE stretches BRAKE's row); documented in `CLAUDE.md`. Documented
+   there too that BRAKE/THROTTLE/FUEL sit at the 28 font minimum — the
+   existing ladder minimum, not below it.
+7. Trip CSV: trailing `brake_p` after `generator_pct` (`MUSE_LOG_BRAKE_P`,
+   bar with 2 decimals, empty until the first VSA read; negatives format
+   through the existing signed fixed-point path).
+
+**Fix made in the finishing run.** The two VSA parsers copied the DA10
+parsers' 64-byte reply buffer, but the VSA block sizes are unknown and the
+scan already stores 128: a 4004 reply longer than 64 bytes would have
+parsed as no-reply, the presence probe would record `vsa = false`, and
+polling, the card and the log column would never start even though the
+ECU answered. `muse_elm_parse_vsa_4004/4005` now accept 128-byte replies
+(the 320-char ELM response buffer remains the real ceiling, as it already
+was for the scan; only the parser stops being the tighter limit). The elm
+harness's `test_vsa_parse` gains 83-byte 4004/4005 blocks, and its
+`elm_bytes` renderer now sizes its abort bound from the frame count
+instead of a flat 64-byte cap.
+
+**`esp32/main/noise_control.cpp` verdict: keep — it is required by this
+build.** That file's `build_register_json` is where every `obd.*` Link
+command is advertised to the Muse app: the change registers the two new
+commands (`obd.vsa_scan`, `obd.vsa_raw` with its `did` parameter) and
+extends `obd.read`'s description with `vsa`, `vsa_brk_sw`, `vsa_brk_p` and
+`vsa_scan`. Without it the commands in `app.c` would be unreachable from
+the app. It is not compiled by the host suite, so its wording was checked
+by eye against the neighbouring registrations.
+
+**Tests.** New: `esp32/tests/test_muse_obd_vsa.py` (8 tests — decodes,
+generalised sessions, presence probe, scan commands, obd.read/console,
+BRAKE cell, trip column, invariants) and the elm harness's `test_vsa_parse`;
+`muse_obd_enable_harness.c` grows a fake DA28 ECU (session choreography,
+grouping, probe-failure once per connection, kill switch). Existing tests
+adapted only where the design changed: `test_muse_obd_did.py` and
+`test_muse_obd_did_cards.py` now pin the per-ECU header literals in
+`muse_obd_elm.c` instead of inside `did_begin`; `test_muse_obd_more_pids.py`
+expects `MUSE_SCHED_ITEMS 22` and Drive at 5 height units; the log tests
+expect the trailing `brake_p` column. No test was weakened or deleted.
+
+Full host suite (`python3 -m unittest discover -s tests -p "test_*.py"`
+from `esp32/`): **737 tests, 0 failures, 6 errors, 10 skips** — the 6 are
+the known cJSON-environment errors (no `managed_components` in this VM),
+unchanged from baseline. That's 729 baseline + 8 new. The one failure
+from the earlier QA round did not reproduce (confirmed flake before this
+run; absent in both full runs here).
+
+**Gates checked here.** `muse_hatch_say` in `muse_obd.c`: 0. Coolant
+defines and reaction paths untouched (no coolant lines in the diff;
+FIRE 105 / REARM 100 / SUSTAIN 5000 / COOLDOWN 120 s verified in place).
+`partitions.csv` and `secrets/` untouched. Every DID request in the table
+is a `22xxxx` read; no 0x10 session control anywhere in the diff. New
+snprintf/hex code in `app.c`, `muse_input.c` and `muse_obd_cards.c`
+checked by hand for provable sizing (they are not host-compiled).
+
+**Not verifiable from here.** The Mac build (the `app.c` / settings /
+cards / `noise_control.cpp` compile gate, `-Werror=format-truncation`) and
+the real car: DA28 presence on the 2008's VSA unit, the brake-pedal flip
+confirming the 4004/4005 layouts, and the three-position raw scan that
+unblocks Phase 2. Phase 2 (steering decode) is not in this build.

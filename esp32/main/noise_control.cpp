@@ -1559,6 +1559,12 @@ static char *build_register_json(void) {
                 "per-cylinder misfire counts, ac_clutch (1/0) and "
                 "generator_pct come from DID 2610, and did_2610 and "
                 "did_2663 say whether the ECU answers those. "
+                "vsa says whether the VSA modulator at DA28 answered its "
+                "presence probe (null until a connection asks); "
+                "vsa_brk_sw (1/0, brake pedal pressed) and vsa_brk_p "
+                "(brake pressure in bar) are its provisional DID 4004/4005 "
+                "readings, and vsa_scan reports the raw scan's state "
+                "(idle/running/done) and how many of its DIDs answered. "
                 "log_* fields describe the trip log; "
                 "log_pending counts trips waiting to be pulled. link "
                 "reports the poll link's numbers for this connection: "
@@ -1587,6 +1593,25 @@ static char *build_register_json(void) {
         add_command(commands, "obd.trip_delete",
                     "Delete a trip after its bytes and crc32 were verified. "
                     "The gadget never deletes trips itself.",
+                    required, nullptr);
+    }
+    add_command(commands, "obd.vsa_scan",
+                "Start a raw read-only scan of the VSA modulator's DID "
+                "space at DA28 (4000-4009, 4030-4039, 4070-4073, E600, "
+                "E602), one DID per poll gap while the OBD link polls. "
+                "Returns {vsa_scan: {state, answered, total}}; poll "
+                "obd.read's vsa_scan until state is done, then pull each "
+                "DID with obd.vsa_raw.",
+                nullptr, nullptr);
+    {
+        cJSON *required = cJSON_CreateObject();
+        cJSON_AddItemToObject(required, "did",
+                              string_param("Scan DID as hex, e.g. \"4004\" or \"E600\"."));
+        add_command(commands, "obd.vsa_raw",
+                    "One VSA scan DID's stored outcome: {did, result "
+                    "(positive/negative/timeout/none), nrc (the refusal "
+                    "code or null), bytes, hex (the positive reply's "
+                    "bytes, 62 <did> first, or null)}.",
                     required, nullptr);
     }
 #endif

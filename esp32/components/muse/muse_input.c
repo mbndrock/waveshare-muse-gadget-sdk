@@ -882,6 +882,14 @@ static void print_obd(void)
            obd_number(sol_age, sizeof(sol_age), st.ac_clutch.valid, st.ac_clutch.age_ms),
            obd_number(psw, sizeof(psw), st.generator_pct.valid, st.generator_pct.value),
            obd_number(psw_age, sizeof(psw_age), st.generator_pct.valid, st.generator_pct.age_ms));
+    printf(",\"vsa\":%s,\"vsa_brk_sw\":%s,\"vsa_brk_sw_age_ms\":%s,\"vsa_brk_p\":%s,\"vsa_brk_p_age_ms\":%s,"
+           "\"vsa_scan\":\"%s\",\"vsa_scan_answered\":%d",
+           st.vsa > 0 ? "true" : st.vsa == 0 ? "false" : "null",
+           obd_number(sol, sizeof(sol), st.vsa_brk_sw.valid, st.vsa_brk_sw.value),
+           obd_number(sol_age, sizeof(sol_age), st.vsa_brk_sw.valid, st.vsa_brk_sw.age_ms),
+           obd_fixed(psw, sizeof(psw), st.vsa_brk_p.valid, st.vsa_brk_p.value, 2),
+           obd_number(psw_age, sizeof(psw_age), st.vsa_brk_p.valid, st.vsa_brk_p.age_ms),
+           st.vsa_scan, st.vsa_scan_answered);
     printf(",\"log_card\":%s,\"log_flash\":%s,\"log_store\":%s%s%s,\"log_active\":%s,\"log_trip\":%s,"
            "\"log_pending\":%lu,\"log_dropped\":%lu,\"log_full\":%s",
            st.log_card ? "true" : "false", st.log_flash ? "true" : "false", st.log_store ? "\"" : "",

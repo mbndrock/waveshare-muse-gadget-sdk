@@ -167,8 +167,9 @@ class MuseObdDidCardsTest(unittest.TestCase):
     def test_trip_log_columns(self):
         store = (MUSE / "muse_obd_log_store.c").read_text()
         cols = re.findall(r'\[MUSE_LOG_\w+\] = "(\w+)",', store)
-        self.assertEqual(cols[-7:], ["baro_kpa", "misfire_1", "misfire_2", "misfire_3", "misfire_4", "ac_clutch",
-                                     "generator_pct"])
+        # OBD-STEERING-ANGLE-TASK appends brake_p after generator_pct.
+        self.assertEqual(cols[-8:], ["baro_kpa", "misfire_1", "misfire_2", "misfire_3", "misfire_4", "ac_clutch",
+                                     "generator_pct", "brake_p"])
         log = (MUSE / "muse_obd_log.c").read_text()
         sample = function_body(log, "void muse_obd_log_sample_of(")
         self.assertIn("out->has[MUSE_LOG_MISFIRE_1 + c] = st->misfire[c].valid;", sample)
@@ -185,8 +186,10 @@ class MuseObdDidCardsTest(unittest.TestCase):
                        "#define MUSE_WARMUP_COLD_C 70", "#define MUSE_VTEC_FRESH_MS 3000u"):
             self.assertIn(define, elm)
         # Nothing but reads go to the car: every request string is a 22 or Mode 01.
+        # (OBD-STEERING-ANGLE-TASK moved the per-ECU header literals into the
+        # elm table; test_muse_obd_did.py pins those.)
         sent = set(re.findall(r'elm_cmd\("([^"]+)"', obd))
-        self.assertEqual(sent, {"ATDPN", "ATAR", "ATSHDB33F1", "ATSHDA10F1", "ATCRA18DAF110", "ATAT2"})
+        self.assertEqual(sent, {"ATDPN", "ATAR", "ATSHDB33F1", "ATAT2"})
         for path in (MUSE / "muse_obd.c", MUSE / "muse_obd.h", MUSE / "muse_obd_elm.c", MUSE / "muse_obd_elm.h",
                      MUSE / "muse_obd_cards.c", MUSE / "muse_obd_cards.h", MUSE / "muse_obd_log_store.c",
                      ROOT / "tests/did_cards_frames.h"):

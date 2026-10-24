@@ -431,10 +431,24 @@ void muse_elm_protocol_name(int protocol, char *buf, size_t cap)
     }
 }
 
+/* The two ECUs' header sessions: the engine ECU by physical address
+ * (DA10F1, replies from 18DAF110) and the VSA modulator-control unit
+ * (DA28F1, replies from 18DAF128). */
+#define DID_HDR_DA10 "ATSHDA10F1", "ATCRA18DAF110"
+#define DID_HDR_DA28 "ATSHDA28F1", "ATCRA18DAF128"
+
 const muse_did_info_t MUSE_DID_INFO[MUSE_DIDS] = {
-    [MUSE_DID_2612] = { 0x2612, MUSE_VTEC_DID_REQ, MUSE_VTEC_DID_LEN - 3, MUSE_SCHED_DID_MIN_MS },
-    [MUSE_DID_2610] = { 0x2610, MUSE_DID_2610_REQ, MUSE_DID_2610_MIN, MUSE_DID_2610_MIN_MS },
-    [MUSE_DID_2663] = { 0x2663, MUSE_DID_2663_REQ, MUSE_DID_2663_MIN, MUSE_DID_2663_MIN_MS },
+    [MUSE_DID_2612] = { 0x2612, MUSE_VTEC_DID_REQ, MUSE_VTEC_DID_LEN - 3, MUSE_SCHED_DID_MIN_MS, DID_HDR_DA10 },
+    [MUSE_DID_2610] = { 0x2610, MUSE_DID_2610_REQ, MUSE_DID_2610_MIN, MUSE_DID_2610_MIN_MS, DID_HDR_DA10 },
+    [MUSE_DID_2663] = { 0x2663, MUSE_DID_2663_REQ, MUSE_DID_2663_MIN, MUSE_DID_2663_MIN_MS, DID_HDR_DA10 },
+    [MUSE_DID_4004] = { 0x4004, MUSE_DID_4004_REQ, MUSE_DID_4004_MIN, MUSE_DID_4004_MIN_MS, DID_HDR_DA28 },
+    [MUSE_DID_4005] = { 0x4005, MUSE_DID_4005_REQ, MUSE_DID_4005_MIN, MUSE_DID_4005_MIN_MS, DID_HDR_DA28 },
+};
+
+const uint16_t MUSE_VSA_SCAN_DIDS[MUSE_VSA_SCAN_DIDS_N] = {
+    0x4000, 0x4001, 0x4002, 0x4003, 0x4004, 0x4005, 0x4006, 0x4007, 0x4008, 0x4009,
+    0x4030, 0x4031, 0x4032, 0x4033, 0x4034, 0x4035, 0x4036, 0x4037, 0x4038, 0x4039,
+    0x4070, 0x4071, 0x4072, 0x4073, 0xE600, 0xE602,
 };
 
 /* The scheduler's items: RPM and the DIDs, then the secondaries in tier
@@ -452,6 +466,8 @@ static const struct {
     { SCHED_DID_PID(MUSE_DID_2612), MUSE_SCHED_DID_MIN_MS, 1 },   /* DID 0x2612, VTEC: 1 s */
     { SCHED_DID_PID(MUSE_DID_2610), MUSE_DID_2610_MIN_MS, 1 },    /* DID 0x2610, A/C clutch: 3 s */
     { SCHED_DID_PID(MUSE_DID_2663), MUSE_DID_2663_MIN_MS, 1 },    /* DID 0x2663, misfires: 3 s */
+    { SCHED_DID_PID(MUSE_DID_4004), MUSE_DID_4004_MIN_MS, 1 },    /* DID 0x4004, VSA brake switch: 500 ms */
+    { SCHED_DID_PID(MUSE_DID_4005), MUSE_DID_4005_MIN_MS, 1 },    /* DID 0x4005, VSA brake pressure: 500 ms */
     { 0x0B, 1000, 2 },     /* fast: MAP */
     { 0x11, 1000, 2 },     /* fast: throttle */
     { 0x04, 1000, 2 },     /* fast: load */
@@ -1077,6 +1093,54 @@ muse_elm_result_t muse_elm_parse_did_2663(const char *resp, muse_did_2663_t *out
         out->count[c] = (uint16_t)(at[0] << 8 | at[1]);
     }
     return MUSE_ELM_DID_2663;
+}
+
+int muse_vsa_brake_centibar(int raw)
+{
+    return (raw * 14500 + 32767) / 65535 - 2500;
+}
+
+muse_elm_result_t muse_elm_parse_vsa_4004(const char *resp, muse_vsa_4004_t *out)
+{
+    /* The VSA block sizes are unknown: accept up to the scan's 128 reply
+     * bytes (the ELM response buffer is the real ceiling either way). */
+    uint8_t b[128];
+    int n = 0;
+    muse_elm_result_t res = did_reply(resp, 0x4004, b, sizeof(b), &n, MUSE_ELM_DID_4004);
+    if (res != MUSE_ELM_DID_4004) {
+        return res;
+    }
+    if (n - 3 < MUSE_DID_4004_MIN) {
+        return MUSE_ELM_NONE;   /* short of the switch's byte: no reading */
+    }
+    out->brk = b[3 + MUSE_DID_4004_BRK] & MUSE_DID_4004_BRK_ON;
+    return MUSE_ELM_DID_4004;
+}
+
+muse_elm_result_t muse_elm_parse_vsa_4005(const char *resp, muse_vsa_4005_t *out)
+{
+    uint8_t b[128];   /* as 4004's, above */
+    int n = 0;
+    muse_elm_result_t res = did_reply(resp, 0x4005, b, sizeof(b), &n, MUSE_ELM_DID_4005);
+    if (res != MUSE_ELM_DID_4005) {
+        return res;
+    }
+    if (n - 3 < MUSE_DID_4005_MIN) {
+        return MUSE_ELM_NONE;   /* short of the pressure's low byte: no reading */
+    }
+    const uint8_t *at = b + 3 + MUSE_DID_4005_PRESS;
+    out->brake_p = muse_vsa_brake_centibar(at[0] << 8 | at[1]);
+    return MUSE_ELM_DID_4005;
+}
+
+muse_elm_result_t muse_elm_parse_did_raw(const char *resp, int did, uint8_t *out, size_t cap, int *n, int *nrc)
+{
+    *nrc = -1;
+    muse_elm_result_t res = did_reply(resp, did, out, cap, n, MUSE_ELM_DID_RAW);
+    if (res == MUSE_ELM_NEGATIVE && *n >= 3) {
+        *nrc = out[2];   /* 7F 22 <NRC>: did_reply left the refusal's bytes in out */
+    }
+    return res;
 }
 
 bool muse_vtec_engaged(bool valid, bool sol, uint32_t age_ms)

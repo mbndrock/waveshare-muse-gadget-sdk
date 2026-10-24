@@ -1954,6 +1954,26 @@ static cJSON *obd_read_command(void) {
                     st.ac_clutch.age_ms, 0);
     add_obd_reading(payload, "generator_pct", "generator_age_ms", st.generator_pct.valid,
                     st.generator_pct.value, st.generator_pct.age_ms, 0);
+    // The VSA modulator at DA28 (provisional Phase 1 decodes): vsa is the
+    // presence probe's verdict, null while no connection has asked.
+    if (st.vsa > 0) {
+        cJSON_AddTrueToObject(payload, "vsa");
+    } else if (st.vsa == 0) {
+        cJSON_AddFalseToObject(payload, "vsa");
+    } else {
+        cJSON_AddNullToObject(payload, "vsa");
+    }
+    add_obd_reading(payload, "vsa_brk_sw", "vsa_brk_sw_age_ms", st.vsa_brk_sw.valid, st.vsa_brk_sw.value,
+                    st.vsa_brk_sw.age_ms, 0);
+    add_obd_reading(payload, "vsa_brk_p", "vsa_brk_p_age_ms", st.vsa_brk_p.valid, st.vsa_brk_p.value,
+                    st.vsa_brk_p.age_ms, 2);
+    cJSON *scan = cJSON_CreateObject();
+    if (scan) {
+        cJSON_AddStringToObject(scan, "state", st.vsa_scan);
+        cJSON_AddNumberToObject(scan, "answered", st.vsa_scan_answered);
+        cJSON_AddNumberToObject(scan, "total", MUSE_VSA_SCAN_TOTAL);
+        cJSON_AddItemToObject(payload, "vsa_scan", scan);
+    }
     // The trip log: where trips go, and how many wait to be pulled
     // (log_pending is the doorbell Muse checks).
     cJSON_AddBoolToObject(payload, "log_card", st.log_card);
@@ -2146,6 +2166,112 @@ static cJSON *obd_trip_delete_command(cJSON *params) {
     cJSON_AddItemToObject(result, "payload", payload);
     return result;
 }
+
+// Ask the OBD task to raw-scan the DA28 DID space (one DID per poll-loop
+// gap while polling). The scan's progress is obd.read's vsa_scan.
+static cJSON *obd_vsa_scan_command(void) {
+    if (!muse_obd_vsa_scan_start()) {
+        return command_error("unavailable", "OBD is turned off in Settings");
+    }
+    muse_obd_status_t st;
+    muse_obd_status(&st);
+    cJSON *result = cJSON_CreateObject();
+    cJSON *payload = cJSON_CreateObject();
+    cJSON *scan = cJSON_CreateObject();
+    if (!result || !payload || !scan) {
+        cJSON_Delete(result);
+        cJSON_Delete(payload);
+        cJSON_Delete(scan);
+        return command_error("out_of_memory", "failed to allocate");
+    }
+    cJSON_AddStringToObject(scan, "state", st.vsa_scan);
+    cJSON_AddNumberToObject(scan, "answered", st.vsa_scan_answered);
+    cJSON_AddNumberToObject(scan, "total", MUSE_VSA_SCAN_TOTAL);
+    cJSON_AddItemToObject(payload, "vsa_scan", scan);
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddItemToObject(result, "payload", payload);
+    return result;
+}
+
+// The "did" param: a hex string ("4004", "E600") or a plain number.
+static bool obd_vsa_did_param(cJSON *params, uint16_t *did) {
+    cJSON *v = params ? cJSON_GetObjectItem(params, "did") : NULL;
+    if (cJSON_IsString(v) && v->valuestring) {
+        const char *s = v->valuestring;
+        size_t n = strlen(s);
+        if (n == 0 || n > 4) return false;
+        uint32_t u = 0;
+        for (size_t i = 0; i < n; i++) {
+            char c = s[i];
+            int d = c >= '0' && c <= '9' ? c - '0'
+                  : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                  : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+            if (d < 0) return false;
+            u = u * 16 + (uint32_t)d;
+        }
+        *did = (uint16_t)u;
+        return true;
+    }
+    uint32_t u;
+    if (obd_uint_param(params, "did", 65535, &u)) {
+        *did = (uint16_t)u;
+        return true;
+    }
+    return false;
+}
+
+// One scan DID's stored outcome: the positive reply as hex, the refusal's
+// code, or a timeout.
+static cJSON *obd_vsa_raw_command(cJSON *params) {
+    if (!params || !cJSON_GetObjectItem(params, "did")) {
+        return command_error("missing_param", "did is required");
+    }
+    uint16_t did;
+    if (!obd_vsa_did_param(params, &did)) {
+        return command_error("invalid_params", "did must be a hex DID like \"4004\"");
+    }
+    muse_vsa_raw_t raw;
+    if (muse_obd_vsa_raw(did, &raw) != 0) {
+        return command_error("invalid_params", "did is not one the VSA scan reads");
+    }
+    cJSON *result = cJSON_CreateObject();
+    cJSON *payload = cJSON_CreateObject();
+    if (!result || !payload) {
+        cJSON_Delete(result);
+        cJSON_Delete(payload);
+        return command_error("out_of_memory", "failed to allocate");
+    }
+    static const char HEX[] = "0123456789ABCDEF";
+    char did_hex[5];
+    for (int i = 0; i < 4; i++) did_hex[i] = HEX[(did >> (12 - 4 * i)) & 0xF];
+    did_hex[4] = '\0';
+    cJSON_AddStringToObject(payload, "did", did_hex);
+    static const char *const KIND[] = { "none", "positive", "negative", "timeout" };
+    unsigned kind = raw.kind < 4 ? raw.kind : 0;
+    cJSON_AddStringToObject(payload, "result", KIND[kind]);
+    if (raw.kind == MUSE_VSA_RAW_NEGATIVE) {
+        cJSON_AddNumberToObject(payload, "nrc", raw.nrc);
+    } else {
+        cJSON_AddNullToObject(payload, "nrc");
+    }
+    if (raw.kind == MUSE_VSA_RAW_POSITIVE) {
+        char hex[2 * MUSE_VSA_RAW_MAX + 1];
+        unsigned n = raw.len <= MUSE_VSA_RAW_MAX ? raw.len : MUSE_VSA_RAW_MAX;
+        for (unsigned i = 0; i < n; i++) {
+            hex[2 * i] = HEX[(raw.bytes[i] >> 4) & 0xF];
+            hex[2 * i + 1] = HEX[raw.bytes[i] & 0xF];
+        }
+        hex[2 * n] = '\0';
+        cJSON_AddNumberToObject(payload, "bytes", n);
+        cJSON_AddStringToObject(payload, "hex", hex);
+    } else {
+        cJSON_AddNumberToObject(payload, "bytes", 0);
+        cJSON_AddNullToObject(payload, "hex");
+    }
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddItemToObject(result, "payload", payload);
+    return result;
+}
 #endif
 
 static cJSON *on_ws_command(
@@ -2241,6 +2367,12 @@ static cJSON *on_ws_command(
     }
     if (strcmp(command, "obd.trip_delete") == 0) {
         return obd_trip_delete_command(params);
+    }
+    if (strcmp(command, "obd.vsa_scan") == 0) {
+        return obd_vsa_scan_command();
+    }
+    if (strcmp(command, "obd.vsa_raw") == 0) {
+        return obd_vsa_raw_command(params);
     }
 #endif
     if (strcmp(command, "device.reset_vm") == 0) {

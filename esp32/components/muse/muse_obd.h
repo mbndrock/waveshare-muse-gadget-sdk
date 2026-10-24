@@ -168,6 +168,18 @@ typedef struct {
     uint8_t misfire_rose;
     muse_obd_reading_t ac_clutch;     /* DID 0x2610's A/C clutch: 1 engaged, 0 not */
     muse_obd_reading_t generator_pct; /* DID 0x2610's generator duty, % */
+    /* The VSA modulator (DA28, OBD-STEERING-ANGLE-TASK Phase 1), probed
+     * once per connection after the DA10 DIDs: vsa is 1 when DID 0x4004
+     * answered, 0 when it was asked and didn't, -1 while no connection has
+     * asked (like did_2612 it keeps the last verdict across a drop). The
+     * readings are provisional (OBDb's layouts for other Hondas) and clear
+     * with the link. vsa_scan is the raw scan's state ("idle", "running"
+     * or "done") and how many of its DIDs answered positively. */
+    int vsa;
+    muse_obd_reading_t vsa_brk_sw;    /* DID 0x4004's brake switch: 1 pressed, 0 not */
+    muse_obd_reading_t vsa_brk_p;     /* DID 0x4005's brake pressure, bar x 100 */
+    const char *vsa_scan;
+    int vsa_scan_answered;
     /* The poll link's numbers (muse_obd_elm.h's muse_link_stats_t), this
      * connection only: they start over with each connection and read as
      * zeroes (and a -1 batch share) while no link is polling. */
@@ -218,3 +230,35 @@ void muse_obd_bench_vtec_sol(bool on);
 /* The support masks in *st prove that Mode 01 `pid` is not supported (the
  * car data cards show "--" for it, and the poll loop never asks). */
 bool muse_obd_pid_unsupported(const muse_obd_status_t *st, int pid);
+
+/*
+ * The VSA raw scan (OBD-STEERING-ANGLE-TASK Phase 1), on demand only: the
+ * DA28 DIDs of MUSE_VSA_SCAN_DIDS (muse_obd_elm.h), read one per poll-loop
+ * gap while the link polls, each in its own DA28 header session, service
+ * 0x22 reads only. muse_obd_vsa_scan_start() asks for a scan (false while
+ * OBD is turned off: off means no VSA requests, ever; true when one is
+ * already running); it makes progress only while polling, and a dropped
+ * link forgets it and its results. obd.read's vsa_scan fields report it.
+ */
+bool muse_obd_vsa_scan_start(void);
+
+#define MUSE_VSA_SCAN_TOTAL 26   /* DIDs a scan reads (MUSE_VSA_SCAN_DIDS_N in muse_obd_elm.h) */
+#define MUSE_VSA_RAW_MAX 128   /* the most reply bytes a scan slot holds */
+
+typedef enum {
+    MUSE_VSA_RAW_NONE = 0,   /* not read yet on this scan */
+    MUSE_VSA_RAW_POSITIVE,   /* a 62 <did> reply: bytes[0..len) */
+    MUSE_VSA_RAW_NEGATIVE,   /* 7F 22: nrc is the response code */
+    MUSE_VSA_RAW_TIMEOUT,    /* no parseable answer (silence, NO DATA, garbled) */
+} muse_vsa_raw_kind_t;
+
+typedef struct {
+    uint8_t kind;    /* muse_vsa_raw_kind_t */
+    uint8_t nrc;     /* the negative response code, when kind says so */
+    uint16_t len;    /* reply bytes in bytes[], when positive */
+    uint8_t bytes[MUSE_VSA_RAW_MAX];
+} muse_vsa_raw_t;
+
+/* The scan's stored outcome for `did` into *out: 0, or -1 when `did` is not
+ * one the scan reads. Never blocks; any task. */
+int muse_obd_vsa_raw(uint16_t did, muse_vsa_raw_t *out);

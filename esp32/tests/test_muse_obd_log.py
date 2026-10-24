@@ -325,14 +325,16 @@ class MuseObdCardLayoutTest(unittest.TestCase):
             self.assertIn(row, self.cards)
         self.assertIn("#define BAR_H 10", self.cards)
         tick = function_body(self.cards, "void muse_obd_cards_tick(void)")
-        self.assertIn("int shown = def->mph ? (v.value * 621 + 500) / 1000 : v.value;", tick)
+        self.assertIn("int shown = def->mph ? (v.value * 621 + 500) / 1000", tick)
         self.assertIn('snprintf(sub, sizeof(sub), "%d km/h", v.value);', tick)
         self.assertIn("lv_bar_set_value(row->bar, bar, LV_ANIM_OFF);", tick)
 
     def test_unsupported_rows_hide_and_reflow(self):
         tick = function_body(self.cards, "void muse_obd_cards_tick(void)")
         self.assertIn("bool unsupported = muse_obd_pid_unsupported(&st, pid);", tick)
-        self.assertIn("set_hidden(row->cell, unsupported)", tick)
+        # BRAKE (OBD-STEERING-ANGLE-TASK) hides on its own condition too.
+        self.assertIn("bool hide = unsupported || (def->src == SRC_BRAKE && st.vsa != 1);", tick)
+        self.assertIn("set_hidden(row->cell, hide)", tick)
         self.assertIn("rule_lines(s_list[i]);", tick)
 
     def test_glance_colours(self):

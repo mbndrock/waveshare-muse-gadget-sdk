@@ -54,6 +54,7 @@
 #define SRC_COOLANT (MUSE_OBD_EXTRAS + 1)
 #define SRC_AC (MUSE_OBD_EXTRAS + 2)        /* DID 0x2610's A/C clutch */
 #define SRC_MISFIRE (MUSE_OBD_EXTRAS + 3)   /* DID 0x2663's four counts */
+#define SRC_BRAKE (MUSE_OBD_EXTRAS + 4)     /* VSA DID 0x4005's brake pressure, bar x 100 */
 
 typedef enum { TONE_NONE, TONE_COOLANT, TONE_TRIM } tone_t;
 
@@ -71,6 +72,7 @@ typedef struct {
     bool vtec;          /* RPM: "VTEC ON / OFF / --" under the bar, from DID 0x2612 */
     bool onoff;         /* a 1/0 reading: ON in the accent, OFF dim (the A/C clutch) */
     bool misfire;       /* the four cylinders' counts side by side, labelled 1 to 4 */
+    uint8_t decimals;   /* a non-extra reading shown in 10^-decimals (BRAKE: tenths of a bar) */
 } row_def_t;
 
 #define ROW(c, n, u, s, ...) { .card = (c), .name = (n), .unit = (u), .src = (s), __VA_ARGS__ }
@@ -86,6 +88,7 @@ static const row_def_t ROWS[] = {
     ROW(1, "MAP", "kPa", MUSE_OBD_MAP, .half = true),
     ROW(1, "MISFIRE", "", SRC_MISFIRE, .misfire = true),
     ROW(2, "SPEED", "mph", MUSE_OBD_SPEED, .hero = true, .mph = true),
+    ROW(2, "BRAKE", "bar", SRC_BRAKE, .half = true, .bar_max = 12000, .decimals = 1),
     ROW(2, "THROTTLE", "%", MUSE_OBD_THROTTLE, .half = true, .bar_max = 100),
     ROW(2, "FUEL", "%", MUSE_OBD_FUEL, .half = true, .bar_max = 100),
     ROW(2, "STFT", "%", MUSE_OBD_STFT, .sign = true, .half = true, .tone = TONE_TRIM),
@@ -413,9 +416,9 @@ static muse_obd_reading_t reading(const muse_obd_status_t *st, uint8_t src, int 
         *pid = 0x05;
         return (muse_obd_reading_t){ st->coolant_valid, st->coolant_c, st->coolant_age_ms };
     }
-    if (src == SRC_AC || src == SRC_MISFIRE) {
+    if (src == SRC_AC || src == SRC_MISFIRE || src == SRC_BRAKE) {
         *pid = 0;   /* a DID, not a Mode 01 PID: the support scan never hides it */
-        return src == SRC_AC ? st->ac_clutch : st->misfire[0];
+        return src == SRC_AC ? st->ac_clutch : src == SRC_BRAKE ? st->vsa_brk_p : st->misfire[0];
     }
     *pid = MUSE_OBD_EXTRA[src].pid;
     return st->extra[src];
@@ -517,9 +520,12 @@ void muse_obd_cards_tick(void)
         muse_obd_reading_t v = reading(&st, def->src, &pid);
 
         /* Proven unsupported once the scan is in: the row goes and the card
-         * reflows around it. Before the scan, it stays and reads "...". */
+         * reflows around it. Before the scan, it stays and reads "...".
+         * BRAKE is the other conditional cell: it appears only once the
+         * DA28 presence probe has confirmed the VSA unit. */
         bool unsupported = muse_obd_pid_unsupported(&st, pid);
-        reflow[def->card] |= set_hidden(row->cell, unsupported);
+        bool hide = unsupported || (def->src == SRC_BRAKE && st.vsa != 1);
+        reflow[def->card] |= set_hidden(row->cell, hide);
         if (row->slot != row->cell) {
             /* A pair goes when both its halves have. */
             const row_t *other = r > 0 && s_rows[r - 1].slot == row->slot ? &s_rows[r - 1]
@@ -542,11 +548,17 @@ void muse_obd_cards_tick(void)
             snprintf(sub, sizeof(sub), "%s", "");
             color = !v.valid ? COLOR_DIM : v.value ? COLOR_ACCENT : COLOR_DIM;
         } else if (v.valid) {
-            int shown = def->mph ? (v.value * 621 + 500) / 1000 : v.value;
-            int decimals = def->src < MUSE_OBD_EXTRAS ? MUSE_OBD_EXTRA[def->src].decimals : 0;
+            /* BRAKE's hundredths read as tenths on the card ("47.5"). */
+            int shown = def->mph ? (v.value * 621 + 500) / 1000
+                      : def->src == SRC_BRAKE ? (v.value >= 0 ? (v.value + 5) / 10 : (v.value - 5) / 10)
+                      : v.value;
+            int decimals = def->src < MUSE_OBD_EXTRAS ? MUSE_OBD_EXTRA[def->src].decimals : def->decimals;
             if (decimals == 1 && shown >= 0) {
                 /* AFR: tenths, "14.7" (int's ten digits, the point: fits text) */
                 snprintf(text, sizeof(text), "%d.%d", shown / 10, shown % 10);
+            } else if (decimals == 1) {
+                /* A negative tenth-ed value (BRAKE below its zero): "-2.5" */
+                snprintf(text, sizeof(text), "-%d.%d", -shown / 10, -shown % 10);
             } else {
                 snprintf(text, sizeof(text), def->sign ? "%+d" : "%d", shown);
             }
@@ -554,9 +566,9 @@ void muse_obd_cards_tick(void)
             color = fresh_color(def, v.value);
             bar = v.value < 0 ? 0 : v.value > def->bar_max ? def->bar_max : v.value;
         } else {
-            /* "--": the scan proved the ECU hasn't got it (hidden by now);
-             * "...": not yet. */
-            const char *none = unsupported ? "--" : "...";
+            /* "--": the scan proved the ECU hasn't got it (hidden by now),
+             * or BRAKE before its first read; "...": not yet. */
+            const char *none = unsupported || def->src == SRC_BRAKE ? "--" : "...";
             snprintf(text, sizeof(text), "%s", none);
             snprintf(sub, sizeof(sub), "%s km/h", none);
             color = COLOR_DIM;

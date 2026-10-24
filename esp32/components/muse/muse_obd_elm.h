@@ -75,6 +75,9 @@ typedef enum {
     MUSE_ELM_FUEL,      /* a 41 2F reply: *pct is set */
     MUSE_ELM_DID_2610,  /* a 62 26 10 reply with its bytes: the A/C clutch and generator are set */
     MUSE_ELM_DID_2663,  /* a 62 26 63 reply with its bytes: the misfire counts are set */
+    MUSE_ELM_DID_4004,  /* a 62 40 04 reply with its bytes: the VSA brake switch is set */
+    MUSE_ELM_DID_4005,  /* a 62 40 05 reply with its bytes: the VSA brake pressure is set */
+    MUSE_ELM_DID_RAW,   /* a 62 <did> reply, undecoded: its bytes are copied out (the VSA scan) */
 } muse_elm_result_t;
 
 /* Reads engine RPM from the response to "010C": ((A * 256) + B) / 4. Spaces
@@ -253,27 +256,95 @@ muse_elm_result_t muse_elm_parse_did_2610(const char *resp, muse_did_2610_t *out
 muse_elm_result_t muse_elm_parse_did_2663(const char *resp, muse_did_2663_t *out);
 
 /*
+ * OBD-STEERING-ANGLE-TASK Phase 1: the VSA modulator-control unit, a second
+ * ECU asked by physical address the same read-only way (UDS 0x22 in the
+ * default session), at header DA28F1 with replies from 18DAF128. The lead is
+ * OBDb's brake-system signalsets for other Hondas (Accord / Pilot / Fit /
+ * Civic), where two DA28 DIDs are decoded; on the S2000's older VSA unit
+ * both the address and the layouts are hypotheses Phase 1 exists to confirm
+ * on the car, so the readings are provisional:
+ *   4004  data byte 15 mask 0x80: the brake switch, 1 = pedal pressed.
+ *         Needs at least 16 data bytes.
+ *   4005  data bytes 7-8, big-endian 16-bit: brake pressure, mapped
+ *         linearly over OBDb's -25..120 bar range (muse_vsa_brake_centibar).
+ *         Needs at least 9 data bytes.
+ * Parsed like the DA10 blocks: a reply whose bytes add up, starting
+ * 62 40 xx with at least the bytes its signal needs; a refusal is
+ * MUSE_ELM_NEGATIVE; anything else MUSE_ELM_NONE, *out left alone.
+ */
+#define MUSE_DID_4004_REQ "224004"
+#define MUSE_DID_4004_MIN 16          /* data bytes a 0x4004 read needs */
+#define MUSE_DID_4004_BRK 15          /* data byte with the brake switch */
+#define MUSE_DID_4004_BRK_ON 0x80     /* its bit: 1 = the pedal is pressed */
+#define MUSE_DID_4005_REQ "224005"
+#define MUSE_DID_4005_MIN 9           /* data bytes a 0x4005 read needs */
+#define MUSE_DID_4005_PRESS 7         /* data byte: brake pressure, high byte first */
+
+typedef struct {
+    bool brk;               /* the brake pedal is pressed */
+} muse_vsa_4004_t;
+
+typedef struct {
+    int brake_p;            /* brake pressure, bar x 100 (-2500..12000) */
+} muse_vsa_4005_t;
+
+muse_elm_result_t muse_elm_parse_vsa_4004(const char *resp, muse_vsa_4004_t *out);
+muse_elm_result_t muse_elm_parse_vsa_4005(const char *resp, muse_vsa_4005_t *out);
+
+/* DID 0x4005's raw 16-bit count (0..65535) as brake pressure in hundredths
+ * of a bar: OBDb's -25..120 bar range spread linearly over the count,
+ * rounded to nearest. Provisional like the layout: raw 0 is -2500
+ * (-25.00 bar), 0xFFFF is 12000, and 0 bar sits at raw 11299. */
+int muse_vsa_brake_centibar(int raw);
+
+/*
+ * One UDS 0x22 reply for `did`, undecoded (the VSA raw scan): on
+ * MUSE_ELM_DID_RAW the reply's bytes (62, the DID, then the data) are in
+ * out and *n says how many (a reply longer than cap does not add up and is
+ * MUSE_ELM_NONE). A refusal is MUSE_ELM_NEGATIVE with the response code
+ * in *nrc (-1 when there is none to report); NO DATA, the ELM's errors and
+ * anything garbled as for the decoded parsers.
+ */
+muse_elm_result_t muse_elm_parse_did_raw(const char *resp, int did, uint8_t *out, size_t cap, int *n, int *nrc);
+
+/* The DA28 DID space OBDb scanned on the other Hondas, raw and undecoded
+ * but for 4004/4005: what obd.vsa_scan reads, one DID per poll-loop gap, so
+ * a parked lock-to-lock capture can be diffed for the steering field. */
+#define MUSE_VSA_SCAN_DIDS_N 26
+extern const uint16_t MUSE_VSA_SCAN_DIDS[MUSE_VSA_SCAN_DIDS_N];
+
+/*
  * The DIDs the poll loop reads, one table: each is asked by physical address
- * with the same state-safe choreography (muse_obd.c's did_read), probed once
- * per connection and never again on it if refused, silent or garbled, and
- * read on its own floor once answered. 0x2612 keeps its 1 s so the VTEC hold
- * stays fresh; 0x2610 and 0x2663 change slowly and take 3 s.
+ * with the same state-safe choreography (muse_obd.c's header sessions),
+ * probed once per connection and never again on it if refused, silent or
+ * garbled, and read on its own floor once answered. A session is its ECU's
+ * (tx header, rx filter) pair in the table: the engine ECU's three at DA10,
+ * the VSA unit's two at DA28; due DIDs of one ECU share a session, and a
+ * session never carries another ECU's DID or a Mode 01 request. 0x2612
+ * keeps its 1 s so the VTEC hold stays fresh; 0x2610 and 0x2663 change
+ * slowly and take 3 s; the VSA pair is a pedal, read at 500 ms.
  */
 typedef enum {
-    MUSE_DID_2612,   /* the VTEC flags */
-    MUSE_DID_2610,   /* the A/C clutch and the generator */
-    MUSE_DID_2663,   /* the misfire counts */
+    MUSE_DID_2612,   /* the VTEC flags (DA10) */
+    MUSE_DID_2610,   /* the A/C clutch and the generator (DA10) */
+    MUSE_DID_2663,   /* the misfire counts (DA10) */
+    MUSE_DID_4004,   /* the VSA brake switch (DA28) */
+    MUSE_DID_4005,   /* the VSA brake pressure (DA28) */
     MUSE_DIDS,
 } muse_did_t;
 
 #define MUSE_DID_2610_MIN_MS 3000u    /* tunable: 0x2610's minimum interval */
 #define MUSE_DID_2663_MIN_MS 3000u    /* tunable: 0x2663's minimum interval */
+#define MUSE_DID_4004_MIN_MS 500u     /* tunable: 0x4004's minimum interval */
+#define MUSE_DID_4005_MIN_MS 500u     /* tunable: 0x4005's minimum interval */
 
 typedef struct {
     uint16_t did;
     const char *req;        /* the UDS 0x22 request, "222612" */
     uint8_t min_data;       /* data bytes a read needs (0x2612: exactly its 54) */
     uint32_t min_ms;        /* the scheduler's floor between reads */
+    const char *atsh;       /* its ECU's tx header: "ATSHDA10F1" (engine) or "ATSHDA28F1" (VSA) */
+    const char *atcra;      /* and its receive filter: "ATCRA18DAF110" or "ATCRA18DAF128" */
 } muse_did_info_t;
 
 /* One per muse_did_t, in that order. */
@@ -319,7 +390,9 @@ bool muse_misfire_update(muse_misfire_trigger_t *t, const uint16_t count[MUSE_MI
  * AFR (34) and pedals D and E (49, 4A) to the fast tier, fuel level (2F) to
  * the mid one and module voltage (42) and barometric pressure (33) to the
  * slow one; OBD-DID-CARDS-TASK adds DIDs 0x2610 and 0x2663 (3 s each) beside
- * 0x2612, each in the schedule only once its probe answered. Targets are
+ * 0x2612, each in the schedule only once its probe answered;
+ * OBD-STEERING-ANGLE-TASK adds the VSA pair 0x4004/0x4005 (500 ms each),
+ * in the schedule only once the DA28 presence probe answered. Targets are
  * floors on
  * freshness, never rate caps: a faster link simply refreshes everything
  * sooner, and nothing is ever delayed to meet a target.
@@ -360,7 +433,7 @@ typedef struct {
     int n;                  /* Mode 01: how many of pids[] the request carries */
 } muse_sched_req_t;
 
-#define MUSE_SCHED_ITEMS 20   /* RPM, the three DIDs and the sixteen secondaries */
+#define MUSE_SCHED_ITEMS 22   /* RPM, the five DIDs and the sixteen secondaries */
 
 typedef struct {
     uint32_t last_ms[MUSE_SCHED_ITEMS];   /* the last completed attempt */

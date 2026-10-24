@@ -464,10 +464,19 @@ static struct {
     const char *const *mis_frames;
     uint16_t mis[4];
     int did2610_reqs, did2663_reqs;
+    /* The VSA modulator at DA28 (OBD-STEERING-ANGLE-TASK): its own header
+     * state (ATSH DA28F1 / ATCRA 18DAF128), scripted 4004/4005 content, and
+     * a scan space where 4000 answers a short block, 4030 refuses and the
+     * rest stay silent. Silent unless a test turns it on. */
+    did_mode_t vsa;
+    bool vsa_physical, vsa_filter;
+    bool brk_sw;
+    int brk_raw;
+    int vsa4004_reqs, vsa4005_reqs, vsa_other_reqs;
     bool engine_off;            /* 010C goes unanswered (RPM unknown) */
     char log[8192][16];         /* every command, in order */
     int logged;
-} g_car = { .dpn = "A6", .did2610 = DID_NO_DATA, .did2663 = DID_NO_DATA };
+} g_car = { .dpn = "A6", .did2610 = DID_NO_DATA, .did2663 = DID_NO_DATA, .vsa = DID_NO_DATA, .brk_raw = 0x8000 };
 
 static char g_did_reply[512];
 
@@ -483,6 +492,27 @@ static const char *misfire_block(const uint16_t mis[4], size_t n)
     for (int c = 0; c < 4; c++) {
         b[3 + 34 + 2 * c] = (uint8_t)(mis[c] >> 8);
         b[3 + 35 + 2 * c] = (uint8_t)mis[c];
+    }
+    size_t at = 0, cap = sizeof(g_did_reply);
+    at += (size_t)snprintf(g_did_reply + at, cap - at, "%03X\r", (unsigned)n);
+    size_t i = 0;
+    for (int f = 0; i < n; f++) {
+        at += (size_t)snprintf(g_did_reply + at, cap - at, "%X:", (unsigned)(f & 0xF));
+        for (int k = 0; k < (f == 0 ? 6 : 7); k++, i++) {
+            at += (size_t)snprintf(g_did_reply + at, cap - at, "%02X", i < n ? b[i] : 0x55);
+        }
+        at += (size_t)snprintf(g_did_reply + at, cap - at, "\r");
+    }
+    snprintf(g_did_reply + at, cap - at, "\r>");
+    return g_did_reply;
+}
+
+/* Any reply's bytes as the ELM prints them: the length line and the
+ * frames, padded (misfire_block's formatting, for the VSA blocks). */
+static const char *bytes_block(const uint8_t *b, size_t n)
+{
+    if (n > 64) {
+        abort();
     }
     size_t at = 0, cap = sizeof(g_did_reply);
     at += (size_t)snprintf(g_did_reply + at, cap - at, "%03X\r", (unsigned)n);
@@ -636,14 +666,16 @@ static const char *answer(const char *cmd)
         strcpy(g_car.log[g_car.logged++], cmd);
     }
     if (!strcmp(cmd, "ATZ")) {
-        g_car.physical = g_car.filter = false;
+        g_car.physical = g_car.filter = g_car.vsa_physical = g_car.vsa_filter = false;
         return "\r\rELM327 v1.5\r\r>";
     }
     if (!strcmp(cmd, "ATDPN")) return !strcmp(g_car.dpn, "A6") ? "A6\r\r>" : "A7\r\r>";
-    if (!strcmp(cmd, "ATSHDA10F1")) g_car.physical = true;
-    if (!strcmp(cmd, "ATSHDB33F1")) g_car.physical = false;
-    if (!strcmp(cmd, "ATCRA18DAF110")) g_car.filter = true;
-    if (!strcmp(cmd, "ATAR")) g_car.filter = false;
+    if (!strcmp(cmd, "ATSHDA10F1")) { g_car.physical = true; g_car.vsa_physical = false; }
+    if (!strcmp(cmd, "ATSHDA28F1")) { g_car.vsa_physical = true; g_car.physical = false; }
+    if (!strcmp(cmd, "ATSHDB33F1")) g_car.physical = g_car.vsa_physical = false;
+    if (!strcmp(cmd, "ATCRA18DAF110")) { g_car.filter = true; g_car.vsa_filter = false; }
+    if (!strcmp(cmd, "ATCRA18DAF128")) { g_car.vsa_filter = true; g_car.filter = false; }
+    if (!strcmp(cmd, "ATAR")) g_car.filter = g_car.vsa_filter = false;
     if (!strncmp(cmd, "AT", 2)) return "OK\r\r>";
     if (!strcmp(cmd, "222612")) {
         g_car.did_reqs++;
@@ -686,7 +718,40 @@ static const char *answer(const char *cmd)
         default: return "NO DATA\r\r>";
         }
     }
-    if (g_car.physical || g_car.filter) {
+    if (!strcmp(cmd, "224004") || !strcmp(cmd, "224005")) {
+        bool sw = cmd[5] == '4';
+        if (sw) g_car.vsa4004_reqs++; else g_car.vsa4005_reqs++;
+        if (!g_car.vsa_physical || !g_car.vsa_filter) return "NO DATA\r\r>";
+        switch (g_car.vsa) {
+        case DID_ON: {
+            uint8_t b[64] = { 0x62, 0x40, (uint8_t)(sw ? 0x04 : 0x05) };
+            if (sw) {
+                b[3 + 15] = g_car.brk_sw ? 0x80 : 0x00;
+                return bytes_block(b, 3 + 20);
+            }
+            b[3 + 7] = (uint8_t)(g_car.brk_raw >> 8);
+            b[3 + 8] = (uint8_t)g_car.brk_raw;
+            return bytes_block(b, 3 + 12);
+        }
+        case DID_REFUSE: return "7F2231\r\r>";
+        case DID_GARBAGE: return "039\r0:624004FFFFC0\r2:001E00\r\r>";
+        case DID_HANG: return NULL;
+        default: return "NO DATA\r\r>";
+        }
+    }
+    if (!strncmp(cmd, "22", 2) && strlen(cmd) == 6) {
+        /* The scan's space: only inside a DA28 session, 4000 answering,
+         * 4030 refusing, the rest silent. */
+        g_car.vsa_other_reqs++;
+        if (!g_car.vsa_physical || !g_car.vsa_filter || g_car.vsa != DID_ON) return "NO DATA\r\r>";
+        if (!strcmp(cmd, "224030")) return "7F2231\r\r>";
+        if (!strcmp(cmd, "224000")) {
+            static const uint8_t B4000[] = { 0x62, 0x40, 0x00, 0x01, 0x02, 0x03, 0x04 };
+            return bytes_block(B4000, sizeof(B4000));
+        }
+        return "NO DATA\r\r>";
+    }
+    if (g_car.physical || g_car.filter || g_car.vsa_physical || g_car.vsa_filter) {
         if (mode01_has(cmd, 0x0C)) g_car.bad_state_rpm++;
         return "NO DATA\r\r>";
     }
@@ -859,6 +924,7 @@ static void check_off(const char *when)
     CHECK(!st.enabled, "%s: enabled", when);
     CHECK(!st.connected && !st.subscribed && !st.polling, "%s: link flags left on", when);
     CHECK(!st.rpm_valid && !st.coolant_valid, "%s: readings left", when);
+    CHECK(!st.vsa_brk_sw.valid && !st.vsa_brk_p.valid, "%s: VSA readings left", when);
     for (int i = 0; i < MUSE_OBD_EXTRAS; i++) {
         CHECK(!st.extra[i].valid, "%s: %s left", when, MUSE_OBD_EXTRA[i].key);
     }
@@ -1303,6 +1369,84 @@ static void check_did_exchanges(const char *when, int reads[3])
     ble_unlock();
 }
 
+/* ---- OBD-STEERING-ANGLE-TASK Phase 1 ---- */
+
+static void set_vsa(did_mode_t mode, bool brk_sw, int brk_raw)
+{
+    ble_lock();
+    g_car.vsa = mode;
+    g_car.brk_sw = brk_sw;
+    g_car.brk_raw = brk_raw;
+    ble_unlock();
+}
+
+static bool vsa_read(void)
+{
+    muse_obd_status_t st = status();
+    return st.vsa == 1 && st.vsa_brk_sw.valid && st.vsa_brk_p.valid;
+}
+static bool brk_released(void)
+{
+    muse_obd_status_t st = status();
+    return st.vsa_brk_sw.valid && st.vsa_brk_sw.value == 0 && st.vsa_brk_p.valid && st.vsa_brk_p.value == -2500;
+}
+static bool reqs_4005_reach(void) { return car(&g_car.vsa4005_reqs) >= s_want; }
+static bool scan_done(void) { return !strcmp(status().vsa_scan, "done"); }
+
+/* Every VSA request in the log sits inside a DA28 session (its ATSH/ATCRA
+ * at the start, Mode 01's state put back at the end), with only VSA
+ * requests in between, and no VSA request inside a DA10 session or the
+ * other way round. Returns how many DA28 sessions carried both DIDs. */
+static int check_vsa_exchanges(const char *when)
+{
+    int grouped = 0, in4004 = 0, in4005 = 0;
+    ble_lock();
+    int n = g_car.logged;
+    bool da28 = false, da28_filtered = false, da10 = false;
+    for (int i = 0; i < n; i++) {
+        const char *c = g_car.log[i];
+        if (!strcmp(c, "ATSHDA28F1")) {
+            CHECK(!da28 && !da10, "%s: a DA28 session inside another at %d", when, i);
+            da28 = true;
+            da28_filtered = false;
+            in4004 = in4005 = 0;
+            continue;
+        }
+        if (!strcmp(c, "ATSHDA10F1")) {
+            CHECK(!da28, "%s: a DA10 session inside a DA28 one at %d", when, i);
+            da10 = true;
+            continue;
+        }
+        if (!strcmp(c, "ATCRA18DAF128")) {
+            da28_filtered = true;
+            continue;
+        }
+        if (!strcmp(c, "ATSHDB33F1")) {
+            if (da28) {
+                CHECK(i >= 1 && !strcmp(g_car.log[i - 1], "ATAR"), "%s: DA28 session at %d not put back", when, i);
+                grouped += in4004 > 0 && in4005 > 0;
+            }
+            da28 = da10 = false;
+            da28_filtered = false;
+            continue;
+        }
+        bool is_da10 = !strcmp(c, "222612") || !strcmp(c, "222610") || !strcmp(c, "222663");
+        bool is_vsa = !is_da10 && !strncmp(c, "22", 2);   /* the pair, and the scan's DIDs */
+        if (is_vsa) {
+            CHECK(da28 && da28_filtered, "%s: %s at %d without its DA28 header", when, c, i);
+            if (!strcmp(c, "224004")) in4004++; else in4005++;
+            continue;
+        }
+        if (is_da10) {
+            CHECK(!da28, "%s: %s inside a DA28 session at %d", when, c, i);
+            continue;
+        }
+        CHECK(!da28 || !strcmp(c, "ATAR"), "%s: %s inside a DA28 session at %d", when, c, i);
+    }
+    ble_unlock();
+    return grouped;
+}
+
 int main(void)
 {
     /* A reply received just before disconnect must not fire after header
@@ -1619,6 +1763,106 @@ int main(void)
     st = status();
     CHECK(st.misfire[0].value == 4 && fired() == before + 1, "bench baseline: %d, fired %d", st.misfire[0].value,
           fired() - before);
+
+    /* OBD-STEERING-ANGLE-TASK Phase 1: the VSA at DA28 against the task. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "vsa: not off");
+    /* Off, a scan can't even be asked for: no VSA requests, ever. */
+    CHECK(!muse_obd_vsa_scan_start(), "a scan started while off");
+    set_vsa(DID_ON, true, 0x8000);   /* pedal pressed, 47.50 bar */
+    ble_lock();
+    g_car.vsa4004_reqs = g_car.vsa4005_reqs = g_car.vsa_other_reqs = 0;
+    ble_unlock();
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    CHECK(settle(vsa_read), "vsa: no readings from the probe or the schedule");
+    st = status();
+    CHECK(st.vsa == 1, "vsa verdict %d", st.vsa);
+    CHECK(st.vsa_brk_sw.value == 1 && st.vsa_brk_p.value == 4750, "vsa: sw %d, p %d", st.vsa_brk_sw.value,
+          st.vsa_brk_p.value);
+    CHECK(st.vsa_brk_sw.age_ms != UINT32_MAX && st.vsa_brk_p.age_ms != UINT32_MAX, "vsa: ages");
+    CHECK(st.rpm_valid && st.rpm == 1726 && car(&g_car.bad_state_rpm) == 0, "vsa: RPM");
+    /* The pedal comes up: the grouped 500 ms tier follows it. */
+    set_vsa(DID_ON, false, 0);
+    CHECK(settle(brk_released), "vsa: the release never read");
+    set_vsa(DID_ON, true, 0x8000);
+    CHECK(settle(vsa_read), "vsa: the press never read");
+
+    /* Choreography: VSA only inside DA28 sessions, the pair grouped in
+     * one session, Mode 01's state back after each, DA10 untouched. */
+    clear_log();
+    s_want = car(&g_car.vsa4005_reqs) + 3;
+    CHECK(settle(reqs_4005_reach), "vsa: 4005 not read again");
+    CHECK(check_vsa_exchanges("vsa") >= 1, "vsa: 4004 and 4005 never shared a session");
+    CHECK(car(&g_car.bad_state_rpm) == 0, "vsa: Mode 01 found a session's state");
+
+    /* The raw scan: every DID's outcome stored, driving polls throughout. */
+    int rpm_rows = log_count(&g_samples);
+    CHECK(muse_obd_vsa_scan_start(), "vsa scan: not accepted");
+    CHECK(!strcmp(status().vsa_scan, "running"), "vsa scan: state %s", status().vsa_scan);
+    CHECK(settle(scan_done), "vsa scan: never done");
+    st = status();
+    CHECK(st.vsa_scan_answered == 3, "vsa scan: %d answered", st.vsa_scan_answered);
+    CHECK(st.rpm_valid && log_count(&g_samples) > rpm_rows, "vsa scan: driving polls starved");
+    muse_vsa_raw_t raw;
+    CHECK(muse_obd_vsa_raw(0x4004, &raw) == 0 && raw.kind == MUSE_VSA_RAW_POSITIVE && raw.len == 23
+          && raw.bytes[0] == 0x62 && raw.bytes[1] == 0x40 && raw.bytes[2] == 0x04 && (raw.bytes[3 + 15] & 0x80),
+          "vsa scan: 4004 kind %d len %u", raw.kind, (unsigned)raw.len);
+    CHECK(muse_obd_vsa_raw(0x4000, &raw) == 0 && raw.kind == MUSE_VSA_RAW_POSITIVE && raw.len == 7
+          && raw.bytes[3] == 0x01 && raw.bytes[6] == 0x04, "vsa scan: 4000");
+    CHECK(muse_obd_vsa_raw(0x4030, &raw) == 0 && raw.kind == MUSE_VSA_RAW_NEGATIVE && raw.nrc == 0x31,
+          "vsa scan: 4030 kind %d nrc %02X", raw.kind, raw.nrc);
+    CHECK(muse_obd_vsa_raw(0x4001, &raw) == 0 && raw.kind == MUSE_VSA_RAW_TIMEOUT, "vsa scan: 4001 silent");
+    CHECK(muse_obd_vsa_raw(0xE602, &raw) == 0 && raw.kind == MUSE_VSA_RAW_TIMEOUT, "vsa scan: E602 silent");
+    CHECK(muse_obd_vsa_raw(0x2612, &raw) == -1 && muse_obd_vsa_raw(0x9999, &raw) == -1, "vsa scan: foreign DIDs");
+    /* The scan's own exchanges obey the same choreography. */
+    CHECK(check_vsa_exchanges("vsa scan") >= 0, "vsa scan: choreography");
+    CHECK(car(&g_car.bad_state_rpm) == 0, "vsa scan: Mode 01 found a session's state");
+
+    /* Off: no VSA read at all, the readings go, the verdict stays, and the
+     * scan's results were that connection's. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "vsa: not off (2)");
+    st = status();
+    CHECK(st.vsa == 1 && !st.vsa_brk_sw.valid && !st.vsa_brk_p.valid, "vsa off: verdict %d, readings left", st.vsa);
+    CHECK(!strcmp(st.vsa_scan, "idle") && muse_obd_vsa_raw(0x4004, &raw) == 0 && raw.kind == MUSE_VSA_RAW_NONE,
+          "vsa off: scan results kept");
+    int v4 = car(&g_car.vsa4004_reqs), v5 = car(&g_car.vsa4005_reqs), vo = car(&g_car.vsa_other_reqs);
+    check_quiet("vsa");
+    CHECK(car(&g_car.vsa4004_reqs) == v4 && car(&g_car.vsa4005_reqs) == v5 && car(&g_car.vsa_other_reqs) == vo,
+          "a VSA read while off");
+
+    /* A VSA that refuses the probe: asked once, 4005 never, no retry storm. */
+    set_vsa(DID_REFUSE, true, 0x8000);
+    ble_lock();
+    g_car.vsa4004_reqs = g_car.vsa4005_reqs = 0;
+    ble_unlock();
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    clear_log();
+    s_want = 300;
+    CHECK(await(log_reach, 5000), "vsa refused: not polling");
+    st = status();
+    CHECK(car(&g_car.vsa4004_reqs) == 1 && car(&g_car.vsa4005_reqs) == 0, "vsa refused: asked %d/%d times",
+          car(&g_car.vsa4004_reqs), car(&g_car.vsa4005_reqs));
+    CHECK(st.vsa == 0 && !st.vsa_brk_sw.valid && !st.vsa_brk_p.valid && st.rpm_valid, "vsa refused: verdict %d",
+          st.vsa);
+
+    /* Silent (a dead address): the same one timed-out exchange per
+     * connection, polling unaffected. */
+    muse_obd_set_enabled(false);
+    CHECK(await(is_off, 3000), "vsa silent: not off");
+    set_vsa(DID_NO_DATA, true, 0x8000);
+    ble_lock();
+    g_car.vsa4004_reqs = g_car.vsa4005_reqs = 0;
+    ble_unlock();
+    muse_obd_set_enabled(true);
+    link_up(CONN);
+    clear_log();
+    CHECK(await(log_reach, 5000), "vsa silent: not polling");
+    CHECK(car(&g_car.vsa4004_reqs) == 1 && car(&g_car.vsa4005_reqs) == 0 && status().vsa == 0,
+          "vsa silent: asked %d/%d times", car(&g_car.vsa4004_reqs), car(&g_car.vsa4005_reqs));
+    set_vsa(DID_NO_DATA, false, 0x8000);
 
     if (s_fail) {
         fprintf(stderr, "%d failed\n", s_fail);

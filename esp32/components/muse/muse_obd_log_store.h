@@ -85,6 +85,8 @@ typedef enum {
     MUSE_LOG_MISFIRE_4,
     MUSE_LOG_AC_CLUTCH,       /* DID 0x2610's A/C clutch, 1/0 */
     MUSE_LOG_GENERATOR,       /* and its generator duty, % */
+    /* OBD-STEERING-ANGLE-TASK Phase 1: appended the same way. */
+    MUSE_LOG_BRAKE_P,         /* VSA DID 0x4005's brake pressure, in bar x 100 (written "47.50") */
     MUSE_LOG_CHANNELS,
 } muse_log_channel_t;
 

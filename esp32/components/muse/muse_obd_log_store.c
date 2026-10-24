@@ -50,11 +50,13 @@ const char *const MUSE_LOG_COLUMN[MUSE_LOG_CHANNELS] = {
     [MUSE_LOG_MISFIRE_4] = "misfire_4",
     [MUSE_LOG_AC_CLUTCH] = "ac_clutch",
     [MUSE_LOG_GENERATOR] = "generator_pct",
+    [MUSE_LOG_BRAKE_P] = "brake_p",
 };
 
 const uint8_t MUSE_LOG_DECIMALS[MUSE_LOG_CHANNELS] = {
     [MUSE_LOG_AFR] = 1,
     [MUSE_LOG_MODULE_V] = 3,
+    [MUSE_LOG_BRAKE_P] = 2,
 };
 
 /* ---- Text into a bounded buffer, without printf: every length is checked
