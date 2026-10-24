@@ -147,17 +147,17 @@ class MuseObdDidCardsTest(unittest.TestCase):
                            ("2", "FUEL"), ("2", "STFT"), ("2", "LTFT")):
             self.assertIn((card, name), names)
         # The misfire row: "--" until a read, amber on the latest increase,
-        # the 3 s dimming as elsewhere; the counts by cylinder, 1 to 4.
+        # never dimmed for age; the counts by cylinder, 1 to 4.
         tick = function_body(cards, "static void tick_misfire(")
         self.assertIn('snprintf(text, sizeof(text), "--");', tick)
-        self.assertIn("v->age_ms > MUSE_OBD_CARD_STALE_MS ? COLOR_STALE", tick)
+        self.assertNotIn("COLOR_STALE", tick)
         self.assertIn("st->misfire_rose & (1u << k) ? COLOR_AMBER : COLOR_TEXT", tick)
         self.assertIn('{ "1", "2", "3", "4" }', cards)
         self.assertIn("#define COOLANT_AMBER_C MUSE_COOLANT_REARM_C", cards)   # the same amber
         # The A/C cell: ON accent, OFF dim, "--" until the first read.
         main_tick = function_body(cards, "void muse_obd_cards_tick(void)")
         self.assertIn('!v.valid ? "--" : v.value ? "ON" : "OFF"', main_tick)
-        self.assertIn("!v.valid ? COLOR_DIM : stale ? COLOR_STALE : v.value ? COLOR_ACCENT : COLOR_DIM", main_tick)
+        self.assertIn("!v.valid ? COLOR_DIM : v.value ? COLOR_ACCENT : COLOR_DIM", main_tick)
         # A DID row is never hidden by the PID support scan.
         self.assertIn("*pid = 0;   /* a DID, not a Mode 01 PID: the support scan never hides it */", cards)
         # snprintf into the misfire text: at most five digits and the NUL.

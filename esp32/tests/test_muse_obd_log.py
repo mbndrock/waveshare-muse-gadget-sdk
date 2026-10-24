@@ -343,8 +343,9 @@ class MuseObdCardLayoutTest(unittest.TestCase):
         self.assertIn("#define MUSE_COOLANT_FIRE_C 105", elm)
         self.assertIn("#define MUSE_COOLANT_REARM_C 100", elm)
         tick = function_body(self.cards, "void muse_obd_cards_tick(void)")
-        # Stale wins over every colour; nothing colours a value that isn't valid.
-        self.assertIn("color = stale ? COLOR_STALE : fresh_color(def, v.value);", tick)
+        # Age never dims a value; nothing colours a value that isn't valid.
+        self.assertIn("color = fresh_color(def, v.value);", tick)
+        self.assertNotIn("COLOR_STALE", self.cards)
         self.assertIn("color = COLOR_DIM;", tick)
 
 

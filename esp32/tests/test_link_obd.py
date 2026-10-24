@@ -277,7 +277,7 @@ class LinkObdTest(unittest.TestCase):
         self.assertIn("muse_obd_status(&st);", cards)
         self.assertIn("muse_obd_pid_unsupported(&st, pid)", cards)
         self.assertIn('"--" : "..."', cards)
-        self.assertIn("v.age_ms > MUSE_OBD_CARD_STALE_MS", cards)
+        self.assertNotIn("COLOR_STALE", cards)   # values keep full colour until replaced
         self.assertIn('snprintf(line, sizeof(line), "OBD\\n%s", st.state);', cards)
         self.assertIn("LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE", cards)
         self.assertNotIn("lv_obj_add_event_cb", cards)   # no gestures or buttons of their own

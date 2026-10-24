@@ -1255,26 +1255,35 @@ static void set_dids(did_mode_t d2610, did_mode_t d2663)
     ble_unlock();
 }
 
-/* Every DID request in the log since it was cleared sits inside its own
- * choreography (header and filter set just before, Mode 01's state put back
- * just after), with nothing else in between: no Mode 01 and no other DID.
- * Returns how many reads of each DID it saw. */
+/* Every DID request in the log since it was cleared sits inside a header
+ * session (ATSH/ATCRA set at its start, Mode 01's state put back at its
+ * end: ATAR then ATSHDB33F1), with only DID requests in between: no Mode
+ * 01 inside a session. One session may carry several DID reads (the poll
+ * loop groups the due ones), so the session, not each read, owns the
+ * choreography. Returns how many reads of each DID it saw. */
 static void check_did_exchanges(const char *when, int reads[3])
 {
     static const char *const REQ[3] = { "222612", "222610", "222663" };
     reads[0] = reads[1] = reads[2] = 0;
     ble_lock();
     int n = g_car.logged;
-    bool inside = false;
+    bool inside = false, filtered = false;
     for (int i = 0; i < n; i++) {
         const char *c = g_car.log[i];
         if (!strcmp(c, "ATSHDA10F1")) {
             CHECK(!inside, "%s: a DID exchange inside another at %d", when, i);
             inside = true;
+            filtered = false;
+            continue;
+        }
+        if (!strcmp(c, "ATCRA18DAF110")) {
+            filtered = true;
             continue;
         }
         if (!strcmp(c, "ATSHDB33F1")) {
+            CHECK(!inside || (i >= 1 && !strcmp(g_car.log[i - 1], "ATAR")), "%s: session at %d not put back", when, i);
             inside = false;
+            filtered = false;
             continue;
         }
         int d = -1;
@@ -1285,15 +1294,10 @@ static void check_did_exchanges(const char *when, int reads[3])
         }
         if (d >= 0) {
             reads[d]++;
-            CHECK(inside && i >= 1 && !strcmp(g_car.log[i - 1], "ATCRA18DAF110"), "%s: %s at %d without its header",
-                  when, c, i);
-            if (i + 2 < n) {
-                CHECK(!strcmp(g_car.log[i + 1], "ATAR") && !strcmp(g_car.log[i + 2], "ATSHDB33F1"),
-                      "%s: %s at %d not put back", when, c, i);
-            }
+            CHECK(inside && filtered, "%s: %s at %d without its header", when, c, i);
             continue;
         }
-        CHECK(!inside || !strcmp(c, "ATCRA18DAF110") || !strcmp(c, "ATAR"),
+        CHECK(!inside || !strcmp(c, "ATAR"),
               "%s: %s inside a DID exchange at %d", when, c, i);
     }
     ble_unlock();

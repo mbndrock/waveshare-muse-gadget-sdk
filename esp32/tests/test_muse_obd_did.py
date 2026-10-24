@@ -117,9 +117,11 @@ class MuseObdDidContractTest(unittest.TestCase):
     def test_exchange_is_read_only_and_puts_the_state_back(self):
         obd = (MUSE / "muse_obd.c").read_text()
         read = function_body(obd, "static muse_elm_result_t did_read(")
-        self.assertIn('elm_cmd("ATSHDA10F1", CMD_MS)', read)
-        self.assertIn('elm_cmd("ATCRA18DAF110", CMD_MS)', read)
-        self.assertIn("elm_cmd(MUSE_DID_INFO[d].req, CMD_MS)", read)   # OBD-DID-CARDS-TASK: one table
+        begin = function_body(obd, "static bool did_begin(void)")
+        self.assertIn('elm_cmd("ATSHDA10F1", CMD_MS)', begin)
+        self.assertIn('elm_cmd("ATCRA18DAF110", CMD_MS)', begin)
+        ask = function_body(obd, "static muse_elm_result_t did_ask(")
+        self.assertIn("elm_cmd(MUSE_DID_INFO[d].req, CMD_MS)", ask)   # OBD-DID-CARDS-TASK: one table
         self.assertIn("*link = did_restore();", read)   # whatever happened before it
         # Every DID the table asks is a UDS 0x22 read (ReadDataByIdentifier):
         # 2612, 2610 and 2663, nothing else.

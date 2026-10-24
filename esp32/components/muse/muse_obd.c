@@ -1036,20 +1036,25 @@ static const muse_elm_result_t DID_OK[MUSE_DIDS] = {
 };
 
 /*
- * One read of DID d (MUSE_DID_INFO), state-safe: the header and the receive
- * filter point at the engine ECU (ATSH DA10F1, ATCRA 18DAF110) for the
- * request only, and did_restore() puts Mode 01's back afterwards, whatever
- * happened in between. Read only: service 0x22 in the default session,
- * nothing is written to the car. One DID at a time, and never inside a Mode
- * 01 exchange: the poll loop has one request outstanding, and this is it.
- * *link is false once the link is gone (or the ELM's state couldn't be put
- * back, so it must be dropped and initialised again).
+ * A DID header session (MUSE_DID_INFO), state-safe: did_begin() points the
+ * header and the receive filter at the engine ECU (ATSH DA10F1, ATCRA
+ * 18DAF110), did_ask() reads one DID per call inside it, and did_restore()
+ * puts Mode 01's state back afterwards, whatever happened in between. Read
+ * only: service 0x22 in the default session, nothing is written to the car.
+ * One request at a time, and never inside a Mode 01 exchange: the poll loop
+ * has one request outstanding. Reading every due DID in one session (the
+ * poll loop) pays the ATSH/ATCRA setup and restore once instead of per DID:
+ * four ELM round trips saved for each extra DID.
  */
-static muse_elm_result_t did_read(muse_did_t d, did_reading_t *out, bool *link)
+static bool did_begin(void)
+{
+    return elm_cmd("ATSHDA10F1", CMD_MS) && elm_ok() && elm_cmd("ATCRA18DAF110", CMD_MS) && elm_ok();
+}
+
+static muse_elm_result_t did_ask(muse_did_t d, did_reading_t *out)
 {
     muse_elm_result_t res = MUSE_ELM_NONE;
-    if (elm_cmd("ATSHDA10F1", CMD_MS) && elm_ok() && elm_cmd("ATCRA18DAF110", CMD_MS) && elm_ok()
-        && elm_cmd(MUSE_DID_INFO[d].req, CMD_MS)) {
+    if (elm_cmd(MUSE_DID_INFO[d].req, CMD_MS)) {
         switch (d) {
         case MUSE_DID_2612: res = muse_elm_parse_vtec_did(s_rx.resp, &out->vtec); break;
         case MUSE_DID_2610: res = muse_elm_parse_did_2610(s_rx.resp, &out->ac); break;
@@ -1060,6 +1065,15 @@ static muse_elm_result_t did_read(muse_did_t d, did_reading_t *out, bool *link)
             ESP_LOGW(TAG, "DID %04X: unexpected reply: %s", MUSE_DID_INFO[d].did, s_rx.resp);
         }
     }
+    return res;
+}
+
+/* One DID on its own (the probe): a session of one. *link is false once the
+ * link is gone (or the ELM's state couldn't be put back, so it must be
+ * dropped and initialised again). */
+static muse_elm_result_t did_read(muse_did_t d, did_reading_t *out, bool *link)
+{
+    muse_elm_result_t res = did_begin() ? did_ask(d, out) : MUSE_ELM_NONE;
     *link = did_restore();
     return res;
 }
@@ -1254,24 +1268,34 @@ static bool poll_rpm(void)
         muse_sched_req_t req;
         muse_sched_pick(&s_sched, now_ms(), &req);
         if (req.did) {
-            /* One DID read. A failed or short one leaves the last reading
-             * to age out: never a stale "on", never a made-up count. */
-            muse_did_t d = (muse_did_t)req.which;
-            did_reading_t v;
-            bool link;
-            uint32_t t0 = now_ms();
-            muse_elm_result_t res = did_read(d, &v, &link);
-            if (res == DID_OK[d]) {
-                got_did(d, &v);
-                answered = true;
-            } else if (res == MUSE_ELM_NO_DATA) {
-                note_timeout();
+            /* Every due DID in one header session, the picked one first: the
+             * ATSH/ATCRA setup and restore are paid once per session, not per
+             * DID. A failed or short read leaves the last reading to age
+             * out: never a stale "on", never a made-up count. */
+            muse_did_t due[MUSE_DIDS];
+            int n_due = 0;
+            due[n_due++] = (muse_did_t)req.which;
+            for (int d = 0; d < MUSE_DIDS; d++) {
+                if (d != (int)req.which && muse_sched_did_due(&s_sched, (muse_did_t)d, now_ms())) {
+                    due[n_due++] = (muse_did_t)d;
+                }
             }
-            if (link) {
+            bool began = did_begin();
+            for (int i = 0; i < n_due; i++) {
+                muse_did_t d = due[i];
+                did_reading_t v;
+                uint32_t t0 = now_ms();
+                muse_elm_result_t res = began ? did_ask(d, &v) : MUSE_ELM_NONE;
+                if (res == DID_OK[d]) {
+                    got_did(d, &v);
+                    answered = true;
+                } else if (res == MUSE_ELM_NO_DATA) {
+                    note_timeout();
+                }
                 note_exchange(now_ms() - t0, 0, false);
+                muse_sched_done_did(&s_sched, d, now_ms());
             }
-            muse_sched_done_did(&s_sched, d, now_ms());
-            if (!link) {
+            if (!did_restore()) {
                 return answered;
             }
             continue;

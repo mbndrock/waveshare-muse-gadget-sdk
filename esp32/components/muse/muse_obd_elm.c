@@ -582,8 +582,9 @@ void muse_sched_pick(const muse_sched_t *s, uint32_t now_ms, muse_sched_req_t *r
     bool in[MUSE_SCHED_ITEMS] = { 0 };
     req->pids[req->n++] = (uint8_t)SCHED[best].pid;
     in[best] = true;
-    /* Fill the batch with the most overdue of what's due (RPM's target is
-     * 0, so it rides along whenever there is room). */
+    /* Fill the batch with the most overdue of what's due, or due within
+     * MUSE_SCHED_LOOKAHEAD_MS (RPM's target is 0, so it rides along
+     * whenever there is room). */
     while (!s->batch_off && req->n < MUSE_ELM_BATCH_MAX) {
         int bi = -1;
         int32_t bo = 0;
@@ -592,8 +593,8 @@ void muse_sched_pick(const muse_sched_t *s, uint32_t now_ms, muse_sched_req_t *r
                 continue;
             }
             int32_t over = sched_overdue(s, i, now_ms);
-            if (over < 0) {
-                continue;   /* not due: a batch carries due items only */
+            if (over < -(int32_t)MUSE_SCHED_LOOKAHEAD_MS) {
+                continue;   /* not due soon: a batch carries due and nearly-due items only */
             }
             if (bi < 0 || over > bo || (over == bo && SCHED[i].rank < SCHED[bi].rank)) {
                 bi = i;
@@ -638,6 +639,15 @@ void muse_sched_done_did(muse_sched_t *s, muse_did_t did, uint32_t now_ms)
     if ((int)did >= 0 && did < MUSE_DIDS) {
         sched_did_attempt(s, did, now_ms);
     }
+}
+
+bool muse_sched_did_due(const muse_sched_t *s, muse_did_t did, uint32_t now_ms)
+{
+    if ((int)did < 0 || did >= MUSE_DIDS) {
+        return false;
+    }
+    int i = sched_did_item(did);
+    return i >= 0 && sched_eligible(s, i, now_ms);
 }
 
 void muse_sched_latch_batch_off(muse_sched_t *s)

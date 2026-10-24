@@ -347,6 +347,11 @@ bool muse_misfire_update(muse_misfire_trigger_t *t, const uint16_t count[MUSE_MI
  * engine-start detector. Times are any wrapping millisecond clock.
  */
 #define MUSE_SCHED_DID_MIN_MS 1000u   /* tunable: DID 0x2612's minimum interval */
+/* A PID due within this rides along in a batch that is going anyway: one
+ * exchange takes about this long on the LELink^2, so carrying it a fraction
+ * early costs nothing and keeps batches full instead of dribbling out
+ * single-PID requests. Its freshness then runs from the earlier read. */
+#define MUSE_SCHED_LOOKAHEAD_MS 250u
 
 typedef struct {
     bool did;               /* the pick is a DID read (which), never batched */
@@ -385,6 +390,10 @@ void muse_sched_pick(const muse_sched_t *s, uint32_t now_ms, muse_sched_req_t *r
 void muse_sched_done_pid(muse_sched_t *s, int pid, bool got, bool ecu_live, uint32_t now_ms);
 /* A DID exchange completed, answered or not: its floor runs from here. */
 void muse_sched_done_did(muse_sched_t *s, muse_did_t did, uint32_t now_ms);
+/* Whether DID `did` is due a read at now_ms (probed on, floor elapsed). Lets
+ * the poll loop read every due DID in one header session instead of paying
+ * the ATSH/ATCRA setup and restore round trips per DID. */
+bool muse_sched_did_due(const muse_sched_t *s, muse_did_t did, uint32_t now_ms);
 /* A batch request was refused as a whole: single-PID for the connection. */
 void muse_sched_latch_batch_off(muse_sched_t *s);
 

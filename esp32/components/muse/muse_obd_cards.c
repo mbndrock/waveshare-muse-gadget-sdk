@@ -37,14 +37,13 @@
 #define BAR_GAP 4
 #define COLOR_TEXT 0xf2efff
 #define COLOR_DIM 0x8b84a8
-#define COLOR_STALE 0x4a4466
 #define COLOR_ACCENT 0xa77dff
 #define COLOR_RULE 0x2a2440    /* the hairline between cells */
 #define COLOR_TRACK 0x2a2440   /* a bar's empty part */
 #define COLOR_AMBER 0xffb020
 #define COLOR_RED 0xff3b30
 
-/* Glance colours, fresh values only: coolant amber from the warning's re-arm
+/* Glance colours: coolant amber from the warning's re-arm
  * temperature, red from its firing one; a fuel trim amber from +-10 %. */
 #define COOLANT_AMBER_C MUSE_COOLANT_REARM_C
 #define COOLANT_RED_C MUSE_COOLANT_FIRE_C
@@ -452,7 +451,7 @@ static void tick_vtec(const muse_obd_status_t *st, row_t *row)
 }
 
 /* The misfire row: each cylinder's count, "--" until the first 0x2663
- * read, amber while it went up on the latest read, dimmed once stale. Four
+ * read, amber while it went up on the latest read. Four
  * share the cell's width, so a long count steps down a font: two digits
  * keep the row's own (40), three take 28, four or five 20. */
 static void tick_misfire(const muse_obd_status_t *st, row_t *row)
@@ -463,8 +462,7 @@ static void tick_misfire(const muse_obd_status_t *st, row_t *row)
         uint32_t color = COLOR_DIM;
         if (v->valid) {
             snprintf(text, sizeof(text), "%u", (unsigned)(v->value & 0xFFFF));
-            color = v->age_ms > MUSE_OBD_CARD_STALE_MS ? COLOR_STALE
-                  : st->misfire_rose & (1u << k) ? COLOR_AMBER : COLOR_TEXT;
+            color = st->misfire_rose & (1u << k) ? COLOR_AMBER : COLOR_TEXT;
         } else {
             snprintf(text, sizeof(text), "--");
         }
@@ -540,10 +538,9 @@ void muse_obd_cards_tick(void)
         int bar = 0;
         if (def->onoff) {
             /* ON in the accent, OFF dim, "--" until the first reading. */
-            bool stale = v.valid && v.age_ms > MUSE_OBD_CARD_STALE_MS;
             snprintf(text, sizeof(text), "%s", !v.valid ? "--" : v.value ? "ON" : "OFF");
             snprintf(sub, sizeof(sub), "%s", "");
-            color = !v.valid ? COLOR_DIM : stale ? COLOR_STALE : v.value ? COLOR_ACCENT : COLOR_DIM;
+            color = !v.valid ? COLOR_DIM : v.value ? COLOR_ACCENT : COLOR_DIM;
         } else if (v.valid) {
             int shown = def->mph ? (v.value * 621 + 500) / 1000 : v.value;
             int decimals = def->src < MUSE_OBD_EXTRAS ? MUSE_OBD_EXTRA[def->src].decimals : 0;
@@ -554,8 +551,7 @@ void muse_obd_cards_tick(void)
                 snprintf(text, sizeof(text), def->sign ? "%+d" : "%d", shown);
             }
             snprintf(sub, sizeof(sub), "%d km/h", v.value);
-            bool stale = v.age_ms > MUSE_OBD_CARD_STALE_MS;
-            color = stale ? COLOR_STALE : fresh_color(def, v.value);
+            color = fresh_color(def, v.value);
             bar = v.value < 0 ? 0 : v.value > def->bar_max ? def->bar_max : v.value;
         } else {
             /* "--": the scan proved the ECU hasn't got it (hidden by now);
@@ -577,7 +573,7 @@ void muse_obd_cards_tick(void)
             row->color = color;
         }
         if (row->bar) {
-            uint32_t bar_color = v.valid && v.age_ms <= MUSE_OBD_CARD_STALE_MS ? COLOR_ACCENT : COLOR_STALE;
+            uint32_t bar_color = v.valid ? COLOR_ACCENT : COLOR_DIM;
             if (bar != row->bar_value) {
                 lv_bar_set_value(row->bar, bar, LV_ANIM_OFF);
                 row->bar_value = bar;

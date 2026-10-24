@@ -29,12 +29,15 @@
  * latest read). "Drive": speed (km/h and mph), throttle beside fuel level,
  * short- and long-term fuel trim.
  *
- * A reading older than MUSE_OBD_CARD_STALE_MS is dimmed, one not received yet
- * reads "...", and one the support scan proved unsupported reads "--". While
- * the link isn't polling, each card shows the link's state instead.
+ * A reading keeps its full colour until it is replaced (no stale dimming);
+ * one not received yet reads "...", and one the support scan proved
+ * unsupported reads "--". While the link isn't polling, each card shows the
+ * link's state instead. The VTEC word is the one exception: it reads "--"
+ * once its reading is older than MUSE_OBD_CARD_STALE_MS rather than show a
+ * stale ON.
  */
 #define MUSE_OBD_CARDS 3
-#define MUSE_OBD_CARD_STALE_MS 3000u
+#define MUSE_OBD_CARD_STALE_MS 3000u   /* the VTEC word's freshness window only */
 
 /* Builds one card on each tile, in the order above. LVGL task (or the
  * display lock held). */
