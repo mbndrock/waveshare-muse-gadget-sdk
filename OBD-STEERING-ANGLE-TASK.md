@@ -73,7 +73,32 @@ mirror the DA10 session invariant: VSA requests only inside a DA28
 session, restore after, no interleave. Probe-failure path: polling
 continues, `vsa` false, no retry storm (probe once per connection).
 
-No trip-log or card changes in Phase 1. No new sdkconfig.
+No new sdkconfig.
+
+## Phase 1 addendum (Derek, 2026-10-24): brake pressure is a product value
+
+Brake pressure is not just a probe. Once it is being read, Derek wants it
+visible while driving:
+
+5. Scheduled VSA polling: once the presence probe confirms DA28, VSA
+   reads join the schedule as their own tier (500 ms target): one DA28
+   session reading 4004 and 4005 grouped, exactly like the grouped DA10
+   DID sessions. No VSA polling before presence is confirmed, and none
+   while OBD is off.
+6. Drive card gains a **BRAKE** cell: brake pressure in bar (from 4005),
+   with a thin 0-120 bar gauge bar in the same style as throttle/fuel.
+   Pair it with THROTTLE (the two pedals together); reflow the remaining
+   cells without shrinking any below the existing minimum sizes, and
+   document the final layout in CLAUDE.md as usual. The cell appears
+   only once VSA presence is confirmed (before that the card is exactly
+   as today), and reads "--" until the first successful read.
+7. Trip CSV gains a trailing `brake_p` column (bar, 2 decimals), empty
+   until the first read, appended after `generator_pct` - the same
+   treatment as every other card value, since card values are logged
+   values.
+
+Phase 2 note: when the steering DID is decoded, it joins this same VSA
+session group rather than paying for its own header setup.
 
 ## Phase 2 - decode and productionise (separate build, after the car capture)
 
